@@ -1,0 +1,16 @@
+{
+  "name": "jzf-chatbot-server",
+  "version": "3.0.0",
+  "description": "Servidor de API limpo para o Chatbot de Contabilidade JZF.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "JZF Contabilidade",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^0.12.0",
+    "express": "^4.19.2"
+  }
+}
