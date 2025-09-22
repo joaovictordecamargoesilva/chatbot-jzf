@@ -12,7 +12,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "3.0.7_FINAL_FIX"; // Versão com correção de MIME type definitiva
+const SERVER_VERSION = "3.0.8_STABLE"; 
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -75,8 +75,7 @@ function addRequestToQueue(userId, department, message, fullContext) {
     console.log(`[Queue] Nova solicitação adicionada: ID ${request.id} para o setor ${department}`);
 }
 
-// --- PROCESSAMENTO PRINCIPAL DO CHATBOT ---
-// (Esta seção não precisou de alterações, é a lógica interna do chatbot)
+// --- PROCESSAMENTO PRINCIPAL DO CHATBOT (Lógica do WhatsApp) ---
 async function processMessage(session, userInput, replies) {
     const { userId } = session;
     let currentStep = conversationFlow.get(session.currentState);
@@ -144,16 +143,16 @@ function formatFlowStepForWhatsapp(step, context) {
     const textTemplate = translations.pt[step.textKey];
     if (textTemplate) { messageText = typeof textTemplate === 'function' ? textTemplate(context) : textTemplate; }
     if (step.options && step.options.length > 0) {
-        const optionsText = step.options.map((opt, index) => `${index + 1}. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n');
+        const optionsText = step.options.map((opt, index) => `*${index + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n');
         messageText += `\n\n${optionsText}`;
     }
     return messageText;
 }
 
-// --- ORDEM DE ROTAS CORRIGIDA ---
-
-// --- 3. ROTAS DA API ---
+// --- ROTAS DA API ---
 const apiRouter = express.Router();
+
+// Webhook para o gateway do WhatsApp
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
   const { userId, userInput } = req.body;
   if (!userId || userInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
@@ -168,6 +167,7 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   }
 });
 
+// Endpoint de chat para o frontend (simulação web)
 apiRouter.post('/chat', async (req, res) => {
     if (!ai) return res.status(503).send("Funcionalidade de IA indisponível (API Key não configurada).");
     const { message, file, session } = req.body;
@@ -179,9 +179,12 @@ apiRouter.post('/chat', async (req, res) => {
         const contentParts = [];
         if (file) contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
         if (message) contentParts.push({ text: message });
-        const responseStream = await chat.sendMessageStream({ parts: contentParts });
+        
+        const responseStream = await chat.sendMessageStream(contentParts);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        for await (const chunk of responseStream) res.write(chunk.text);
+        for await (const chunk of responseStream) {
+          res.write(chunk.text);
+        }
         res.end();
     } catch (error) {
         console.error("Erro na API do Gemini:", error);
@@ -189,6 +192,7 @@ apiRouter.post('/chat', async (req, res) => {
     }
 });
 
+// Endpoints para o painel de atendimento
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 
 apiRouter.post('/requests/resolve/:id', (req, res) => {
@@ -205,24 +209,21 @@ apiRouter.post('/requests/resolve/:id', (req, res) => {
 app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
-// --- 4. ROTA EXPLÍCITA PARA index.tsx (CORREÇÃO AGRESSIVA DE MIME-TYPE) ---
-app.get('/index.tsx', (req, res) => {
-    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.sendFile(path.resolve(__dirname, 'index.tsx'));
-    console.log('[MIME Fix] Servindo /index.tsx com o Content-Type correto.');
-});
-
-// --- 5. SERVINDO DEMAIS ARQUIVOS ESTÁTICOS ---
+// --- SERVINDO ARQUIVOS ESTÁTICOS E O APP REACT ---
 app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
-// --- 6. ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA) ---
+// Rota "catch-all" para SPA (Single Page Application)
 app.get('*', (req, res) => {
-    console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
-    res.sendFile(path.resolve(__dirname, 'index.html'));
+    if (!req.path.startsWith('/api/')) {
+        console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
+        res.sendFile(path.resolve(__dirname, 'index.html'));
+    } else {
+        res.status(404).send('Endpoint de API não encontrado.');
+    }
 });
 
-// --- 7. ERROR HANDLING E INICIALIZAÇÃO DO SERVIDOR ---
+// --- ERROR HANDLING E INICIALIZAÇÃO DO SERVIDOR ---
 app.use((err, req, res, next) => {
   console.error("ERRO INESPERADO NO SERVIDOR:", err.stack);
   res.status(500).send('Algo deu errado no servidor!');
