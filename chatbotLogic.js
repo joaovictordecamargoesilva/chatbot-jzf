@@ -1,33 +1,41 @@
-// Traduções
-export const translations = {
-  greeting: "Olá! Como posso te ajudar hoje?",
-  default: "Desculpe, não entendi. Pode reformular?",
-};
+// chatbotLogic.js
 
-// Estados do chatbot
+// Estados possíveis do chatbot
 export const ChatState = {
-  START: "start",
-  ASK_NAME: "ask_name",
-  END: "end",
+  INIT: 'init',
+  WAITING_USER_INPUT: 'waiting_user_input',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
 };
 
-// Fluxo de conversas
+// Traduções e mensagens do chatbot
+export const translations = {
+  greeting: 'Olá! Como posso ajudar você hoje?',
+  farewell: 'Obrigado por usar nosso serviço!',
+  unknown: 'Desculpe, não entendi. Pode reformular?',
+};
+
+// Fluxo de conversas do chatbot
 export const conversationFlow = {
-  [ChatState.START]: {
-    responses: {
-      "oi": { message: "Oi! Qual é o seu nome?", nextState: ChatState.ASK_NAME },
-      "olá": { message: "Olá! Qual é o seu nome?", nextState: ChatState.ASK_NAME },
-    },
+  init: {
+    message: translations.greeting,
+    nextState: ChatState.WAITING_USER_INPUT,
   },
-  [ChatState.ASK_NAME]: {
-    responses: {
-      // Qualquer texto será tratado como nome
-      "*": { message: "Prazer em te conhecer, {user}! Como posso ajudar?", nextState: ChatState.END },
-    },
+  fallback: {
+    message: translations.unknown,
+    nextState: ChatState.WAITING_USER_INPUT,
   },
-  [ChatState.END]: {
-    responses: {
-      "*": { message: "Obrigado pela conversa! Se precisar, estou por aqui." },
-    },
+  end: {
+    message: translations.farewell,
+    nextState: ChatState.COMPLETED,
   },
 };
+
+// Instruções do sistema de departamentos (novo export que faltava)
+export const departmentSystemInstructions = `
+Use este sistema para gerenciar departamentos:
+- Criar novo departamento
+- Atualizar dados existentes
+- Remover departamentos obsoletos
+- Consultar histórico e relatórios
+`;
