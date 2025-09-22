@@ -1,84 +1,60 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState } from "react";
 import ReactDOM from "react-dom/client";
-import { conversationFlow, translations, ChatState as ChatStateValues } from "./chatbotLogic.js";
 
-// --- START: Merged from types.ts ---
-const Sender = {
-  USER: "user",
-  BOT: "bot",
-};
+type Sender = "user" | "bot";
 
-const ChatState = ChatStateValues;
-// --- END: Merged from types.ts ---
-
-function App() {
-  const [messages, setMessages] = useState([
-    { sender: Sender.BOT, text: translations["greeting"] },
-  ]);
-  const [input, setInput] = useState("");
-  const [chatState, setChatState] = useState(ChatState.START);
-  const messagesEndRef = useRef(null);
-
-  const addMessage = useCallback((sender, text) => {
-    setMessages((prev) => [...prev, { sender, text }]);
-  }, []);
-
-  const handleUserMessage = useCallback(
-    (text) => {
-      addMessage(Sender.USER, text);
-
-      const stateFlow = conversationFlow[chatState];
-      if (stateFlow) {
-        const response = stateFlow.responses[text.toLowerCase()];
-        if (response) {
-          addMessage(Sender.BOT, response.message);
-          if (response.nextState) {
-            setChatState(response.nextState);
-          }
-        } else {
-          addMessage(Sender.BOT, translations["default"]);
-        }
-      }
-    },
-    [chatState, addMessage]
-  );
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (input.trim()) {
-      handleUserMessage(input.trim());
-      setInput("");
-    }
-  };
-
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages]);
-
-  return (
-    <div className="chat-container">
-      <div className="messages">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message ${msg.sender}`}>
-            {msg.text}
-          </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
-      <form onSubmit={handleSubmit} className="input-form">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Digite sua mensagem..."
-        />
-        <button type="submit">Enviar</button>
-      </form>
-    </div>
-  );
+interface Message {
+  sender: Sender;
+  text: string;
 }
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
+const App = () => {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+
+  const sendMessage = async () => {
+    if (!input.trim()) return;
+
+    const userMessage: Message = { sender: "user", text: input };
+    setMessages([...messages, userMessage]);
+
+    try {
+      const res = await fetch("http://localhost:3000/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: input, state: {} })
+      });
+      const data = await res.json();
+      const botMessage: Message = { sender: "bot", text: data.response };
+      setMessages(prev => [...prev, botMessage]);
+    } catch (err) {
+      console.error(err);
+    }
+
+    setInput("");
+  };
+
+  return (
+    <div style={{ padding: "20px", fontFamily: "Arial" }}>
+      <h1>Chatbot</h1>
+      <div style={{ border: "1px solid #ccc", padding: "10px", height: "300px", overflowY: "auto" }}>
+        {messages.map((msg, i) => (
+          <div key={i} style={{ textAlign: msg.sender === "user" ? "right" : "left" }}>
+            <b>{msg.sender === "user" ? "Você" : "Bot"}:</b> {msg.text}
+          </div>
+        ))}
+      </div>
+      <input
+        type="text"
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && sendMessage()}
+        style={{ width: "80%", padding: "5px" }}
+      />
+      <button onClick={sendMessage} style={{ padding: "5px 10px", marginLeft: "5px" }}>Enviar</button>
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root")!);
 root.render(<App />);
