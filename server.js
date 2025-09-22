@@ -12,7 +12,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "3.2.0_CLEAN_STATIC_SERVE";
+const SERVER_VERSION = "3.3.0_MIME_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -207,15 +207,22 @@ apiRouter.post('/requests/resolve/:id', (req, res) => {
 app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
+// --- MIDDLEWARE PARA TIPOS MIME ---
+// CORREÇÃO CRÍTICA: Força o Content-Type de arquivos .tsx para application/javascript.
+// Isso evita o erro 'application/octet-stream' e permite que o navegador processe o arquivo.
+app.use((req, res, next) => {
+  if (req.path.endsWith('.tsx')) {
+    res.setHeader('Content-Type', 'application/javascript');
+  }
+  next();
+});
+
 // --- SERVINDO ARQUIVOS ESTÁTICOS ---
-// Esta é a maneira correta e simplificada de servir os arquivos do frontend.
-// Não há necessidade de configurar tipos MIME especiais; o navegador e os shims cuidam disso.
 app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
 
 // --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA) ---
-// Se nenhuma rota de API ou arquivo estático for encontrado, serve o app React.
 app.get('*', (req, res) => {
     console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
     res.sendFile(path.resolve(__dirname, 'index.html'));
