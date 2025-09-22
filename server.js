@@ -12,7 +12,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "3.1.0_ROBUST_ROUTING";
+const SERVER_VERSION = "3.2.0_CLEAN_STATIC_SERVE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -149,7 +149,7 @@ function formatFlowStepForWhatsapp(step, context) {
     return messageText;
 }
 
-// --- ROTAS DA API (DEVEM VIR PRIMEIRO) ---
+// --- ROTAS DA API ---
 const apiRouter = express.Router();
 
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
@@ -200,27 +200,21 @@ apiRouter.post('/requests/resolve/:id', (req, res) => {
         requestQueue.splice(index, 1);
         res.status(200).send('Solicitação resolvida.');
     } else {
-        res.status(44).send('Solicitação não encontrada.');
+        res.status(404).send('Solicitação não encontrada.');
     }
 });
 
 app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
-// --- SERVINDO ARQUIVOS ESTÁTICOS E O APP REACT ---
-
-// ROTA ESPECIAL PARA /index.tsx para garantir o MIME Type correto.
-app.get('/index.tsx', (req, res) => {
-    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.sendFile(path.resolve(__dirname, 'index.tsx'));
-});
-
-// Serve todos os outros arquivos estáticos da pasta raiz.
+// --- SERVINDO ARQUIVOS ESTÁTICOS ---
+// Esta é a maneira correta e simplificada de servir os arquivos do frontend.
+// Não há necessidade de configurar tipos MIME especiais; o navegador e os shims cuidam disso.
 app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
 
-// ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA)
+// --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA) ---
 // Se nenhuma rota de API ou arquivo estático for encontrado, serve o app React.
 app.get('*', (req, res) => {
     console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
