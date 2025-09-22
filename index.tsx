@@ -3,10 +3,11 @@ import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
 
 // --- START: Merged from types.ts ---
-enum Sender {
-  USER = 'user',
-  BOT = 'bot',
-}
+// FIX: Added 'as const' to correctly infer literal types for Sender, resolving type errors.
+const Sender = {
+  USER: 'user',
+  BOT: 'bot',
+} as const;
 
 type ChatState = typeof ChatStateValues[keyof typeof ChatStateValues];
 const ChatState = ChatStateValues;
@@ -21,7 +22,7 @@ interface Option {
 interface Message {
   id: number;
   text: string | React.ReactNode;
-  sender: Sender;
+  sender: 'user' | 'bot';
   options?: Option[];
   requiresTextInput?: boolean;
   file?: { name: string };
@@ -45,7 +46,7 @@ interface ConversationFlowStep {
 // --- START: Merged from components/TypingIndicator.tsx ---
 const TypingIndicator: React.FC = () => (
   <div className="flex items-center space-x-1.5 p-4 self-start">
-    <span className="sr-only">Bot is typing</span>
+    <span className="sr-only">Bot está digitando</span>
     <div className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
     <div className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
     <div className="h-2 w-2 bg-gray-400 rounded-full animate-bounce"></div>
@@ -521,10 +522,10 @@ const App: React.FC = () => {
         }
     } catch (error) {
         if ((error as Error).name === 'AbortError') {
-            console.log("Fetch aborted");
+            console.log("Busca abortada");
             return;
         }
-        console.error("Error during bot turn:", error);
+        console.error("Erro durante o turno do bot:", error);
         const errorMessage = "Desculpe, ocorreu um erro de comunicação com o servidor. Por favor, tente novamente.";
         const botResponse = {
             text: errorMessage,
