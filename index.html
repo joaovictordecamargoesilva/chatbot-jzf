@@ -10,7 +10,7 @@
     <!-- 1. Load Babel for in-browser transpilation -->
     <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
     
-    <!-- 2. Configure es-module-shims to use Babel for .tsx and .js files -->
+    <!-- 2. Configure es-module-shims to use Babel for .tsx files -->
     <script>
       window.esmsInitOptions = {
         shimMode: true,
@@ -18,8 +18,6 @@
           const res = await fetch(url, options);
           if (!res.ok) return res;
           
-          // Only transpile local .tsx and .js files.
-          // Avoid transpiling libraries from CDNs like esm.sh that are already valid ES Modules.
           if (url.pathname.endsWith('.tsx') || (url.pathname.endsWith('.js') && !url.href.includes('esm.sh'))) {
             const source = await res.text();
             const { code } = Babel.transform(source, {
@@ -34,11 +32,10 @@
       }
     </script>
     
-    <!-- 3. ES Module Shims: Polyfill for importmaps, now with Babel hook configured -->
-    <script async src="https://ga.jsp.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+    <!-- 3. ES Module Shims: Polyfill for importmaps from a RELIABLE CDN -->
+    <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
     
-    <!-- 4. IMPORT MAP CORRETO E 100% LIMPO -->
-    <!-- Apenas dependências de NAVEGADOR (FRONTEND) são permitidas aqui. -->
+    <!-- 4. IMPORT MAP 100% LIMPO - APENAS DEPENDÊNCIAS DE FRONTEND -->
     <script type="importmap">
     {
       "imports": {
