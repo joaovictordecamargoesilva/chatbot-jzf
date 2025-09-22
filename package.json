@@ -1,29 +1,14 @@
 {
-  "name": "chatbot-whatsapp-server",
+  "name": "my-app",
   "version": "1.0.0",
-  "description": "Servidor do chatbot WhatsApp",
-  "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "heroku-postbuild": "cd frontend && npm install && npm run build"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "body-parser": "^1.20.2"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
-  },
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "keywords": [
-    "chatbot",
-    "whatsapp",
-    "server"
-  ],
-  "author": "Seu Nome",
-  "license": "MIT"
+    "path": "^0.12.7"
+  }
 }
