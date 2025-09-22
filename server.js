@@ -12,7 +12,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "3.0.8_STABLE"; 
+const SERVER_VERSION = "3.1.0_ROBUST_ROUTING";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -23,13 +23,13 @@ const { API_KEY } = process.env;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- 1. MIDDLEWARE DE LOG GLOBAL ---
+// --- MIDDLEWARE DE LOG GLOBAL ---
 app.use((req, res, next) => {
   console.log(`[Request Logger] Recebida: ${req.method} ${req.originalUrl}`);
   next();
 });
 
-// --- 2. PARSERS E CONFIGURAÇÕES BÁSICAS ---
+// --- PARSERS E CONFIGURAÇÕES BÁSICAS ---
 app.use(express.json({ limit: '50mb' }));
 
 // --- INICIALIZAÇÃO RESILIENTE DO CLIENTE DE IA ---
@@ -149,10 +149,9 @@ function formatFlowStepForWhatsapp(step, context) {
     return messageText;
 }
 
-// --- ROTAS DA API ---
+// --- ROTAS DA API (DEVEM VIR PRIMEIRO) ---
 const apiRouter = express.Router();
 
-// Webhook para o gateway do WhatsApp
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
   const { userId, userInput } = req.body;
   if (!userId || userInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
@@ -167,7 +166,6 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   }
 });
 
-// Endpoint de chat para o frontend (simulação web)
 apiRouter.post('/chat', async (req, res) => {
     if (!ai) return res.status(503).send("Funcionalidade de IA indisponível (API Key não configurada).");
     const { message, file, session } = req.body;
@@ -176,10 +174,11 @@ apiRouter.post('/chat', async (req, res) => {
     try {
         const systemInstruction = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
         const chat = ai.chats.create({ model: 'gemini-2.5-flash', config: { systemInstruction }, history: session.aiHistory || [] });
+        
         const contentParts = [];
         if (file) contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
         if (message) contentParts.push({ text: message });
-        
+
         const responseStream = await chat.sendMessageStream(contentParts);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         for await (const chunk of responseStream) {
@@ -192,7 +191,6 @@ apiRouter.post('/chat', async (req, res) => {
     }
 });
 
-// Endpoints para o painel de atendimento
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 
 apiRouter.post('/requests/resolve/:id', (req, res) => {
@@ -202,7 +200,7 @@ apiRouter.post('/requests/resolve/:id', (req, res) => {
         requestQueue.splice(index, 1);
         res.status(200).send('Solicitação resolvida.');
     } else {
-        res.status(404).send('Solicitação não encontrada.');
+        res.status(44).send('Solicitação não encontrada.');
     }
 });
 
@@ -210,17 +208,23 @@ app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
 // --- SERVINDO ARQUIVOS ESTÁTICOS E O APP REACT ---
+
+// ROTA ESPECIAL PARA /index.tsx para garantir o MIME Type correto.
+app.get('/index.tsx', (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.sendFile(path.resolve(__dirname, 'index.tsx'));
+});
+
+// Serve todos os outros arquivos estáticos da pasta raiz.
 app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
-// Rota "catch-all" para SPA (Single Page Application)
+
+// ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA)
+// Se nenhuma rota de API ou arquivo estático for encontrado, serve o app React.
 app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api/')) {
-        console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
-        res.sendFile(path.resolve(__dirname, 'index.html'));
-    } else {
-        res.status(404).send('Endpoint de API não encontrado.');
-    }
+    console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
+    res.sendFile(path.resolve(__dirname, 'index.html'));
 });
 
 // --- ERROR HANDLING E INICIALIZAÇÃO DO SERVIDOR ---
