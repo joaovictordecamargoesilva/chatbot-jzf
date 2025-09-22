@@ -18,6 +18,8 @@
           const res = await fetch(url, options);
           if (!res.ok) return res;
           
+          // Only transpile local .tsx and .js files.
+          // Avoid transpiling libraries from CDNs like esm.sh that are already valid ES Modules.
           if (url.pathname.endsWith('.tsx') || (url.pathname.endsWith('.js') && !url.href.includes('esm.sh'))) {
             const source = await res.text();
             const { code } = Babel.transform(source, {
@@ -32,10 +34,10 @@
       }
     </script>
     
-    <!-- 3. ES Module Shims: Polyfill for importmaps -->
+    <!-- 3. ES Module Shims: Polyfill for importmaps, now with Babel hook configured -->
     <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
     
-    <!-- 4. IMPORT MAP 100% CORRIGIDO E LIMPO -->
+    <!-- 4. IMPORT MAP FINAL E 100% LIMPO -->
     <!-- Apenas dependências de NAVEGADOR (FRONTEND) são permitidas aqui. -->
     <script type="importmap">
     {
@@ -57,7 +59,7 @@
   <body class="bg-gray-200">
     <div id="root"></div>
     
-    <!-- 5. Carrega o módulo principal TSX -->
+    <!-- 5. Load the main TSX module. The shim will intercept, transpile, and execute this. -->
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>
