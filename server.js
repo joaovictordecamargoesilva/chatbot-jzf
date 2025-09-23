@@ -1,4 +1,3 @@
-
 // --- SERVIDOR DE API EXCLUSIVO PARA RENDER ---
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
@@ -14,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "9.0.0_INTERNAL_CHAT";
+const SERVER_VERSION = "9.1.0_VIRTUAL_ASSISTANT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -111,27 +110,27 @@ async function processMessage(session, userInput, replies) {
     let currentStep = conversationFlow.get(session.currentState);
     let nextState, payload;
 
-    if (currentStep && currentStep.options && currentStep.options.length > 0) {
-        const choice = parseInt(userInput.trim(), 10);
-        const selectedOption = currentStep.options[choice - 1];
-        if (selectedOption) {
-            nextState = selectedOption.nextState;
-            payload = selectedOption.payload;
-        } else {
-            const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
-            replies.push(invalidOptionMsg);
-            session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
-            
-            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
-            replies.push(stepFormatted);
-            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
-            return;
-        }
-    } else if (currentStep && currentStep.requiresTextInput) {
+    // LÓGICA CORRIGIDA: Prioriza a seleção numérica, mas permite texto se o passo exigir.
+    const choice = parseInt(userInput.trim(), 10);
+    const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+    if (selectedOption) {
+        // O usuário digitou um número e ele corresponde a uma opção válida.
+        nextState = selectedOption.nextState;
+        payload = selectedOption.payload;
+    } else if (currentStep.requiresTextInput) {
+        // O passo permite texto livre e o usuário não digitou uma opção numérica válida.
         nextState = currentStep.nextState;
         session.context.history[session.currentState] = userInput;
     } else {
-        nextState = ChatState.GREETING;
+        // O usuário digitou algo que não é nem uma opção válida nem um texto permitido.
+        const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
+        replies.push(invalidOptionMsg);
+        session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
+        const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+        replies.push(stepFormatted);
+        session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+        return; // Encerra o processamento aqui
     }
     
     if (payload) {
@@ -236,7 +235,7 @@ apiRouter.post('/chat', async (req, res) => {
     if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) return res.status(400).send("Endpoint /api/chat é exclusivo para o assistente de IA.");
     
     try {
-        const systemInstruction = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
+        const systemInstruction = departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo.";
         
         const contentParts = [];
         if (file) {
@@ -293,6 +292,23 @@ apiRouter.post('/attendants', (req, res) => {
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 apiRouter.get('/chats/active', (req, res) => res.status(200).json(Array.from(activeChats.values())));
 
+// NOVA ROTA: Retorna chats que estão sendo atendidos pelo bot no estado de conversação com IA
+apiRouter.get('/chats/ai-active', (req, res) => {
+    const aiActiveChats = [];
+    for (const session of userSessions.values()) {
+        if (session.handledBy === 'bot' && session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+            aiActiveChats.push({
+                userId: session.userId,
+                userName: session.userName,
+                timestamp: session.createdAt, // Pode ser útil ter um timestamp
+                department: session.context.department, // E o departamento
+            });
+        }
+    }
+    res.status(200).json(aiActiveChats);
+});
+
+
 apiRouter.get('/clients', (req, res) => {
     const clients = new Map();
     syncedContacts.forEach(c => {
@@ -324,9 +340,15 @@ apiRouter.get('/chats/history', (req, res) => {
 
 apiRouter.get('/chats/history/:userId', (req, res) => {
     const { userId } = req.params;
+    // Busca em todas as fontes possíveis: sessões ativas (bot/humano), e arquivadas.
     const session = getSession(userId) || archivedChats.get(userId);
     if (session) {
         res.status(200).json({
+            // Adiciona mais contexto para o painel
+            userId: session.userId,
+            userName: session.userName,
+            handledBy: session.handledBy,
+            attendantId: session.attendantId,
             messageLog: session.messageLog || [],
         });
     } else {
@@ -340,23 +362,33 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
     const attendant = ATTENDANTS.find(a => a.id === attendantId);
     if (!attendant) return res.status(400).send('Atendente inválido.');
 
-    const queueIndex = requestQueue.findIndex(r => r.userId === userId);
-    if (queueIndex === -1) return res.status(404).send('Solicitação não encontrada na fila.');
-    
-    const request = requestQueue.splice(queueIndex, 1)[0];
     const session = getSession(userId);
+    if (!session) return res.status(404).send('Sessão do usuário não encontrada.');
+
+    // Remove da fila de espera, se estiver lá.
+    const queueIndex = requestQueue.findIndex(r => r.userId === userId);
+    if (queueIndex > -1) {
+        requestQueue.splice(queueIndex, 1);
+        console.log(`[Takeover] Removido ${userId} da fila de espera.`);
+    }
+
+    // Se já estiver em um chat ativo, loga a reatribuição.
+    if (activeChats.has(userId)) {
+        console.log(`[Takeover] Reatribuindo chat ativo ${userId} para ${attendant.name}.`);
+    }
+    
     session.handledBy = 'human';
     session.attendantId = attendantId;
     
     const activeChatInfo = { userId, userName: session.userName, attendantId, timestamp: new Date().toISOString() };
     activeChats.set(userId, activeChatInfo);
 
-    const takeoverMessage = `Olá! Meu nome é *${attendant.name}* e vou iniciar seu atendimento.`;
+    const takeoverMessage = `Olá! Meu nome é *${attendant.name}* e vou continuar seu atendimento.`;
     outboundGatewayQueue.push({ userId, text: takeoverMessage });
-    session.messageLog.push({ sender: 'system', text: `Atendimento iniciado por ${attendant.name}.`, timestamp: new Date() });
+    session.messageLog.push({ sender: 'system', text: `Atendimento assumido por ${attendant.name}.`, timestamp: new Date() });
     session.messageLog.push({ sender: 'attendant', text: takeoverMessage.replace(/\*/g, ''), timestamp: new Date() });
 
-    console.log(`[Takeover] Atendimento para ${userId} iniciado por ${attendant.name}.`);
+    console.log(`[Takeover] Atendimento para ${userId} iniciado/assumido por ${attendant.name}.`);
     res.status(200).json(activeChatInfo);
 });
 
@@ -414,7 +446,7 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
         const closingMessage = `Seu atendimento foi concluído por *${attendant.name}*. Se precisar de mais alguma coisa, é só chamar! A JZF Contabilidade agradece o seu contato.`;
         outboundGatewayQueue.push({ userId, text: closingMessage });
         
-        session.resolvedBy = attendantId;
+        session.resolvedBy = attendant.name; // Salva o nome para exibição
         session.resolvedAt = new Date().toISOString();
         archivedChats.set(userId, { ...session });
         
