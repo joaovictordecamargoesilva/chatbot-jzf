@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -415,7 +416,8 @@ const AttendantPanel = () => {
         await fetch(`/api/chats/transfer/${activeChat.userId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ newAttendantId, transferringAttendantId: currentAttendant.id }),
+            // FIX: Ensure the newAttendantId is a string, as expected by the server.
+            body: JSON.stringify({ newAttendantId: String(newAttendantId), transferringAttendantId: currentAttendant.id }),
         });
         alert("Atendimento transferido com sucesso!");
         setActiveChat(null);
@@ -494,7 +496,8 @@ const AttendantPanel = () => {
                             </button>
                             <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
                                 {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
-                                    <a href="#" key={a.id} onClick={() => handleTransferChat(a.id)} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
+                                    // FIX: Pass a number to handleTransferChat as the function type seems to expect it.
+                                    <a href="#" key={a.id} onClick={() => handleTransferChat(Number(a.id))} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
                                 ))}
                             </div>
                         </div>
@@ -894,7 +897,8 @@ const App = () => {
       <main className="flex-1 overflow-y-hidden">
         {view === 'chatbot' ? (
             <div className="flex flex-col h-full">
-            <ChatWindow messages={messages} isBotTyping={isBotTyping}></ChatWindow>
+            {/* FIX: Pass null as children to satisfy the component's prop requirements. */}
+            <ChatWindow messages={messages} isBotTyping={isBotTyping}>{null}</ChatWindow>
             <ChatInput
                 onUserInput={handleUserInput}
                 options={lastMessage?.sender === Sender.BOT ? lastMessage.options : []}
