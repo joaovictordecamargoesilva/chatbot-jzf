@@ -1,10 +1,9 @@
-
-
 // --- SERVIDOR DE API EXCLUSIVO PARA RENDER ---
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
 import express from 'express';
-import { GoogleGenAI } from '@google/genai';
+// FIX: Import the correct class 'GoogleGenerativeAI' from the installed package version.
+import { GoogleGenerativeAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -55,7 +54,8 @@ app.use(express.json({ limit: '50mb' }));
 let ai = null;
 if (API_KEY) {
     try {
-        ai = new GoogleGenAI({ apiKey: API_KEY });
+        // FIX: Use the correct constructor for this SDK version, passing the API key directly.
+        ai = new GoogleGenerativeAI(API_KEY);
         console.log("[JZF Chatbot Server] Cliente Google GenAI inicializado com sucesso.");
     } catch (error) {
         console.error("[JZF Chatbot Server] ERRO: Falha ao inicializar o cliente Google GenAI.", error);
@@ -218,17 +218,30 @@ apiRouter.post('/chat', async (req, res) => {
     if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) return res.status(400).send("Endpoint /api/chat é exclusivo para o assistente de IA.");
     
     try {
-        const systemInstruction = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
-        const chat = ai.chats.create({ model: 'gemini-2.5-flash', config: { systemInstruction }, history: session.aiHistory || [] });
+        // FIX: Refactor to use the older SDK's API (`getGenerativeModel` and `startChat`).
+        const systemInstructionText = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
+        
+        const model = ai.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            systemInstruction: systemInstructionText,
+        });
+
+        const chat = model.startChat({
+            history: session.aiHistory || [],
+        });
         
         const contentParts = [];
         if (file) contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
         if (message) contentParts.push({ text: message });
 
-        const responseStream = await chat.sendMessageStream(contentParts);
+        const result = await chat.sendMessageStream(contentParts);
+        
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        for await (const chunk of responseStream) {
-          res.write(chunk.text);
+        for await (const chunk of result.stream) {
+          // The old SDK's stream chunk has a `text()` method.
+          if (chunk && typeof chunk.text === 'function') {
+            res.write(chunk.text());
+          }
         }
         res.end();
     } catch (error) {
