@@ -233,6 +233,12 @@ const AttendantPanel = () => {
   const [error, setError] = useState(null);
   const notificationAudioRef = useRef(null);
   const titleIntervalRef = useRef(null);
+  
+  // State for "New Chat" feature
+  const [clients, setClients] = useState([]);
+  const [newChatSearch, setNewChatSearch] = useState('');
+  const [selectedRecipient, setSelectedRecipient] = useState(null);
+
 
   // Fetch attendants on mount
   useEffect(() => {
@@ -329,7 +335,7 @@ const AttendantPanel = () => {
     return () => clearInterval(intervalId);
   }, [activeChat]);
 
-  // Fetch archived chats when history view is active
+  // Fetch data based on panel view
   useEffect(() => {
     if (panelView === 'history') {
       const fetchArchived = async () => {
@@ -347,6 +353,19 @@ const AttendantPanel = () => {
         }
       };
       fetchArchived();
+    } else if (panelView === 'newChat') {
+      const fetchClients = async () => {
+        try {
+          const res = await fetch('/api/clients');
+          if (!res.ok) throw new Error('Falha ao buscar clientes.');
+          const data = await res.json();
+          setClients(data);
+        } catch (err) {
+          console.error(err);
+          setError("Não foi possível carregar a lista de clientes.");
+        }
+      };
+      fetchClients();
     }
   }, [panelView]);
 
@@ -432,11 +451,11 @@ const AttendantPanel = () => {
 
   const handleInitiateChat = async (event) => {
     event.preventDefault();
-    const recipient = event.target.elements.recipient.value;
     const message = event.target.elements.message.value;
+    const recipient = selectedRecipient ? selectedRecipient.userId : newChatSearch;
 
     if (!recipient || !message) {
-      alert("Por favor, preencha o número do destinatário e a mensagem.");
+      alert("Por favor, selecione um cliente ou digite um número, e preencha a mensagem.");
       return;
     }
 
@@ -450,12 +469,31 @@ const AttendantPanel = () => {
         const newChat = await response.json();
         alert("Conversa iniciada com sucesso!");
         setActiveChat(newChat); // Open the new chat immediately
-        event.target.reset();
+        // Reset form
+        setNewChatSearch('');
+        setSelectedRecipient(null);
+        event.target.elements.message.value = '';
     } catch (err) {
         console.error(err);
         alert(`Ocorreu um erro ao iniciar a conversa: ${err.message}`);
     }
   };
+
+  // Handlers for New Chat autocomplete
+  const handleSearchChange = (e) => {
+      setNewChatSearch(e.target.value);
+      setSelectedRecipient(null); // Clear selection when user types
+  };
+  const handleSelectClient = (client) => {
+      setNewChatSearch(client.userName);
+      setSelectedRecipient(client);
+  };
+  const filteredClients = newChatSearch && !selectedRecipient 
+    ? clients.filter(c => 
+        (c.userName && c.userName.toLowerCase().includes(newChatSearch.toLowerCase())) || 
+        c.userId.includes(newChatSearch)
+      ).slice(0, 5) // Limit results for performance
+    : [];
 
   // Login Screen
   if (!currentAttendant) {
@@ -608,10 +646,33 @@ const AttendantPanel = () => {
                 <div>
                     <h3 className="text-lg font-bold text-gray-700 mb-3">Iniciar Nova Conversa</h3>
                     <form onSubmit={handleInitiateChat} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 space-y-4">
-                        <div>
-                            <label htmlFor="recipient" className="block text-sm font-medium text-gray-700">Número do Cliente (com código do país)</label>
-                            <input type="text" id="recipient" name="recipient" placeholder="Ex: 5511999998888" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" />
-                            <p className="text-xs text-gray-500 mt-1">O número deve estar no formato internacional, sem o `+` ou `00`.</p>
+                        <div className="relative">
+                            <label htmlFor="recipient" className="block text-sm font-medium text-gray-700">Cliente</label>
+                            <input
+                                type="text"
+                                id="recipient"
+                                name="recipient"
+                                placeholder="Digite o nome ou número do cliente"
+                                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                                value={newChatSearch}
+                                onChange={handleSearchChange}
+                                autoComplete="off"
+                            />
+                            {filteredClients.length > 0 && (
+                                <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-b-md shadow-lg max-h-60 overflow-y-auto">
+                                    {filteredClients.map(client => (
+                                        <div
+                                            key={client.userId}
+                                            onClick={() => handleSelectClient(client)}
+                                            className="p-3 hover:bg-gray-100 cursor-pointer border-t"
+                                        >
+                                            <p className="font-semibold text-sm text-gray-800">{client.userName}</p>
+                                            <p className="text-xs text-gray-500">{client.userId.split('@')[0]}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <p className="text-xs text-gray-500 mt-1">Se o cliente não estiver na lista, digite o número completo (Ex: 5511999998888).</p>
                         </div>
                         <div>
                             <label htmlFor="message" className="block text-sm font-medium text-gray-700">Mensagem Inicial</label>
