@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
+    <meta charset="UTF-g" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chatbot Contábil</title>
@@ -19,12 +19,12 @@
           if (!res.ok) return res; // Pass through errors
           
           // Check if the file is a TSX file that needs transpilation
-          if (url.pathname.endsWith('.tsx')) {
+          if (url.endsWith('.tsx')) {
             const source = await res.text();
             // Transpile using Babel
             const { code } = Babel.transform(source, {
               presets: ['react', 'typescript'],
-              filename: url.href // Important for sourcemaps and error messages
+              filename: url // Important for sourcemaps and error messages
             });
             // Return a new Response object with the transpiled JS
             return new Response(new Blob([code], { type: 'application/javascript' }));
