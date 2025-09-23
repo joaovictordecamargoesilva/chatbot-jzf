@@ -1,3 +1,4 @@
+
 // --- SERVIDOR DE API EXCLUSIVO PARA RENDER ---
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
@@ -12,13 +13,16 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "4.0.0_CLEAN_FIX";
+const SERVER_VERSION = "4.0.2_MIME_FIX_MODERN";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
 const app = express();
 const port = process.env.PORT || 3000;
 const { API_KEY } = process.env;
+
+// FIX: Define o MIME type correto para arquivos .tsx. Esta é a sintaxe moderna e recomendada para o Express.
+express.static.mime.types['tsx'] = 'text/javascript';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
