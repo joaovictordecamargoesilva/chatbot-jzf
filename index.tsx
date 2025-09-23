@@ -398,9 +398,8 @@ const AttendantPanel = () => {
   }, [panelView]);
 
   const handleLogin = (attendantId) => {
-    // FIX: (Line 815) To prevent potential type mismatches where attendant ID could be a number
-    // from one source and a string from another, we ensure the comparison is always string vs. string.
-    const attendant = attendants.find(a => String(a.id) === attendantId);
+    // FIX: To prevent potential type mismatches, ensure the comparison is always string vs. string.
+    const attendant = attendants.find(a => String(a.id) === String(attendantId));
     setCurrentAttendant(attendant);
   };
   
@@ -1055,11 +1054,11 @@ const App = () => {
         setAiHistory(savedAiHistory || []);
         setIsBotTyping(false);
     } else {
-      // FIX: (Line 1055) The function processBotTurn expects 4 arguments, but was being called with 2.
+      // FIX: The function processBotTurn expects 4 arguments, but was being called with 2.
       // We pass null for the optional userInput and file arguments on initial load.
       processBotTurn(ChatState.GREETING, { history: {} }, null, null);
     }
-  }, [processBotTurn]);
+  }, []);
 
   useEffect(() => {
     const sessionToSave = {
@@ -1096,7 +1095,7 @@ const App = () => {
             Painel do Atendente
         </button>
       </header>
-      {/* FIX: (Line 1094) The ChatWindow component requires a 'children' prop.
+      {/* FIX: The ChatWindow component requires a 'children' prop.
           Explicitly passing 'null' satisfies this requirement for cases where no children are needed. */}
       <ChatWindow messages={messages} isBotTyping={isBotTyping}>{null}</ChatWindow>
       <ChatInput
