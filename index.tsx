@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -59,17 +58,16 @@ const MessageBubble = ({ message }) => {
         <div className="text-sm whitespace-pre-wrap">{message.text}</div>
         {message.file && (
             <div className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2-2z" />
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                    <path d="M8 8.5a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" />
                 </svg>
-                <span className="text-xs text-gray-700 font-medium truncate">{message.file.name}</span>
+                <span className="text-xs text-gray-700 truncate">{message.file.name}</span>
             </div>
         )}
-        {message.timestamp && (
-            <div className="text-right text-[10px] text-gray-500 mt-1">
-                {new Date(message.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-            </div>
-        )}
+        <div className="text-xs text-gray-400 self-end mt-1">
+          {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </div>
       </div>
     </div>
   );
@@ -77,1111 +75,642 @@ const MessageBubble = ({ message }) => {
 // --- END: Merged from components/MessageBubble.tsx ---
 
 
-// --- START: Merged from components/ChatInput.tsx ---
-const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile, placeholderText = "Mensagem" }) => {
-  const [inputValue, setInputValue] = useState('');
-  const fileInputRef = useRef(null);
+// --- START: Merged from components/ChatPanel.tsx ---
+const ChatPanel = ({
+  selectedChat,
+  attendant,
+  onSendMessage,
+  onResolveChat,
+  onTransferChat,
+  onTakeoverChat, // Nova prop
+  isLoading,
+  attendants,
+}) => {
+  const [message, setMessage] = useState('');
+  const [isTransferModalOpen, setTransferModalOpen] = useState(false);
+  const [transferToAttendantId, setTransferToAttendantId] = useState('');
+  const messagesEndRef = useRef(null);
+  
+  const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
+
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [selectedChat?.messageLog, isLoading]);
+  
+  useEffect(() => {
+     setMessage(''); // Limpa o campo de mensagem ao trocar de chat
+  }, [selectedChat?.userId]);
 
   const handleSend = () => {
-    if (inputValue.trim() || selectedFile) {
-      onUserInput(inputValue.trim());
-      setInputValue('');
+    if ((message.trim() || message.startsWith('/finalizar')) && selectedChat && attendant) {
+      onSendMessage(selectedChat.userId, message.trim(), attendant.id);
+      setMessage('');
+    }
+  };
+
+  const handleTransfer = () => {
+    if (transferToAttendantId) {
+      onTransferChat(selectedChat.userId, transferToAttendantId);
+      setTransferModalOpen(false);
+      setTransferToAttendantId('');
     }
   };
   
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const handleFileClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileSelected = (e) => {
-    onFileChange(e.target.files?.[0] ?? null);
-    if(fileInputRef.current) {
-        fileInputRef.current.value = '';
-    }
-  };
-
-  if (isBotTyping && options?.length === 0 && !requiresTextInput) {
-    return <div className="h-24 bg-gray-100" />; // Placeholder to maintain height for bot typing
+  if (!selectedChat) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-gray-100 text-gray-500">
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+        </svg>
+        <span>Selecione um atendimento na lista para começar.</span>
+      </div>
+    );
   }
   
+  const currentAttendant = attendants.find(a => a.id === selectedChat.attendantId);
+
   return (
-    <div className="p-2 bg-gray-100 border-t border-gray-200">
-      {options && options.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-          {options.map((option) => (
-            <button
-              key={option.text}
-              onClick={() => onUserInput(option.text, option)}
-              disabled={isBotTyping}
-              className="w-full bg-white text-blue-600 font-semibold py-2 px-4 rounded-lg border border-blue-500 hover:bg-blue-50 transition duration-200 disabled:bg-gray-300 disabled:text-gray-500 disabled:border-gray-300"
-            >
-              {option.text}
-            </button>
-          ))}
+    <div className="flex-1 flex flex-col bg-gray-100">
+      {/* Cabeçalho do Chat */}
+      <header className="bg-white p-3 border-b border-gray-200 flex justify-between items-center shadow-sm">
+        <div>
+            <h2 className="font-semibold text-gray-800">{selectedChat.userName || selectedChat.userId}</h2>
+            {chatType === 'human' && currentAttendant && <p className="text-xs text-gray-500">Atendido por: {currentAttendant.name}</p>}
+            {chatType === 'bot' && <p className="text-xs text-blue-500">Em atendimento com o Assistente Virtual</p>}
         </div>
-      )}
-      {requiresTextInput && (
-        <>
-        {selectedFile && (
-            <div className="mb-2 p-2 bg-green-100 border border-green-200 rounded-lg flex items-center justify-between text-sm">
-                <div className="flex items-center space-x-2 truncate">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                    <span className="text-gray-700 truncate">{selectedFile.name}</span>
-                </div>
-                <button onClick={() => onFileChange(null)} className="text-gray-500 hover:text-gray-700">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
+        
+        {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
+            <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setTransferModalOpen(true)}
+              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-300 transition-colors"
+              aria-label="Transferir Atendimento"
+            >
+              Transferir
+            </button>
+            <button
+              onClick={() => onResolveChat(selectedChat.userId)}
+              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-green-600 rounded-lg hover:bg-green-700 focus:ring-4 focus:outline-none focus:ring-green-300 transition-colors"
+              aria-label="Resolver Atendimento"
+            >
+              Resolver
+            </button>
+          </div>
         )}
-        <div className="flex items-center space-x-2">
-            {onFileChange && (
-              <button
-                  onClick={handleFileClick}
-                  disabled={isBotTyping}
-                  className="text-gray-500 p-2 rounded-full hover:bg-gray-200 transition duration-200 disabled:text-gray-300"
-                  aria-label="Anexar arquivo"
-              >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-              </button>
-            )}
-             <input 
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileSelected}
-                className="hidden"
-                accept=".pdf,.xml,.csv,.txt,.json,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp"
-            />
-            <input
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={selectedFile ? "Descreva o arquivo..." : placeholderText}
-                disabled={isBotTyping}
-                className="flex-grow p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#005e54]"
-                autoFocus
-            />
-            <button
-                onClick={handleSend}
-                disabled={isBotTyping || (!inputValue.trim() && !selectedFile)}
-                className="bg-[#005e54] text-white p-3 rounded-full hover:bg-[#004c45] transition duration-200 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
-                aria-label="Enviar mensagem"
+        {chatType === 'bot' && attendant && (
+             <button
+              onClick={() => onTakeoverChat(selectedChat.userId)}
+              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:ring-4 focus:outline-none focus:ring-purple-300 transition-colors"
+              aria-label="Assumir Atendimento"
             >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                </svg>
+              Assumir Atendimento
             </button>
+        )}
+      </header>
+
+      {/* Corpo do Chat */}
+      <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
+        {selectedChat.messageLog.map((msg, index) => (
+          <MessageBubble key={index} message={msg} />
+        ))}
+        {isLoading && <TypingIndicator />}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Rodapé do Chat (Input) */}
+      {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
+          <footer className="bg-gray-200 p-3">
+            <div className="flex items-center bg-white rounded-full shadow-sm px-2">
+              <input
+                type="text"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                placeholder="Digite sua mensagem..."
+                className="w-full p-2 bg-transparent focus:outline-none"
+                aria-label="Campo de mensagem"
+              />
+              <button
+                onClick={handleSend}
+                className="p-2 text-blue-600 hover:text-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                aria-label="Enviar mensagem"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                </svg>
+              </button>
+            </div>
+          </footer>
+      )}
+      
+       {/* Modal de Transferência */}
+      {isTransferModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" aria-modal="true" role="dialog">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-sm">
+            <h3 className="text-lg font-semibold mb-4">Transferir Atendimento</h3>
+            <p className="text-sm text-gray-600 mb-2">Selecione o atendente para quem deseja transferir:</p>
+            <select
+              value={transferToAttendantId}
+              onChange={(e) => setTransferToAttendantId(e.target.value)}
+              className="w-full p-2 border border-gray-300 rounded-md mb-4 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="" disabled>Selecione...</option>
+              {attendants
+                .filter(a => a.id !== attendant.id)
+                .map(a => <option key={a.id} value={a.id}>{a.name}</option>)
+              }
+            </select>
+            <div className="flex justify-end space-x-2">
+              <button onClick={() => setTransferModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Cancelar</button>
+              <button onClick={handleTransfer} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">Confirmar</button>
+            </div>
+          </div>
         </div>
-        </>
       )}
     </div>
   );
 };
-// --- END: Merged from components/ChatInput.tsx ---
+// --- END: Merged from components/ChatPanel.tsx ---
 
 
-// --- START: Merged from components/ChatWindow.tsx ---
-const ChatWindow = ({ messages, isBotTyping, children }) => {
-  const chatEndRef = useRef(null);
+// --- START: Merged from components/Login.tsx ---
+const Login = ({ attendants, onLogin, onRegister }) => {
+  const [selectedAttendant, setSelectedAttendant] = useState('');
+  const [newAttendantName, setNewAttendantName] = useState('');
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isBotTyping]);
+  const handleRegister = () => {
+    if (newAttendantName.trim()) {
+      onRegister(newAttendantName.trim());
+      setNewAttendantName('');
+    }
+  };
 
   return (
-    <div className="flex-1 p-4 overflow-y-auto whatsapp-bg">
-       <div className="flex flex-col space-y-2">
-        {messages.map((msg, index) => (
-          <MessageBubble key={msg.id || `${msg.timestamp}-${index}`} message={msg} />
-        ))}
-        {isBotTyping && <TypingIndicator />}
-        {children}
-        <div ref={chatEndRef} />
+    <div className="flex items-center justify-center w-full h-full bg-gray-100">
+      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg">
+        <h2 className="text-3xl font-bold text-center text-gray-800">Painel de Atendimento</h2>
+        
+        {/* Seção de Login */}
+        <div className="space-y-4">
+          <h3 className="text-xl font-semibold text-gray-700">Entrar como atendente</h3>
+          <select
+            value={selectedAttendant}
+            onChange={(e) => setSelectedAttendant(e.target.value)}
+            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="" disabled>Selecione seu nome</option>
+            {attendants.map(a => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => onLogin(selectedAttendant)}
+            disabled={!selectedAttendant}
+            className="w-full px-4 py-2 font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:bg-blue-300"
+          >
+            Entrar
+          </button>
+        </div>
+
+        <div className="border-t border-gray-200"></div>
+
+        {/* Seção de Registro */}
+        <div className="space-y-4">
+          <h3 className="text-xl font-semibold text-gray-700">Novo atendente?</h3>
+           <input
+            type="text"
+            value={newAttendantName}
+            onChange={(e) => setNewAttendantName(e.target.value)}
+            placeholder="Digite seu nome completo"
+            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+          />
+          <button
+            onClick={handleRegister}
+            disabled={!newAttendantName.trim()}
+            className="w-full px-4 py-2 font-bold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 disabled:bg-green-300"
+          >
+            Registrar-se
+          </button>
+        </div>
       </div>
     </div>
   );
 };
-// --- END: Merged from components/ChatWindow.tsx ---
+// --- END: Merged from components/Login.tsx ---
 
-// --- START: NEW COMPONENT InternalNoteBubble.tsx ---
-const InternalNoteBubble = ({ note }) => {
-    return (
-        <div className="flex w-full justify-center my-1">
-            <div className="max-w-4/5 w-full bg-yellow-100 border-l-4 border-yellow-400 text-gray-800 p-3 rounded-r-lg shadow-sm">
-                <div className="flex justify-between items-center mb-1">
-                    <p className="font-bold text-xs text-yellow-800">{note.attendantName}</p>
-                    <span className="text-[10px] text-gray-500">
-                        {new Date(note.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                </div>
-                <p className="text-sm whitespace-pre-wrap">{note.text}</p>
-            </div>
-        </div>
-    );
-};
-// --- END: NEW COMPONENT InternalNoteBubble.tsx ---
-
-
-// --- START: Merged from components/AttendantPanel.tsx ---
-const AttendantPanel = () => {
-  const [currentAttendant, setCurrentAttendant] = useState(null);
+// --- START: Merged from App.tsx ---
+function App() {
+  const [attendant, setAttendant] = useState(null);
   const [attendants, setAttendants] = useState([]);
-  const [panelView, setPanelView] = useState('queue'); // queue, active, history, newChat, internalChat
-  const [activeChat, setActiveChat] = useState(null); // { userId, userName, ... }
-  const [chatMessages, setChatMessages] = useState([]);
-  const [isChatLoading, setIsChatLoading] = useState(false);
-  const [requests, setRequests] = useState([]);
+  const [activeView, setActiveView] = useState('queue'); // 'queue', 'active', 'history', 'internal_chat', 'ai_active'
+  
+  const [requestQueue, setRequestQueue] = useState([]);
   const [activeChats, setActiveChats] = useState([]);
-  const [archivedChats, setArchivedChats] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const notificationAudioRef = useRef(null);
-  const titleIntervalRef = useRef(null);
+  const [aiActiveChats, setAiActiveChats] = useState([]); // Novo estado para chats com IA
+  const [chatHistory, setChatHistory] = useState([]);
   
-  // State for "New Chat" feature
-  const [clients, setClients] = useState([]);
-  const [newChatSearch, setNewChatSearch] = useState('');
-  const [selectedRecipient, setSelectedRecipient] = useState(null);
+  const [selectedChat, setSelectedChat] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  // State for "Create User" feature
-  const [showCreateUser, setShowCreateUser] = useState(false);
-  const [newUserName, setNewUserName] = useState('');
-  
-  // State for "Internal Chat" feature
-  const [activeInternalChatPartner, setActiveInternalChatPartner] = useState(null);
+  const [internalChatPartner, setInternalChatPartner] = useState(null);
   const [internalChatMessages, setInternalChatMessages] = useState([]);
-  const [isInternalChatLoading, setIsInternalChatLoading] = useState(false);
+  const internalMessagesEndRef = useRef(null);
+  const [internalMessage, setInternalMessage] = useState('');
 
-
-  // Fetch attendants on mount
-  const fetchAttendants = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const res = await fetch('/api/attendants');
-      if (!res.ok) throw new Error("Failed to fetch attendants");
-      const data = await res.json();
-      setAttendants(data);
+      const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes] = await Promise.all([
+        fetch('/api/requests'),
+        fetch('/api/chats/active'),
+        fetch('/api/chats/history'),
+        fetch('/api/attendants'),
+        fetch('/api/chats/ai-active') // Busca os chats da IA
+      ]);
+      if (!reqRes.ok || !activeRes.ok || !historyRes.ok || !attendantsRes.ok || !aiChatsRes.ok) {
+        throw new Error('Falha ao buscar dados do servidor.');
+      }
+      const reqData = await reqRes.json();
+      const activeData = await activeRes.json();
+      const historyData = await historyRes.json();
+      const attendantsData = await attendantsRes.json();
+      const aiChatsData = await aiChatsRes.json();
+
+      setRequestQueue(reqData);
+      setActiveChats(activeData);
+      setChatHistory(historyData);
+      setAttendants(attendantsData);
+      setAiActiveChats(aiChatsData);
+      
     } catch (err) {
+      setError(err.message);
       console.error(err);
-      setError("Não foi possível carregar a lista de atendentes.");
     }
-  };
-  
-  useEffect(() => {
-    fetchAttendants();
-    notificationAudioRef.current = new Audio('https://cdn.jsdelivr.net/gh/google/ai-studio-files/examples/uber_notification.mp3');
   }, []);
 
-  const stopTitleBlinking = () => {
-    if (titleIntervalRef.current) {
-        clearInterval(titleIntervalRef.current);
-        titleIntervalRef.current = null;
-    }
-    document.title = "Assistente Virtual | Painel";
-  };
-  
-  // Polling for queue and active chats
-  const fetchData = useCallback(async () => {
-    if (!currentAttendant) return;
-    try {
-      const [reqRes, activeRes] = await Promise.all([
-        fetch('/api/requests'),
-        fetch('/api/chats/active')
-      ]);
-      if (!reqRes.ok || !activeRes.ok) throw new Error('Falha ao buscar dados.');
-      
-      const newRequests = await reqRes.json();
-      const newActiveChats = await activeRes.json();
-
-      if(newRequests.length > requests.length && requests.length > 0) {
-        if(notificationAudioRef.current) notificationAudioRef.current.play().catch(e => console.log("Audio play failed", e));
-        if (!titleIntervalRef.current) {
-            let toggle = false;
-            titleIntervalRef.current = setInterval(() => {
-                document.title = toggle ? "!! NOVO ATENDIMENTO !!" : "Assistente Virtual | Painel";
-                toggle = !toggle;
-            }, 1000);
-        }
-      }
-
-      setRequests(newRequests);
-      setActiveChats(newActiveChats);
-      if (error) setError(null);
-    } catch (err) {
-      console.error(err);
-      setError('Não foi possível conectar ao servidor.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [currentAttendant, error, requests.length]);
-
   useEffect(() => {
-    if(panelView === 'queue' || panelView === 'active') {
-       fetchData();
-       const intervalId = setInterval(fetchData, 5000);
-       return () => {
-           clearInterval(intervalId);
-           stopTitleBlinking();
-       };
-    }
-  }, [fetchData, panelView]);
-  
-  // Polling for active chat history
-  useEffect(() => {
-    if (!activeChat) return;
+    fetchData();
+    const interval = setInterval(fetchData, 5000); // Atualiza a cada 5 segundos
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
-    const fetchHistory = async () => {
+  // Efeito para buscar histórico de chat interno
+  useEffect(() => {
+    if (internalChatPartner && attendant) {
+      const fetchInternalHistory = async () => {
         try {
-            const response = await fetch(`/api/chats/history/${activeChat.userId}`);
-            if (!response.ok) throw new Error('Falha ao buscar histórico.');
-            const data = await response.json();
-            setChatMessages(data.messageLog);
-        } catch (err) {
-            console.error(err);
-            setError('Não foi possível carregar o histórico da conversa.');
-        } finally {
-            setIsChatLoading(false);
-        }
-    };
-    
-    setIsChatLoading(true);
-    fetchHistory();
-    const intervalId = setInterval(fetchHistory, 3000);
-    return () => clearInterval(intervalId);
-  }, [activeChat]);
-
-  // Polling for internal chat messages
-  useEffect(() => {
-    if (!activeInternalChatPartner || !currentAttendant) return;
-
-    const fetchInternalHistory = async () => {
-        setIsInternalChatLoading(true);
-        try {
-            const res = await fetch(`/api/internal-chats/${currentAttendant.id}/${activeInternalChatPartner.id}`);
-            if (!res.ok) throw new Error('Falha ao buscar histórico interno.');
+          const res = await fetch(`/api/internal-chats/${attendant.id}/${internalChatPartner.id}`);
+          if (res.ok) {
             const data = await res.json();
             setInternalChatMessages(data);
+          }
         } catch (err) {
-            console.error(err);
-            // Don't show a big error for polling failures
-        } finally {
-            setIsInternalChatLoading(false);
-        }
-    };
-
-    fetchInternalHistory();
-    const intervalId = setInterval(fetchInternalHistory, 5000); // Poll every 5 seconds
-    return () => clearInterval(intervalId);
-  }, [activeInternalChatPartner, currentAttendant]);
-
-
-  // Fetch data based on panel view
-  useEffect(() => {
-    if (panelView === 'history') {
-      const fetchArchived = async () => {
-        setIsLoading(true);
-        try {
-          const res = await fetch('/api/chats/history');
-          if (!res.ok) throw new Error('Falha ao buscar histórico.');
-          const data = await res.json();
-          setArchivedChats(data);
-        } catch (err) {
-          console.error(err);
-          setError("Não foi possível carregar o histórico.");
-        } finally {
-          setIsLoading(false);
+          console.error("Falha ao buscar chat interno:", err);
         }
       };
-      fetchArchived();
-    } else if (panelView === 'newChat') {
-      const fetchClients = async () => {
-        setIsLoading(true);
-        try {
-          const res = await fetch('/api/clients');
-          if (!res.ok) throw new Error('Falha ao buscar clientes.');
-          const data = await res.json();
-          setClients(data);
-        } catch (err) {
-          console.error(err);
-          setError("Não foi possível carregar a lista de clientes.");
-        } finally {
-            setIsLoading(false);
-        }
-      };
-      fetchClients();
+      fetchInternalHistory();
+      const interval = setInterval(fetchInternalHistory, 3000);
+      return () => clearInterval(interval);
     }
-  }, [panelView]);
+  }, [internalChatPartner, attendant]);
+
+  useEffect(() => {
+    internalMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [internalChatMessages]);
+
 
   const handleLogin = (attendantId) => {
-    const attendant = attendants.find(a => String(a.id) === String(attendantId));
-    setCurrentAttendant(attendant);
-  };
-  
-  const handleTakeover = async (req) => {
-    try {
-      const response = await fetch(`/api/chats/takeover/${req.userId}`, { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendantId: currentAttendant.id })
-      });
-      if (!response.ok) throw new Error('Falha ao iniciar atendimento.');
-      const newActiveChat = await response.json();
-      setActiveChat(newActiveChat);
-    } catch (err) {
-      console.error(err);
-      alert('Ocorreu um erro ao tentar iniciar o atendimento.');
+    const selected = attendants.find(a => a.id === attendantId);
+    if (selected) {
+      setAttendant(selected);
+      localStorage.setItem('attendantId', selected.id);
     }
   };
 
-  const handleOpenActiveChat = (chat) => {
-    setActiveChat(chat);
+  const handleRegister = async (name) => {
+    try {
+        const res = await fetch('/api/attendants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        if (res.ok) {
+            const newAttendant = await res.json();
+            setAttendants([...attendants, newAttendant]);
+            alert(`Bem-vindo, ${name}! Agora você pode entrar usando seu nome.`);
+        } else {
+            const errData = await res.json();
+            throw new Error(errData.error || 'Falha ao registrar.');
+        }
+    } catch (err) {
+        alert(err.message);
+    }
+  };
+
+  const handleLogout = () => {
+    setAttendant(null);
+    localStorage.removeItem('attendantId');
+  };
+
+  const handleSelectChatItem = async (item) => {
+    setIsLoading(true);
+    setSelectedChat(null);
+    try {
+        const res = await fetch(`/api/chats/history/${item.userId}`);
+        if(res.ok){
+            const data = await res.json();
+            // Adiciona o campo 'handledBy' com base na view ativa, se não vier da API
+            const handledBy = activeView === 'ai_active' ? 'bot' : (activeView === 'active' || activeView === 'history' ? 'human' : null);
+            setSelectedChat({ ...item, ...data, handledBy: data.handledBy || handledBy });
+        } else {
+            throw new Error('Falha ao buscar histórico do chat.');
+        }
+    } catch (err) {
+        alert(err.message);
+    } finally {
+        setIsLoading(false);
+    }
   };
   
-  const handleSendAttendantMessage = async (text) => {
-      if (!activeChat) return;
-
-      const command = text.trim();
-      if (command === '/finalizar') {
-        handleResolveChat();
-        return;
+  const handleTakeoverChat = async (userId) => {
+    if (!attendant) return;
+    try {
+      const res = await fetch(`/api/chats/takeover/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attendantId: attendant.id }),
+      });
+      if (res.ok) {
+        alert('Atendimento assumido com sucesso!');
+        await fetchData();
+        // Muda para a aba de ativos e seleciona o chat
+        const takeoverData = await res.json();
+        setActiveView('active');
+        handleSelectChatItem(takeoverData);
+      } else {
+        throw new Error('Falha ao assumir o atendimento.');
       }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
-      const optimisticMessage = { sender: Sender.ATTENDANT, text, timestamp: new Date().toISOString() };
-      setChatMessages(prev => [...prev, optimisticMessage]);
+  const handleSendMessage = async (userId, text, attendantId) => {
+      // Slash command para finalizar
+      if (text === '/finalizar') {
+          handleResolveChat(userId);
+          return;
+      }
+      
+      const tempMessage = {
+          sender: Sender.ATTENDANT,
+          text: text,
+          timestamp: new Date().toISOString()
+      };
+      // Atualiza a UI imediatamente para feedback rápido
+      setSelectedChat(prev => ({ ...prev, messageLog: [...prev.messageLog, tempMessage] }));
+
       try {
           await fetch('/api/chats/attendant-reply', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId: activeChat.userId, text, attendantId: currentAttendant.id }),
+              body: JSON.stringify({ userId, text, attendantId }),
           });
+          // O fetch periódico vai confirmar a mensagem, então não precisamos refetch aqui.
       } catch (err) {
-          console.error(err);
-          alert('Ocorreu um erro ao enviar a sua mensagem.');
+          alert('Falha ao enviar mensagem.');
+          // Poderia implementar lógica para remover a mensagem otimista
       }
   };
 
-  const handleSendInternalMessage = async (text) => {
-    if (!text.trim() || !activeInternalChatPartner) return;
-
-    const optimisticMessage = {
-        senderId: currentAttendant.id,
-        senderName: currentAttendant.name,
-        text,
-        timestamp: new Date().toISOString()
-    };
-    setInternalChatMessages(prev => [...prev, optimisticMessage]);
-
+  const handleResolveChat = async (userId) => {
+    if (!attendant) return;
     try {
-        await fetch('/api/internal-chats', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                senderId: currentAttendant.id,
-                recipientId: activeInternalChatPartner.id,
-                text,
-            }),
-        });
+      const res = await fetch(`/api/chats/resolve/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attendantId: attendant.id }),
+      });
+      if (res.ok) {
+        alert('Atendimento resolvido com sucesso!');
+        setSelectedChat(null);
+        setActiveView('queue'); // Volta para a fila
+        await fetchData(); // Atualiza os dados
+      } else {
+        throw new Error('Falha ao resolver o atendimento.');
+      }
     } catch (err) {
-        console.error(err);
-        alert('Falha ao enviar mensagem interna.');
-        setInternalChatMessages(prev => prev.filter(m => m.timestamp !== optimisticMessage.timestamp));
+      alert(err.message);
     }
   };
   
-  const handleResolveChat = async () => {
-      if (!activeChat) return;
-      if (!confirm('Tem certeza que deseja resolver e fechar este atendimento?')) return;
-      try {
-          await fetch(`/api/chats/resolve/${activeChat.userId}`, { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ attendantId: currentAttendant.id })
-          });
-          alert("Atendimento finalizado e arquivado com sucesso!");
-          setActiveChat(null);
-          setChatMessages([]);
-          setPanelView('queue');
-          await fetchData();
-      } catch (err) {
-          console.error(err);
-          alert('Ocorreu um erro ao tentar resolver o atendimento.');
+  const handleTransferChat = async (userId, newAttendantId) => {
+    if (!attendant) return;
+    try {
+      const res = await fetch(`/api/chats/transfer/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          newAttendantId,
+          transferringAttendantId: attendant.id,
+        }),
+      });
+      if (res.ok) {
+        const targetAttendant = attendants.find(a => a.id === newAttendantId);
+        alert(`Atendimento transferido com sucesso para ${targetAttendant?.name || 'outro atendente'}!`);
+        setSelectedChat(null);
+        setActiveView('queue'); // Volta para a fila
+        await fetchData(); // Atualiza os dados
+      } else {
+        const errorText = await res.text();
+        throw new Error(errorText || 'Falha ao transferir o atendimento.');
       }
-  };
-
-  const handleTransferChat = async (newAttendantId) => {
-    if (!activeChat || !newAttendantId) return;
-    const targetAttendant = attendants.find(a => a.id === newAttendantId);
-    if (!targetAttendant) return;
-    try {
-        await fetch(`/api/chats/transfer/${activeChat.userId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ newAttendantId: newAttendantId, transferringAttendantId: currentAttendant.id }),
-        });
-        alert(`Atendimento transferido com sucesso para ${targetAttendant.name}!`);
-        setActiveChat(null);
-        setChatMessages([]);
-        setPanelView('queue');
-        await fetchData();
     } catch (err) {
-        console.error(err);
-        alert('Ocorreu um erro ao tentar transferir o atendimento.');
+      alert(err.message);
     }
   };
-
-  const handleInitiateChat = async (event) => {
-    event.preventDefault();
-    const message = event.target.elements.message.value;
-    const recipient = selectedRecipient ? selectedRecipient.userId : newChatSearch;
-
-    if (!recipient || !message) {
-      alert("Por favor, selecione um cliente ou digite um número, e preencha a mensagem.");
-      return;
-    }
+  
+  const handleSendInternalMessage = async () => {
+    if (!internalMessage.trim() || !attendant || !internalChatPartner) return;
+    const text = internalMessage.trim();
+    setInternalMessage('');
+    
+    const tempMessage = {
+      senderId: attendant.id,
+      senderName: attendant.name,
+      text,
+      timestamp: new Date().toISOString()
+    };
+    setInternalChatMessages(prev => [...prev, tempMessage]);
 
     try {
-        const response = await fetch('/api/chats/initiate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recipientNumber: recipient, message, attendantId: currentAttendant.id }),
-        });
-        if(!response.ok) throw new Error(await response.text());
-        const newChat = await response.json();
-        alert("Conversa iniciada com sucesso!");
-        setActiveChat(newChat);
-        // Reset form
-        setNewChatSearch('');
-        setSelectedRecipient(null);
-        event.target.elements.message.value = '';
+      await fetch('/api/internal-chats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId: attendant.id,
+          recipientId: internalChatPartner.id,
+          text,
+        }),
+      });
     } catch (err) {
-        console.error(err);
-        alert(`Ocorreu um erro ao iniciar a conversa: ${err.message}`);
+      console.error("Falha ao enviar mensagem interna:", err);
+      // Poderia adicionar lógica de retry ou remoção da UI
     }
   };
 
-  const handleCreateUser = async (e) => {
-    e.preventDefault();
-    if (!newUserName.trim()) {
-        alert("O nome do usuário não pode estar em branco.");
-        return;
+
+  useEffect(() => {
+    const savedAttendantId = localStorage.getItem('attendantId');
+    if (savedAttendantId && attendants.length > 0) {
+      handleLogin(savedAttendantId);
     }
-    try {
-        const response = await fetch('/api/attendants', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newUserName }),
-        });
-        if (!response.ok) throw new Error(await response.text());
-        alert("Usuário criado com sucesso!");
-        setNewUserName('');
-        setShowCreateUser(false);
-        await fetchAttendants(); // Refresh the list
-    } catch (err) {
-        console.error(err);
-        alert(`Erro ao criar usuário: ${err.message}`);
-    }
-};
-
-  // Handlers for New Chat autocomplete
-  const handleSearchChange = (e) => {
-      setNewChatSearch(e.target.value);
-      setSelectedRecipient(null); // Clear selection when user types
-  };
-  const handleSelectClient = (client) => {
-      setNewChatSearch(client.userName);
-      setSelectedRecipient(client);
-  };
-  const filteredClients = newChatSearch && !selectedRecipient 
-    ? clients.filter(c => 
-        (c.userName && c.userName.toLowerCase().includes(newChatSearch.toLowerCase())) || 
-        c.userId.includes(newChatSearch)
-      ).slice(0, 5) // Limit results for performance
-    : [];
-
-  const handleSelectInternalChat = (partner) => {
-    setActiveInternalChatPartner(partner);
-    setInternalChatMessages([]); // Clear previous messages
-  };
+  }, [attendants]);
 
 
-  // Login Screen
-  if (!currentAttendant) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-gray-100 p-4">
-        <div className="w-full max-w-sm bg-white p-8 rounded-lg shadow-md">
-          <h2 className="text-2xl font-bold text-center text-gray-700 mb-2">Painel de Atendimento</h2>
-          <p className="text-center text-gray-500 mb-6">Selecione seu usuário para continuar</p>
-          
-          {!showCreateUser ? (
-            <>
-              <select 
-                onChange={(e) => handleLogin(e.target.value)}
-                defaultValue=""
-                className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54] mb-4"
-              >
-                <option value="" disabled>Selecione um atendente...</option>
-                {attendants.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-              <button onClick={() => setShowCreateUser(true)} className="w-full text-center text-sm text-blue-600 hover:underline">
-                Criar Novo Usuário
-              </button>
-            </>
-          ) : (
-            <form onSubmit={handleCreateUser}>
-                <label htmlFor="new-user-name" className="block text-sm font-medium text-gray-700">Nome do Novo Atendente</label>
-                <input
-                    id="new-user-name"
-                    type="text"
-                    value={newUserName}
-                    onChange={(e) => setNewUserName(e.target.value)}
-                    className="mt-1 w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54]"
-                    autoFocus
-                />
-                <div className="flex items-center justify-between mt-4">
-                    <button type="button" onClick={() => setShowCreateUser(false)} className="text-sm text-gray-600 hover:underline">
-                        Cancelar
-                    </button>
-                    <button type="submit" className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600">
-                        Salvar
-                    </button>
-                </div>
-            </form>
-          )}
-
-          {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-        </div>
-      </div>
-    );
+  if (!attendant) {
+    return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} />;
   }
 
-  // Active Chat View
-  if (activeChat) {
-    const isMyChat = activeChat.attendantId === currentAttendant.id;
-    return (
-        <div className="flex flex-col h-full bg-gray-100">
-            <header className="p-3 bg-white border-b border-gray-200 flex items-center justify-between flex-shrink-0">
-                <div>
-                  <button onClick={() => setActiveChat(null)} className="text-blue-600 hover:underline text-sm">&larr; Voltar</button>
-                  <p className="font-semibold text-lg text-gray-800">{activeChat.userName || activeChat.userId}</p>
-                </div>
-                {isMyChat && (
-                    <div className="flex items-center space-x-2">
-                        <div className="relative group">
-                            <button className="bg-yellow-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-yellow-600 transition-colors">
-                                Transferir
-                            </button>
-                            <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
-                                {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
-                                    <a href="#" key={a.id} onClick={(e) => { e.preventDefault(); handleTransferChat(a.id); }} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
-                                ))}
-                            </div>
-                        </div>
-                        <button onClick={handleResolveChat} className="bg-green-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-green-600 transition-colors">
-                            Resolver
-                        </button>
-                    </div>
-                )}
-            </header>
+  // Componente para item da lista lateral
+  // FIX: Add default props for isSelected and children to fix usage errors.
+  const ListItem = ({ item, onClick, isSelected = false, children = null }) => (
+    <li
+      onClick={onClick}
+      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-200 transition-colors ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
+    >
+      <p className="font-semibold text-gray-800 truncate">{item.userName || item.name || item.id}</p>
+      {children}
+    </li>
+  );
 
-            <ChatWindow messages={chatMessages} isBotTyping={isChatLoading}>
-              {isChatLoading && chatMessages.length === 0 && (
-                <div className="text-center text-gray-500 p-4">Carregando histórico...</div>
-              )}
-            </ChatWindow>
-
-            {isMyChat ? (
-                <ChatInput 
-                    onUserInput={handleSendAttendantMessage} options={[]}
-                    requiresTextInput={true} isBotTyping={false}
-                    onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
-                    selectedFile={null} placeholderText="Digite sua mensagem... (use /finalizar para resolver)"
-                />
-            ) : (
-                <div className="p-4 bg-gray-200 text-center text-sm text-gray-600">
-                    Este chat está sendo atendido por <strong>{attendants.find(a => a.id === activeChat.attendantId)?.name || 'outro atendente'}</strong>. (Modo Leitura)
-                </div>
-            )}
-        </div>
-    );
-  }
-
-  // Main Panel View (Queue, History, etc.)
   return (
-    <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-white border-b border-gray-200 flex justify-between items-center pr-4">
-             <nav className="flex">
-                <button onClick={() => setPanelView('queue')} className={`px-4 py-3 text-sm font-medium ${panelView === 'queue' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
-                   Fila <span className="ml-1 bg-red-500 text-white text-xs font-bold rounded-full px-2">{requests.length}</span>
-                </button>
-                 <button onClick={() => setPanelView('active')} className={`px-4 py-3 text-sm font-medium ${panelView === 'active' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
-                   Ativos <span className="ml-1 bg-blue-500 text-white text-xs font-bold rounded-full px-2">{activeChats.length}</span>
-                </button>
-                <button onClick={() => setPanelView('internalChat')} className={`px-4 py-3 text-sm font-medium ${panelView === 'internalChat' ? 'border-b-2 border-green-500 text-green-600' : 'text-gray-500 hover:text-gray-700'}`}>Chat Interno</button>
-                <button onClick={() => setPanelView('history')} className={`px-4 py-3 text-sm font-medium ${panelView === 'history' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>Histórico</button>
-                <button onClick={() => setPanelView('newChat')} className={`px-4 py-3 text-sm font-medium ${panelView === 'newChat' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>Nova Conversa</button>
-             </nav>
-             <div className="text-sm text-gray-600">
-                Logado como: <strong className="font-semibold">{currentAttendant.name}</strong>
-                <button onClick={() => setCurrentAttendant(null)} className="ml-2 text-blue-600 hover:underline text-xs">(Sair)</button>
-             </div>
+    <div className="flex h-screen font-sans bg-gray-100 text-gray-800">
+      {/* Sidebar */}
+      <aside className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-lg">
+        <div className="p-4 border-b border-gray-200">
+          <h1 className="text-xl font-bold text-gray-800">JZF Atendimento</h1>
+          <div className="mt-2 text-sm text-gray-600">
+            <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
+            <button onClick={handleLogout} className="text-xs text-red-500 hover:underline">Sair</button>
+          </div>
         </div>
-        <div className="flex-1 overflow-y-auto bg-gray-100">
-            {error && <div className="p-4 text-center text-red-500 bg-red-50 rounded-lg mb-4">{error}</div>}
+        
+        {/* Abas de Navegação */}
+        <nav className="flex p-1 bg-gray-100">
+            <button onClick={() => { setActiveView('queue'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'queue' ? 'bg-white shadow' : 'text-gray-600'}`}>Fila ({requestQueue.length})</button>
+            <button onClick={() => { setActiveView('active'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'active' ? 'bg-white shadow' : 'text-gray-600'}`}>Ativos ({activeChats.length})</button>
+            <button onClick={() => { setActiveView('ai_active'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'ai_active' ? 'bg-white shadow' : 'text-gray-600'}`}>Virtual ({aiActiveChats.length})</button>
+            <button onClick={() => { setActiveView('history'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'history' ? 'bg-white shadow' : 'text-gray-600'}`}>Histórico</button>
+            <button onClick={() => { setActiveView('internal_chat'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'internal_chat' ? 'bg-white shadow' : 'text-gray-600'}`}>Chat Interno</button>
+        </nav>
+
+        <div className="flex-1 overflow-y-auto">
+          <ul>
+            {activeView === 'queue' && requestQueue.map(req => (
+              <ListItem key={req.id} item={req} onClick={() => handleTakeoverChat(req.userId)}>
+                <p className="text-xs text-gray-500">{req.department} - {new Date(req.timestamp).toLocaleTimeString()}</p>
+                <p className="text-xs text-gray-600 mt-1 truncate italic">"{req.message}"</p>
+              </ListItem>
+            ))}
             
-            {panelView === 'internalChat' && (
-                <div className="flex h-full">
-                    {/* Sidebar with attendants */}
-                    <aside className="w-1/3 border-r border-gray-200 bg-white overflow-y-auto">
-                        <div className="p-4 border-b">
-                            <h3 className="font-semibold text-gray-800">Equipe</h3>
-                        </div>
-                        <ul>
-                           {attendants.filter(a => a.id !== currentAttendant.id).map(attendant => (
-                                <li key={attendant.id}>
-                                    <button 
-                                        onClick={() => handleSelectInternalChat(attendant)} 
-                                        className={`w-full text-left p-4 hover:bg-gray-100 ${activeInternalChatPartner?.id === attendant.id ? 'bg-blue-50' : ''}`}
-                                    >
-                                        <p className="font-semibold text-gray-700">{attendant.name}</p>
-                                    </button>
-                                </li>
-                           ))}
-                        </ul>
-                    </aside>
-                    {/* Chat Area */}
-                    <main className="w-2/3 flex flex-col bg-gray-50">
-                        {activeInternalChatPartner ? (
-                            <div className="flex flex-col h-full">
-                                <header className="p-4 bg-white border-b border-gray-200 flex-shrink-0">
-                                    <p className="font-semibold text-lg text-gray-800">{activeInternalChatPartner.name}</p>
-                                </header>
-                                <ChatWindow 
-                                    messages={internalChatMessages.map(msg => ({
-                                        ...msg,
-                                        sender: msg.senderId === currentAttendant.id ? Sender.USER : Sender.BOT,
-                                    }))} 
-                                    isBotTyping={isInternalChatLoading}>
-                                    {isInternalChatLoading && internalChatMessages.length === 0 && (
-                                        <div className="text-center text-gray-500 p-4">Carregando...</div>
-                                    )}
-                                </ChatWindow>
-                                <ChatInput 
-                                    onUserInput={handleSendInternalMessage} options={[]}
-                                    requiresTextInput={true} isBotTyping={false}
-                                    onFileChange={null}
-                                    selectedFile={null} placeholderText={`Mensagem para ${activeInternalChatPartner.name}...`}
-                                />
-                            </div>
-                        ) : (
-                            <div className="flex items-center justify-center h-full text-gray-500">
-                                <p>Selecione um colega para iniciar a conversa.</p>
-                            </div>
-                        )}
-                    </main>
-                </div>
-            )}
+            {activeView === 'active' && activeChats.map(chat => (
+              <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
+                  <p className="text-xs text-gray-500">Atendido por: {attendants.find(a => a.id === chat.attendantId)?.name || '...'}</p>
+              </ListItem>
+            ))}
+
+            {activeView === 'ai_active' && aiActiveChats.map(chat => (
+                <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
+                    <p className="text-xs text-gray-500">Departamento: {chat.department}</p>
+                </ListItem>
+            ))}
             
-            {panelView === 'queue' && (
-                <div className="p-4">
-                {isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
-                requests.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhuma solicitação na fila.</div> :
-                <div className="space-y-3">
-                    {requests.map(req => (
-                        <div key={req.id} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <div className="flex justify-between items-start">
-                                <div>
-                                    <span className="text-xs font-semibold uppercase text-white bg-blue-500 px-2 py-1 rounded-full">{req.department}</span>
-                                    <p className="font-semibold text-lg text-gray-800 mt-2">{req.userName || req.userId}</p>
+            {activeView === 'history' && chatHistory.map(chat => (
+              <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
+                  <p className="text-xs text-gray-500">Resolvido por: {chat.resolvedBy} em {new Date(chat.resolvedAt).toLocaleString()}</p>
+              </ListItem>
+            ))}
+
+            {activeView === 'internal_chat' && attendants.filter(a => a.id !== attendant.id).map(a => (
+              <ListItem key={a.id} item={a} onClick={() => setInternalChatPartner(a)} isSelected={internalChatPartner?.id === a.id} />
+            ))}
+          </ul>
+        </div>
+      </aside>
+
+      {/* Painel Principal */}
+      <main className="flex-1 flex flex-col">
+        {activeView !== 'internal_chat' && (
+          <ChatPanel
+            selectedChat={selectedChat}
+            attendant={attendant}
+            onSendMessage={handleSendMessage}
+            onResolveChat={handleResolveChat}
+            onTransferChat={handleTransferChat}
+            onTakeoverChat={handleTakeoverChat} // Passa a nova função
+            isLoading={isLoading}
+            attendants={attendants}
+          />
+        )}
+        
+        {activeView === 'internal_chat' && (
+           <div className="flex-1 flex flex-col bg-gray-100">
+            {!internalChatPartner ? (
+                <div className="flex-1 flex items-center justify-center text-gray-500">
+                    <span>Selecione um atendente para iniciar uma conversa.</span>
+                </div>
+            ) : (
+                <>
+                    <header className="bg-white p-3 border-b border-gray-200">
+                        <h2 className="font-semibold">{internalChatPartner.name}</h2>
+                    </header>
+                    <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
+                        {internalChatMessages.map((msg, index) => {
+                            const isMe = String(msg.senderId) === String(attendant.id);
+                            return (
+                                <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-md p-2 rounded-lg shadow-sm mb-1 flex flex-col ${isMe ? 'bg-blue-100' : 'bg-white'}`}>
+                                        {!isMe && <p className="text-xs font-semibold text-purple-600">{msg.senderName}</p>}
+                                        <div className="text-sm">{msg.text}</div>
+                                        <div className="text-xs text-gray-400 self-end mt-1">
+                                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                    </div>
                                 </div>
-                                <span className="text-xs text-gray-400">{new Date(req.timestamp).toLocaleTimeString('pt-BR')}</span>
-                            </div>
-                            <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap border-l-4 border-gray-200 pl-3">{req.message}</p>
-                            <div className="text-right mt-3">
-                                <button onClick={() => { stopTitleBlinking(); handleTakeover(req); }} className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600">Atender</button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                }
-                </div>
-            )}
-             {panelView === 'active' && (
-                <div className="p-4">
-                {isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
-                activeChats.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhum chat ativo no momento.</div> :
-                <div className="space-y-3">
-                    {activeChats.map(chat => (
-                        <div key={chat.userId} onClick={() => handleOpenActiveChat(chat)} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50">
-                            <div className="flex justify-between items-start">
-                                <div>
-                                    <p className="font-semibold text-lg text-gray-800">{chat.userName || chat.userId}</p>
-                                    <p className="text-sm text-gray-500">Atendido por: <strong>{attendants.find(a => a.id === chat.attendantId)?.name || 'Desconhecido'}</strong></p>
-                                </div>
-                                <span className="text-xs text-gray-400">{new Date(chat.timestamp).toLocaleTimeString('pt-BR')}</span>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                }
-                </div>
-            )}
-            {panelView === 'history' && (
-                 <div className="p-4">
-                 {isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
-                 archivedChats.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhum chat no histórico.</div> :
-                 <div className="space-y-3">
-                    {archivedChats.map(chat => (
-                        <div key={chat.userId} onClick={() => {
-                            const historicChat = { userId: chat.userId, userName: chat.userName, attendantId: chat.resolvedBy };
-                            setActiveChat(historicChat);
-                        }} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50">
-                            <p className="font-semibold text-gray-800">{chat.userName || chat.userId}</p>
-                            <div className="text-xs text-gray-500 mt-1">
-                                <span>Resolvido por <strong>{attendants.find(a => a.id === chat.resolvedBy)?.name || 'N/A'}</strong> em {new Date(chat.resolvedAt).toLocaleString('pt-BR')}</span>
-                            </div>
-                        </div>
-                    ))}
-                 </div>
-                 }
-                 </div>
-            )}
-             {panelView === 'newChat' && (
-                <div className="p-4">
-                    <h3 className="text-lg font-bold text-gray-700 mb-3">Iniciar Nova Conversa</h3>
-                    { isLoading ? <div className="text-center text-gray-500 p-4">Carregando contatos...</div> :
-                    <form onSubmit={handleInitiateChat} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 space-y-4">
-                        <div className="relative">
-                            <label htmlFor="recipient" className="block text-sm font-medium text-gray-700">Cliente</label>
+                            );
+                        })}
+                        <div ref={internalMessagesEndRef} />
+                    </div>
+                    <footer className="bg-gray-200 p-3">
+                        <div className="flex items-center bg-white rounded-full shadow-sm px-2">
                             <input
                                 type="text"
-                                id="recipient"
-                                name="recipient"
-                                placeholder="Digite o nome ou número do cliente"
-                                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                                value={newChatSearch}
-                                onChange={handleSearchChange}
-                                autoComplete="off"
+                                value={internalMessage}
+                                onChange={e => setInternalMessage(e.target.value)}
+                                onKeyPress={e => e.key === 'Enter' && handleSendInternalMessage()}
+                                placeholder={`Mensagem para ${internalChatPartner.name}...`}
+                                className="w-full p-2 bg-transparent focus:outline-none"
                             />
-                            {filteredClients.length > 0 && (
-                                <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-b-md shadow-lg max-h-60 overflow-y-auto">
-                                    {filteredClients.map(client => (
-                                        <div
-                                            key={client.userId}
-                                            onClick={() => handleSelectClient(client)}
-                                            className="p-3 hover:bg-gray-100 cursor-pointer border-t"
-                                        >
-                                            <p className="font-semibold text-sm text-gray-800">{client.userName}</p>
-                                            <p className="text-xs text-gray-500">{client.userId.split('@')[0]}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            <p className="text-xs text-gray-500 mt-1">Se o cliente não estiver na lista, digite o número completo (Ex: 5511999998888).</p>
+                            <button onClick={handleSendInternalMessage} className="p-2 text-blue-600 rounded-full">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+                            </button>
                         </div>
-                        <div>
-                            <label htmlFor="message" className="block text-sm font-medium text-gray-700">Mensagem Inicial</label>
-                            <textarea id="message" name="message" rows="4" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" required></textarea>
-                        </div>
-                        <div className="text-right">
-                           <button type="submit" className="bg-green-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-green-600">Enviar e Iniciar Atendimento</button>
-                        </div>
-                    </form>
-                    }
-                </div>
+                    </footer>
+                </>
             )}
-        </div>
+           </div>
+        )}
+      </main>
     </div>
   );
-};
-// --- END: Merged from components/AttendantPanel.tsx ---
-
-
-// --- START: Merged from App.tsx ---
-const App = () => {
-  const [messages, setMessages] = useState([]);
-  const [isBotTyping, setIsBotTyping] = useState(true);
-  const [currentChatState, setCurrentChatState] = useState(ChatState.GREETING);
-  const [conversationContext, setConversationContext] = useState({ history: {} });
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [aiHistory, setAiHistory] = useState([]);
-  const [view, setView] = useState('chatbot');
-  
-  const abortControllerRef = useRef(null);
-  
-  const addMessage = useCallback((message) => {
-    setMessages((prev) => [...prev, { ...message, id: Date.now() + Math.random(), timestamp: new Date().toISOString() }]);
-  }, []);
-  
-  const getFlowResponse = useCallback((state, context) => {
-    const flowStep = conversationFlow.get(state);
-    
-    if (!flowStep) {
-        const greetingStep = conversationFlow.get(ChatState.GREETING);
-        return {
-            text: translations.pt[greetingStep.textKey] || "Error: Greeting text not found.",
-            options: greetingStep.options?.map(opt => ({...opt, text: translations.pt[opt.textKey]})),
-        };
-    }
-
-    let responseText;
-    if (flowStep.textKey) {
-        const template = translations.pt[flowStep.textKey];
-        responseText = typeof template === 'function' ? template(context) : template;
-    } else {
-        responseText = typeof flowStep.text === 'function' ? flowStep.text(context) : (flowStep.text || '');
-    }
-    
-    const responseOptions = flowStep.options?.map(opt => {
-        const payload = typeof opt.payload === 'function' ? opt.payload(context) : opt.payload;
-        return {
-            ...opt,
-            text: (opt.textKey ? translations.pt[opt.textKey] : opt.text) || 'Option',
-            payload,
-        };
-    });
-    
-    return {
-        text: responseText,
-        options: responseOptions,
-        requiresTextInput: flowStep.requiresTextInput
-    };
-  }, []);
-  
-  const processBotTurn = useCallback(async (nextState, context, userInput, file) => {
-    setIsBotTyping(true);
-    
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    try {
-        if (nextState === ChatState.AI_ASSISTANT_CHATTING) {
-            if (!userInput && !file) { // First entry into AI chat
-                await new Promise(res => setTimeout(res, 500));
-                const botResponse = getFlowResponse(nextState, context);
-                addMessage({ ...botResponse, sender: Sender.BOT });
-                setCurrentChatState(nextState);
-                if(aiHistory.length === 0) { // Only on first entry
-                     setAiHistory([]); 
-                }
-            } else {
-                let filePayload = null;
-                if (file) {
-                    const base64Data = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => {
-                            if (typeof reader.result === 'string') {
-                                resolve(reader.result.split(',')[1]);
-                            } else {
-                                reject(new Error('Failed to read file as a data URL string.'));
-                            }
-                        };
-                        reader.onerror = reject;
-                        reader.readAsDataURL(file);
-                    });
-                    filePayload = { name: file.name, type: file.type, data: base64Data };
-                }
-
-                const userMessageForHistory = { role: 'user', parts: [{ text: userInput }] };
-
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: userInput,
-                        file: filePayload,
-                        session: {
-                            currentState: nextState,
-                            conversationContext: context,
-                            aiHistory: aiHistory
-                        }
-                    }),
-                    signal: controller.signal,
-                });
-                
-                if (!response.ok || !response.body) {
-                    throw new Error(`Server error: ${response.statusText}`);
-                }
-
-                let finalStreamedText = '';
-                const messageId = Date.now() + Math.random();
-                const timestamp = new Date().toISOString();
-                setMessages(prev => [...prev, { id: messageId, text: '', sender: Sender.BOT, timestamp }]);
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-
-                let reading = true;
-                while(reading) {
-                    const { done, value } = await reader.read();
-                    if(done) {
-                        reading = false;
-                        break;
-                    }
-                    finalStreamedText += decoder.decode(value, { stream: true });
-                    setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, text: finalStreamedText } : msg));
-                }
-
-                const modelMessageForHistory = { role: 'model', parts: [{ text: finalStreamedText }] };
-                setAiHistory([...aiHistory, userMessageForHistory, modelMessageForHistory]);
-                
-                const finalOptions = [{ text: translations.pt.backToStart, nextState: ChatState.GREETING }];
-                setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, text: finalStreamedText, options: finalOptions, requiresTextInput: true } : msg));
-            }
-        } else {
-            await new Promise(res => setTimeout(res, 1000));
-            setAiHistory([]); // Reset AI history when leaving the AI flow
-            let currentState = nextState;
-            let currentContext = { ...context };
-            
-            if(userInput && (currentChatState === ChatState.SCHEDULING_NEW_CLIENT_DETAILS || currentChatState === ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS)) {
-              currentContext.history[currentChatState] = userInput;
-            }
-
-            while (currentState !== undefined) {
-                const flowStep = conversationFlow.get(currentState);
-                if (!flowStep) {
-                    currentState = ChatState.GREETING;
-                    continue;
-                }
-                
-                const botResponse = getFlowResponse(currentState, currentContext);
-                addMessage({ ...botResponse, sender: Sender.BOT });
-                
-                setCurrentChatState(currentState);
-
-                if (flowStep.nextState && !flowStep.requiresTextInput && (!flowStep.options || flowStep.options.length === 0)) {
-                    await new Promise(res => setTimeout(res, 1000));
-                    currentState = flowStep.nextState;
-                } else {
-                    currentState = undefined;
-                }
-            }
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            console.log("Busca abortada");
-            return;
-        }
-        console.error("Erro durante o turno do bot:", error);
-        const errorMessage = "Desculpe, ocorreu um erro de comunicação com o servidor. Por favor, tente novamente.";
-        const botResponse = {
-            text: errorMessage,
-            options: [{ text: translations.pt.backToStart, nextState: ChatState.GREETING }],
-        };
-        addMessage({ ...botResponse, sender: Sender.BOT });
-        const fallbackState = currentChatState === ChatState.AI_ASSISTANT_CHATTING ? ChatState.AI_ASSISTANT_CHATTING : ChatState.GREETING;
-        setCurrentChatState(fallbackState);
-    } finally {
-        setIsBotTyping(false);
-        abortControllerRef.current = null;
-    }
-  }, [addMessage, getFlowResponse, currentChatState, aiHistory]);
-
-  const handleUserInput = async (userInput, option) => {
-    const userMessageText = option?.text ?? userInput;
-    
-    addMessage({
-      text: userMessageText,
-      sender: Sender.USER,
-      file: selectedFile ? { name: selectedFile.name } : undefined,
-    });
-    
-    const isEndSession = option?.nextState === ChatState.END_SESSION;
-    if (isEndSession) {
-      setIsBotTyping(true);
-      setTimeout(() => {
-        addMessage({ text: translations.pt.sessionEnded, sender: Sender.BOT });
-        setIsBotTyping(false);
-      }, 1000);
-      return;
-    }
-    
-    const nextState = option?.nextState ?? conversationFlow.get(currentChatState)?.nextState ?? ChatState.GREETING;
-    const context = { ...conversationContext, ...option?.payload };
-    setConversationContext(context);
-    
-    processBotTurn(nextState, context, userInput, selectedFile);
-    
-    if (selectedFile) {
-        setSelectedFile(null); // Clear file after sending
-    }
-  };
-
-  useEffect(() => {
-    const savedSession = localStorage.getItem('chatSession');
-    if (savedSession) {
-        const { messages, state, context, aiHistory: savedAiHistory } = JSON.parse(savedSession);
-        setMessages(messages);
-        setCurrentChatState(state);
-        setConversationContext(context);
-        setAiHistory(savedAiHistory || []);
-        setIsBotTyping(false);
-    } else {
-      processBotTurn(ChatState.GREETING, { history: {} }, null, null);
-    }
-  }, []);
-
-  useEffect(() => {
-    const sessionToSave = {
-        messages,
-        state: currentChatState,
-        context: conversationContext,
-        aiHistory: aiHistory
-    };
-    localStorage.setItem('chatSession', JSON.stringify(sessionToSave));
-  }, [messages, currentChatState, conversationContext, aiHistory]);
-
-  const currentFlowStep = conversationFlow.get(currentChatState);
-  const options = getFlowResponse(currentChatState, conversationContext).options || [];
-  let requiresTextInput = currentFlowStep?.requiresTextInput ?? false;
-  if (currentChatState === ChatState.AI_ASSISTANT_CHATTING && aiHistory.length > 0) {
-      requiresTextInput = true;
-  }
-  
-  if (view === 'attendant') {
-    return <AttendantPanel />;
-  }
-
-  return (
-    <div className="flex flex-col h-full max-w-4xl mx-auto bg-white shadow-2xl rounded-lg overflow-hidden">
-      <header className="p-3 bg-[#005e54] text-white flex items-center justify-between flex-shrink-0">
-        <div>
-            <h1 className="font-semibold text-lg">Assistente Virtual</h1>
-            <p className="text-xs text-gray-200">Online</p>
-        </div>
-        <button onClick={() => setView('attendant')} className="text-xs bg-white text-[#005e54] font-bold py-1 px-2 rounded hover:bg-gray-200 transition-colors">
-            Painel do Atendente
-        </button>
-      </header>
-      <ChatWindow messages={messages} isBotTyping={isBotTyping}>{null}</ChatWindow>
-      <ChatInput
-        onUserInput={handleUserInput}
-        options={options}
-        requiresTextInput={requiresTextInput}
-        isBotTyping={isBotTyping}
-        onFileChange={setSelectedFile}
-        selectedFile={selectedFile}
-      />
-    </div>
-  );
-};
+}
 // --- END: Merged from App.tsx ---
-
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
