@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Assistente Virtual | JZF Contabilidade</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 1. Adiciona o tradutor Babel. Ele precisa vir ANTES do seu script. -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     /* Estilo para simular o fundo do WhatsApp */
     .whatsapp-bg {
@@ -20,9 +22,8 @@
   <div id="root" class="w-full h-full sm:h-screen"></div>
 
   <!-- 
-    IMPORTMAP CORRIGIDO E FINAL:
-    Apenas as dependências REAIS e necessárias para o frontend.
-    Isso resolve o erro de script de forma definitiva.
+    IMPORTMAP LIMPO E CORRIGIDO:
+    Apenas as dependências REAIS para o frontend.
   -->
   <script type="importmap">
   {
@@ -33,7 +34,7 @@
   }
   </script>
 
-  <!-- Carrega o script principal do seu aplicativo React -->
-  <script type="module" src="/index.tsx"></script>
+  <!-- 2. Altera o tipo do script para "text/babel" para que o tradutor saiba que precisa converter este arquivo. -->
+  <script type="text/babel" data-type="module" src="/index.tsx"></script>
 </body>
 </html>
