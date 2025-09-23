@@ -26,6 +26,7 @@ const flowSteps = [
         { textKey: "optionAttendant", nextState: ChatState.ATTENDANT_SELECT },
         { textKey: "optionEndSession", nextState: ChatState.END_SESSION },
       ],
+      requiresTextInput: true, // Adicionado para mostrar o campo de texto
     },
   ],
   // AI Assistant Flow
@@ -40,6 +41,7 @@ const flowSteps = [
         { textKey: "deptCorporate", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Societário" } },
         { textKey: "backToStart", nextState: ChatState.GREETING },
       ],
+      requiresTextInput: true, // Adicionado para mostrar o campo de texto
     },
   ],
   [
@@ -101,77 +103,79 @@ const flowSteps = [
     {
       textKey: "attendantSelect",
       options: [
-          { textKey: "deptRH", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "RH" } },
-          { textKey: "deptAccounting", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Contábil" } },
-          { textKey: "deptTax", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Fiscal" } },
-          { textKey: "backToStart", nextState: ChatState.GREETING },
-      ]
-    }
+        { textKey: "deptRH", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "RH" } },
+        { textKey: "deptAccounting", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Contábil" } },
+        { textKey: "deptTax", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Fiscal" } },
+        { textKey: "deptCorporate", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Societário" } },
+        { textKey: "backToStart", nextState: ChatState.GREETING },
+      ],
+    },
   ],
   [
     ChatState.ATTENDANT_TRANSFER,
     {
-      textKey: 'attendantTransfer',
-      // No nextState here, it becomes a waiting state.
+      textKey: "attendantTransfer",
+      nextState: ChatState.GREETING,
+    },
+  ],
+  [
+    ChatState.END_SESSION,
+    {
+      textKey: "sessionEnded",
     },
   ],
 ];
 
 export const conversationFlow = new Map(flowSteps);
 
+// --- TEXTOS E TRADUÇÕES ---
 export const translations = {
-  pt: {
-    // General
-    greeting: "Olá! Bem-vindo(a) ao Atendimento Virtual JZF. Sou seu assistente virtual. Como posso te ajudar hoje?\n\nNosso horário de atendimento é de segunda a sexta, das 08h00min às 17h50min.",
-    backToStart: "↩️ Voltar ao Início",
-    welcomeBack: "👋 Bem-vindo(a) de volta! Continuando de onde paramos.",
-    sessionEnded: "Sessão finalizada. Se precisar de algo mais, é só chamar!",
-    error: "Desculpe, ocorreu um erro de comunicação com o servidor. Por favor, tente novamente.",
-    // Main Menu Options
-    optionAiAssistant: "🧠 Tirar Dúvidas",
-    optionScheduling: "📅 Agendar Reunião",
-    optionAttendant: "💬 Falar com um Atendente",
-    optionEndSession: '🔚 Finalizar Atendimento',
-    // AI Assistant
-    aiDeptSelect: "Com certeza! Para que eu possa te ajudar melhor, sobre qual área você tem dúvidas?",
-    aiDeptPrompt: (context) => `Pode perguntar. Estou à disposição para ajudar com suas dúvidas sobre ${context.department}. Você também pode anexar um arquivo para análise.`,
-    aiFollowUp: "\n\nAqui estão alguns tópicos relacionados:",
-    // Departments
-    deptRH: "RH",
-    deptAccounting: "Contábil",
-    deptTax: "Fiscal",
-    deptCorporate: "Societário",
-    // Scheduling
-    schedulingClientType: "Para o agendamento, você já é nosso cliente?",
-    clientTypeYes: "Sim, sou cliente",
-    clientTypeNo: "Não, sou um novo cliente",
-    schedulingNewClientDetails: "Entendido. Por favor, informe em uma *única mensagem* os seguintes dados para o agendamento:\n\n- Nome completo do responsável\n- Nome da empresa\n- Motivo da reunião\n- Modalidade (Online ou Presencial)",
-    schedulingExistingClientDetails: "Que bom te ver de volta! Por favor, informe em uma *única mensagem* os seguintes dados para o agendamento:\n\n- Nome da empresa\n- Modalidade (Online ou Presencial)",
-    schedulingSummary: (context) => {
-      const clientType = context.clientType;
-      const details = clientType === 'Novo Cliente' 
-        ? context.history[ChatState.SCHEDULING_NEW_CLIENT_DETAILS]
-        : context.history[ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS];
-      
-      return `Ótimo! Por favor, confirme se as informações que você enviou estão corretas:\n
-- *Tipo de Cliente:* ${clientType}
-- *Detalhes Informados:* \n${details}\n
-As informações estão corretas?`;
-    },
-    confirmYes: "Sim, confirmar solicitação",
-    confirmNo: "Não, preencher novamente",
-    schedulingConfirmed: `Obrigado! Sua solicitação de agendamento foi recebida com sucesso. Nossa equipe entrará em contato através deste número de WhatsApp para confirmar a melhor data e horário para você.\n\nSe precisar de mais alguma coisa, é só chamar!`,
-    // Attendant
-    attendantSelect: "Entendido. Para qual setor você gostaria de ser direcionado?",
-    attendantTransfer: (context) => `Entendido. Estou direcionando sua conversa para o *Setor ${context.department}*. Por favor, aguarde e um de nossos especialistas irá responder em breve.\n\nNosso horário de atendimento humano é de segunda a sexta, das 08h00min às 17h50min. Se você estiver entrando em contato fora desse horário, sua mensagem será respondida no próximo dia útil.`,
-  },
+    pt: {
+        greeting: "Olá! Eu sou o assistente virtual da JZF Contabilidade. Como posso te ajudar hoje?",
+        optionAiAssistant: "🤖 Falar com Assistente IA",
+        optionScheduling: "📅 Agendar um horário",
+        optionAttendant: "🙋‍♂️ Falar com um atendente",
+        optionEndSession: "🚪 Encerrar conversa",
+        
+        aiDeptSelect: "Para qual departamento você gostaria de direcionar sua pergunta?",
+        deptRH: "RH (Recursos Humanos)",
+        deptAccounting: "Contábil",
+        deptTax: "Fiscal",
+        deptCorporate: "Societário",
+        backToStart: "↩️ Voltar ao início",
+
+        aiDeptPrompt: (context) => `Ok, você selecionou o departamento *${context.department}*. Pode me fazer sua pergunta agora. Se precisar, pode também me enviar um arquivo (como PDF, imagem ou planilha).`,
+
+        schedulingClientType: "Para começar o agendamento, por favor, me informe: você já é nosso cliente?",
+        clientTypeYes: "Sim, já sou cliente",
+        clientTypeNo: "Não, sou um novo cliente",
+        
+        schedulingNewClientDetails: "Entendido. Por favor, descreva o motivo do seu contato, seu nome completo e um telefone para que possamos preparar nosso encontro.",
+        schedulingExistingClientDetails: "Ok. Por favor, informe o nome da sua empresa (ou seu nome completo) e o motivo do contato para agilizarmos o seu atendimento.",
+        
+        schedulingSummary: (context) => {
+            const details = context.history[ChatState.SCHEDULING_NEW_CLIENT_DETAILS] || context.history[ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS];
+            return `Obrigado! Revise as informações, por favor:\n\n- *Tipo:* ${context.clientType}\n- *Detalhes:* ${details}\n\nEstá tudo correto?`;
+        },
+        confirmYes: "👍 Sim, está correto",
+        confirmNo: "👎 Não, quero corrigir",
+        
+        schedulingConfirmed: "Perfeito! Sua solicitação de agendamento foi enviada. Em breve, um de nossos especialistas entrará em contato para confirmar a data e a hora.",
+
+        attendantSelect: "Entendido. Para qual departamento você precisa de atendimento humano?",
+        attendantTransfer: (context) => `Ok, estou te transferindo para um atendente do setor *${context.department}*. Por favor, aguarde um momento.`,
+
+        sessionEnded: "Obrigado por utilizar nossos serviços. A JZF Contabilidade está sempre à disposição!",
+        error: "Desculpe, ocorreu um erro inesperado. Por favor, tente novamente mais tarde.",
+    }
 };
 
+// --- INSTRUÇÕES DE SISTEMA PARA A IA ---
 export const departmentSystemInstructions = {
-  pt: {
-    'RH': "Você é um assistente de contabilidade especialista em Recursos Humanos e Departamento Pessoal no Brasil. Responda em Português. Seja amigável e conversacional. Adapte-se ao estilo de escrita do usuário, compreendendo gírias, abreviações e linguagem informal.",
-    'Contábil': "Você é um assistente de contabilidade especialista em normas contábeis brasileiras (CPCs) e práticas do dia a dia. Responda em Português. Seja amigável e conversacional. Adapte-se ao estilo de escrita do usuário, compreendendo gírias, abreviações e linguagem informal.",
-    'Fiscal': "Você é um assistente de contabilidade especialista em legislação fiscal e tributária brasileira. Responda em Português. Seja amigável e conversacional. Adapte-se ao estilo de escrita do usuário, compreendendo gírias, abreviações e linguagem informal.",
-    'Societário': "Você é um assistente de contabilidade especialista em direito societário, abertura, alteração e encerramento de empresas no Brasil. Responda em Português. Seja amigável e conversacional. Adapte-se ao estilo de escrita do usuário, compreendendo gírias, abreviações e linguagem informal.",
-  },
+    pt: {
+        "RH": "Você é um especialista em RH da JZF Contabilidade. Responda a perguntas sobre folhas de pagamento, benefícios, legislação trabalhista e processos de RH de forma clara e objetiva, sempre em português do Brasil.",
+        "Contábil": "Você é um especialista contábil da JZF Contabilidade. Responda a perguntas sobre balanços, DRE, impostos sobre lucro, e outras questões contábeis com precisão, sempre em português do Brasil.",
+        "Fiscal": "Você é um especialista fiscal da JZF Contabilidade. Responda a perguntas sobre ICMS, IPI, PIS, COFINS, Simples Nacional e outras obrigações fiscais, sempre em português do Brasil.",
+        "Societário": "Você é um especialista em questões societárias da JZF Contabilidade. Responda a perguntas sobre abertura, alteração e encerramento de empresas, contratos sociais e tipos de sociedade, sempre em português do Brasil."
+    }
 };
