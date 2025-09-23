@@ -1,25 +1,21 @@
 
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
-// FIX: The missing exports 'conversationFlow' and 'translations' have been added to chatbotLogic.js.
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
 
 // --- START: Merged from types.ts ---
-// FIX: Removed 'as const' as it's TypeScript syntax. The browser runs JavaScript.
 const Sender = {
   USER: 'user',
   BOT: 'bot',
   ATTENDANT: 'attendant',
+  SYSTEM: 'system', // Adicionado para mensagens de sistema (ex: transferências)
 };
 
-// All type aliases and interfaces are removed as they are TypeScript-only.
 const ChatState = ChatStateValues;
 // --- END: Merged from types.ts ---
 
 
 // --- START: Merged from components/TypingIndicator.tsx ---
-// Removed TypeScript type annotation `: React.FC`
 const TypingIndicator = () => (
   <div className="flex items-center space-x-1.5 p-4 self-start">
     <span className="sr-only">Bot está digitando</span>
@@ -32,10 +28,20 @@ const TypingIndicator = () => (
 
 
 // --- START: Merged from components/MessageBubble.tsx ---
-// Removed interface and TypeScript type annotation `: React.FC`
 const MessageBubble = ({ message }) => {
   const isBot = message.sender === Sender.BOT;
   const isAttendant = message.sender === Sender.ATTENDANT;
+  const isSystem = message.sender === Sender.SYSTEM;
+
+  if (isSystem) {
+    return (
+      <div className="flex justify-center w-full">
+        <div className="text-xs text-white bg-gray-500 bg-opacity-70 rounded-full px-3 py-1 my-1">
+          {message.text}
+        </div>
+      </div>
+    );
+  }
 
   const bubbleClasses = isBot
     ? 'bg-white text-gray-800 self-start'
@@ -72,7 +78,6 @@ const MessageBubble = ({ message }) => {
 
 
 // --- START: Merged from components/ChatInput.tsx ---
-// Removed interface and TypeScript type annotations
 const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile, placeholderText = "Mensagem" }) => {
   const [inputValue, setInputValue] = useState('');
   const fileInputRef = useRef(null);
@@ -189,7 +194,6 @@ const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFil
 
 
 // --- START: Merged from components/ChatWindow.tsx ---
-// Removed interface and type annotations
 const ChatWindow = ({ messages, isBotTyping, children }) => {
   const chatEndRef = useRef(null);
 
@@ -214,45 +218,99 @@ const ChatWindow = ({ messages, isBotTyping, children }) => {
 
 
 // --- START: Merged from components/AttendantPanel.tsx ---
-// This component has been significantly refactored to support live chat.
 const AttendantPanel = () => {
-  const [view, setView] = useState('queue'); // queue | chat
-  const [activeChatUserId, setActiveChatUserId] = useState(null);
+  const [currentAttendant, setCurrentAttendant] = useState(null);
+  const [attendants, setAttendants] = useState([]);
+  const [panelView, setPanelView] = useState('queue'); // queue, active, history, newChat
+  const [activeChat, setActiveChat] = useState(null); // { userId, userName, ... }
   const [chatMessages, setChatMessages] = useState([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
-  
   const [requests, setRequests] = useState([]);
+  const [activeChats, setActiveChats] = useState([]);
+  const [archivedChats, setArchivedChats] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const notificationAudioRef = useRef(null);
+  const titleIntervalRef = useRef(null);
+
+  // Fetch attendants on mount
+  useEffect(() => {
+    const fetchAttendants = async () => {
+      try {
+        const res = await fetch('/api/attendants');
+        if (!res.ok) throw new Error("Failed to fetch attendants");
+        const data = await res.json();
+        setAttendants(data);
+      } catch (err) {
+        console.error(err);
+        setError("Não foi possível carregar a lista de atendentes.");
+      }
+    };
+    fetchAttendants();
+    notificationAudioRef.current = new Audio('https://cdn.jsdelivr.net/gh/google/ai-studio-files/examples/uber_notification.mp3');
+  }, []);
+
+  const stopTitleBlinking = () => {
+    if (titleIntervalRef.current) {
+        clearInterval(titleIntervalRef.current);
+        titleIntervalRef.current = null;
+    }
+    document.title = "Assistente Virtual | JZF Contabilidade";
+  };
   
-  const fetchQueue = useCallback(async () => {
+  // Polling for queue and active chats
+  const fetchData = useCallback(async () => {
+    if (!currentAttendant) return;
     try {
-      const response = await fetch('/api/requests');
-      if (!response.ok) throw new Error('Falha ao buscar dados da fila.');
-      const data = await response.json();
-      setRequests(data);
+      const [reqRes, activeRes] = await Promise.all([
+        fetch('/api/requests'),
+        fetch('/api/chats/active')
+      ]);
+      if (!reqRes.ok || !activeRes.ok) throw new Error('Falha ao buscar dados.');
+      
+      const newRequests = await reqRes.json();
+      const newActiveChats = await activeRes.json();
+
+      if(newRequests.length > requests.length && requests.length > 0) {
+        if(notificationAudioRef.current) notificationAudioRef.current.play().catch(e => console.log("Audio play failed", e));
+        if (!titleIntervalRef.current) {
+            let toggle = false;
+            titleIntervalRef.current = setInterval(() => {
+                document.title = toggle ? "!! NOVO ATENDIMENTO !!" : "Assistente Virtual | JZF Contabilidade";
+                toggle = !toggle;
+            }, 1000);
+        }
+      }
+
+      setRequests(newRequests);
+      setActiveChats(newActiveChats);
       if (error) setError(null);
     } catch (err) {
       console.error(err);
-      setError('Não foi possível conectar ao servidor. Verifique se ele está em execução.');
+      setError('Não foi possível conectar ao servidor.');
     } finally {
       setIsLoading(false);
     }
-  }, [error]);
+  }, [currentAttendant, error, requests.length]);
 
   useEffect(() => {
-    fetchQueue();
-    const intervalId = setInterval(fetchQueue, 5000);
-    return () => clearInterval(intervalId);
-  }, [fetchQueue]);
+    if(panelView === 'queue' || panelView === 'active') {
+       fetchData();
+       const intervalId = setInterval(fetchData, 5000);
+       return () => {
+           clearInterval(intervalId);
+           stopTitleBlinking();
+       };
+    }
+  }, [fetchData, panelView]);
   
-  // Effect for polling chat history when a chat is active
+  // Polling for active chat history
   useEffect(() => {
-    if (view !== 'chat' || !activeChatUserId) return;
+    if (!activeChat) return;
 
     const fetchHistory = async () => {
         try {
-            const response = await fetch(`/api/chats/history/${activeChatUserId}`);
+            const response = await fetch(`/api/chats/history/${activeChat.userId}`);
             if (!response.ok) throw new Error('Falha ao buscar histórico.');
             const data = await response.json();
             setChatMessages(data);
@@ -266,45 +324,65 @@ const AttendantPanel = () => {
     
     setIsChatLoading(true);
     fetchHistory();
-    
-    const intervalId = setInterval(fetchHistory, 3000); // Poll for new messages every 3 seconds
-    
+    const intervalId = setInterval(fetchHistory, 3000);
     return () => clearInterval(intervalId);
-  }, [view, activeChatUserId]);
+  }, [activeChat]);
 
+  // Fetch archived chats when history view is active
+  useEffect(() => {
+    if (panelView === 'history') {
+      const fetchArchived = async () => {
+        setIsLoading(true);
+        try {
+          const res = await fetch('/api/chats/history');
+          if (!res.ok) throw new Error('Falha ao buscar histórico.');
+          const data = await res.json();
+          setArchivedChats(data);
+        } catch (err) {
+          console.error(err);
+          setError("Não foi possível carregar o histórico.");
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      fetchArchived();
+    }
+  }, [panelView]);
+
+  const handleLogin = (attendantId) => {
+    const attendant = attendants.find(a => a.id === attendantId);
+    setCurrentAttendant(attendant);
+  };
+  
   const handleTakeover = async (req) => {
     try {
-      const response = await fetch(`/api/chats/takeover/${req.userId}`, { method: 'POST' });
+      const response = await fetch(`/api/chats/takeover/${req.userId}`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attendantId: currentAttendant.id })
+      });
       if (!response.ok) throw new Error('Falha ao iniciar atendimento.');
-      setActiveChatUserId(req.userId);
-      setView('chat');
+      setActiveChat(req);
     } catch (err) {
       console.error(err);
       alert('Ocorreu um erro ao tentar iniciar o atendimento.');
     }
   };
+
+  const handleOpenActiveChat = (chat) => {
+    setActiveChat(chat);
+  };
   
   const handleSendAttendantMessage = async (text) => {
-      if (!text.trim() || !activeChatUserId) return;
-      
-      // Optimistic update
-      const optimisticMessage = {
-          sender: Sender.ATTENDANT,
-          text,
-          timestamp: new Date().toISOString()
-      };
+      if (!text.trim() || !activeChat) return;
+      const optimisticMessage = { sender: Sender.ATTENDANT, text, timestamp: new Date().toISOString() };
       setChatMessages(prev => [...prev, optimisticMessage]);
-
       try {
-          const response = await fetch('/api/chats/attendant-reply', {
+          await fetch('/api/chats/attendant-reply', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId: activeChatUserId, text }),
+              body: JSON.stringify({ userId: activeChat.userId, text, attendantId: currentAttendant.id }),
           });
-          if (!response.ok) {
-            throw new Error('Falha ao enviar mensagem.');
-            // Revert optimistic update on failure if desired
-          }
       } catch (err) {
           console.error(err);
           alert('Ocorreu um erro ao enviar a sua mensagem.');
@@ -312,110 +390,237 @@ const AttendantPanel = () => {
   };
   
   const handleResolveChat = async () => {
-      if (!activeChatUserId) return;
+      if (!activeChat) return;
       if (!confirm('Tem certeza que deseja resolver e fechar este atendimento?')) return;
-      
       try {
-          const response = await fetch(`/api/chats/resolve/${activeChatUserId}`, { method: 'POST' });
-          if (!response.ok) throw new Error('Falha ao resolver atendimento.');
-          
-          // Reset state and go back to queue
-          setActiveChatUserId(null);
+          await fetch(`/api/chats/resolve/${activeChat.userId}`, { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ attendantId: currentAttendant.id })
+          });
+          alert("Atendimento finalizado e arquivado com sucesso!");
+          setActiveChat(null);
           setChatMessages([]);
-          setView('queue');
-          await fetchQueue(); // Refresh queue immediately
+          setPanelView('queue');
+          await fetchData();
       } catch (err) {
           console.error(err);
           alert('Ocorreu um erro ao tentar resolver o atendimento.');
       }
   };
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => {}, (err) => console.error('Falha ao copiar texto: ', err));
+  const handleTransferChat = async (newAttendantId) => {
+    if (!activeChat || !newAttendantId) return;
+    try {
+        await fetch(`/api/chats/transfer/${activeChat.userId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ newAttendantId, transferringAttendantId: currentAttendant.id }),
+        });
+        alert("Atendimento transferido com sucesso!");
+        setActiveChat(null);
+        setChatMessages([]);
+        setPanelView('queue');
+        await fetchData();
+    } catch (err) {
+        console.error(err);
+        alert('Ocorreu um erro ao tentar transferir o atendimento.');
+    }
   };
-  
-  if (view === 'chat') {
+
+  const handleInitiateChat = async (event) => {
+    event.preventDefault();
+    const recipient = event.target.elements.recipient.value;
+    const message = event.target.elements.message.value;
+
+    if (!recipient || !message) {
+      alert("Por favor, preencha o número do destinatário e a mensagem.");
+      return;
+    }
+
+    try {
+        const response = await fetch('/api/chats/initiate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipientNumber: recipient, message, attendantId: currentAttendant.id }),
+        });
+        if(!response.ok) throw new Error(await response.text());
+        const newChat = await response.json();
+        alert("Conversa iniciada com sucesso!");
+        setActiveChat(newChat); // Open the new chat immediately
+        event.target.reset();
+    } catch (err) {
+        console.error(err);
+        alert(`Ocorreu um erro ao iniciar a conversa: ${err.message}`);
+    }
+  };
+
+  // Login Screen
+  if (!currentAttendant) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full bg-gray-100 p-4">
+        <div className="w-full max-w-sm bg-white p-8 rounded-lg shadow-md">
+          <h2 className="text-2xl font-bold text-center text-gray-700 mb-2">Painel de Atendimento</h2>
+          <p className="text-center text-gray-500 mb-6">Selecione seu usuário para continuar</p>
+          <select 
+            onChange={(e) => handleLogin(e.target.value)}
+            defaultValue=""
+            className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54] mb-4"
+          >
+            <option value="" disabled>Selecione um atendente...</option>
+            {attendants.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  // Active Chat View
+  if (activeChat) {
+    const isMyChat = activeChat.attendantId === currentAttendant.id;
     return (
         <div className="flex flex-col h-full bg-gray-100">
             <header className="p-3 bg-white border-b border-gray-200 flex items-center justify-between flex-shrink-0">
                 <div>
-                  <button onClick={() => setView('queue')} className="text-blue-600 hover:underline text-sm">&larr; Voltar para a Fila</button>
-                  <p className="font-mono text-lg text-gray-800">{activeChatUserId}</p>
+                  <button onClick={() => setActiveChat(null)} className="text-blue-600 hover:underline text-sm">&larr; Voltar</button>
+                  <p className="font-semibold text-lg text-gray-800">{activeChat.userName || activeChat.userId}</p>
                 </div>
-                <button onClick={handleResolveChat} className="bg-green-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-green-600 transition-colors">
-                    Resolver Atendimento
-                </button>
+                {isMyChat && (
+                    <div className="flex items-center space-x-2">
+                        <div className="relative group">
+                            <button className="bg-yellow-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-yellow-600 transition-colors">
+                                Transferir
+                            </button>
+                            <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
+                                {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
+                                    <a href="#" key={a.id} onClick={() => handleTransferChat(a.id)} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
+                                ))}
+                            </div>
+                        </div>
+                        <button onClick={handleResolveChat} className="bg-green-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-green-600 transition-colors">
+                            Resolver
+                        </button>
+                    </div>
+                )}
             </header>
             <ChatWindow messages={chatMessages} isBotTyping={isChatLoading}>
               {isChatLoading && chatMessages.length === 0 && (
                 <div className="text-center text-gray-500 p-4">Carregando histórico...</div>
               )}
             </ChatWindow>
-            <ChatInput 
-                onUserInput={handleSendAttendantMessage}
-                // FIX: Added missing 'options' prop, which is required by ChatInput.
-                options={[]}
-                requiresTextInput={true}
-                isBotTyping={false}
-                onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
-                selectedFile={null}
-                placeholderText="Digite sua mensagem..."
-            />
+            {isMyChat ? (
+                <ChatInput 
+                    onUserInput={handleSendAttendantMessage} options={[]}
+                    requiresTextInput={true} isBotTyping={false}
+                    onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
+                    selectedFile={null} placeholderText="Digite sua mensagem..."
+                />
+            ) : (
+                <div className="p-4 bg-gray-200 text-center text-sm text-gray-600">
+                    Este chat está sendo atendido por <strong>{attendants.find(a => a.id === activeChat.attendantId)?.name || 'outro atendente'}</strong>. (Modo Leitura)
+                </div>
+            )}
         </div>
     );
   }
 
-  // Default view is 'queue'
+  // Main Panel View (Queue, History, etc.)
   return (
-    <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-bold text-gray-700">Fila de Atendimento</h2>
-        <button onClick={fetchQueue} disabled={isLoading} className="p-2 rounded-full hover:bg-gray-200 transition-colors disabled:opacity-50" title="Atualizar Agora">
-             <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 text-gray-600 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5m0-11l-4 4m0 0l4 4m-4-4h12" transform="rotate(0)"/>
-             </svg>
-        </button>
-      </div>
-       {error && <div className="p-4 text-center text-red-500 bg-red-50 rounded-lg mb-4">{error}</div>}
-      
-      {isLoading && requests.length === 0 ? (
-         <div className="flex-1 p-4 text-center text-gray-500">Carregando solicitações...</div>
-      ) : requests.length === 0 ? (
-        <div className="text-center text-gray-500 mt-16">
-            <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-            </svg>
-            <p className="mt-2">Nenhuma solicitação de atendimento no momento.</p>
+    <div className="flex flex-col h-full">
+        <div className="flex-shrink-0 bg-white border-b border-gray-200 flex justify-between items-center pr-4">
+             <nav className="flex">
+                <button onClick={() => setPanelView('queue')} className={`px-4 py-3 text-sm font-medium ${panelView === 'queue' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
+                   Fila <span className="ml-1 bg-red-500 text-white text-xs font-bold rounded-full px-2">{requests.length}</span>
+                </button>
+                 <button onClick={() => setPanelView('active')} className={`px-4 py-3 text-sm font-medium ${panelView === 'active' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
+                   Ativos <span className="ml-1 bg-blue-500 text-white text-xs font-bold rounded-full px-2">{activeChats.length}</span>
+                </button>
+                <button onClick={() => setPanelView('history')} className={`px-4 py-3 text-sm font-medium ${panelView === 'history' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>Histórico</button>
+                <button onClick={() => setPanelView('newChat')} className={`px-4 py-3 text-sm font-medium ${panelView === 'newChat' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>Nova Conversa</button>
+             </nav>
+             <div className="text-sm text-gray-600">
+                Logado como: <strong className="font-semibold">{currentAttendant.name}</strong>
+                <button onClick={() => setCurrentAttendant(null)} className="ml-2 text-blue-600 hover:underline text-xs">(Sair)</button>
+             </div>
         </div>
-      ) : (
-        <div className="space-y-3">
-          {requests.map((req) => (
-            <div key={req.id} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex justify-between items-start">
-                    <div>
-                        <span className="text-xs font-semibold uppercase text-white bg-blue-500 px-2 py-1 rounded-full">{req.department}</span>
-                        <div className="flex items-center mt-2 group">
-                             <p className="font-mono text-lg text-gray-800 mr-2">{req.userId}</p>
-                             <button onClick={() => copyToClipboard(req.userId)} className="opacity-0 group-hover:opacity-100 transition-opacity" title="Copiar número">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                             </button>
+        <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
+            {error && <div className="p-4 text-center text-red-500 bg-red-50 rounded-lg mb-4">{error}</div>}
+            {panelView === 'queue' && (
+                isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
+                requests.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhuma solicitação na fila.</div> :
+                <div className="space-y-3">
+                    {requests.map(req => (
+                        <div key={req.id} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <span className="text-xs font-semibold uppercase text-white bg-blue-500 px-2 py-1 rounded-full">{req.department}</span>
+                                    <p className="font-semibold text-lg text-gray-800 mt-2">{req.userName || req.userId}</p>
+                                </div>
+                                <span className="text-xs text-gray-400">{new Date(req.timestamp).toLocaleTimeString('pt-BR')}</span>
+                            </div>
+                            <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap border-l-4 border-gray-200 pl-3">{req.message}</p>
+                            <div className="text-right mt-3">
+                                <button onClick={() => { stopTitleBlinking(); handleTakeover(req); }} className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600">Atender</button>
+                            </div>
                         </div>
-                    </div>
-                    <span className="text-xs text-gray-400">{new Date(req.timestamp).toLocaleTimeString('pt-BR')}</span>
+                    ))}
                 </div>
-                <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap border-l-4 border-gray-200 pl-3">{req.message}</p>
-                 <div className="text-right mt-3">
-                    <button
-                        onClick={() => handleTakeover(req)}
-                        className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600 transition-colors"
-                    >
-                        Atender
-                    </button>
+            )}
+             {panelView === 'active' && (
+                isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
+                activeChats.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhum chat ativo no momento.</div> :
+                <div className="space-y-3">
+                    {activeChats.map(chat => (
+                        <div key={chat.userId} onClick={() => handleOpenActiveChat(chat)} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="font-semibold text-lg text-gray-800">{chat.userName || chat.userId}</p>
+                                    <p className="text-sm text-gray-500">Atendido por: <strong>{attendants.find(a => a.id === chat.attendantId)?.name || 'Desconhecido'}</strong></p>
+                                </div>
+                                <span className="text-xs text-gray-400">{new Date(chat.timestamp).toLocaleTimeString('pt-BR')}</span>
+                            </div>
+                        </div>
+                    ))}
                 </div>
-            </div>
-          ))}
+            )}
+            {panelView === 'history' && (
+                 isLoading ? <div className="text-center text-gray-500 p-4">Carregando...</div> :
+                 archivedChats.length === 0 ? <div className="text-center text-gray-500 mt-16">Nenhum chat no histórico.</div> :
+                 <div className="space-y-3">
+                    {archivedChats.map(chat => (
+                        <div key={chat.userId} onClick={() => {
+                            const historicChat = { userId: chat.userId, userName: chat.userName, attendantId: chat.resolvedBy };
+                            setActiveChat(historicChat);
+                        }} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50">
+                            <p className="font-semibold text-gray-800">{chat.userName || chat.userId}</p>
+                            <div className="text-xs text-gray-500 mt-1">
+                                <span>Resolvido por <strong>{attendants.find(a => a.id === chat.resolvedBy)?.name || 'N/A'}</strong> em {new Date(chat.resolvedAt).toLocaleString('pt-BR')}</span>
+                            </div>
+                        </div>
+                    ))}
+                 </div>
+            )}
+             {panelView === 'newChat' && (
+                <div>
+                    <h3 className="text-lg font-bold text-gray-700 mb-3">Iniciar Nova Conversa</h3>
+                    <form onSubmit={handleInitiateChat} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 space-y-4">
+                        <div>
+                            <label htmlFor="recipient" className="block text-sm font-medium text-gray-700">Número do Cliente (com código do país)</label>
+                            <input type="text" id="recipient" name="recipient" placeholder="Ex: 5511999998888" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" />
+                            <p className="text-xs text-gray-500 mt-1">O número deve estar no formato internacional, sem o `+` ou `00`.</p>
+                        </div>
+                        <div>
+                            <label htmlFor="message" className="block text-sm font-medium text-gray-700">Mensagem Inicial</label>
+                            <textarea id="message" name="message" rows="4" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" required></textarea>
+                        </div>
+                        <div className="text-right">
+                           <button type="submit" className="bg-green-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-green-600">Enviar e Iniciar Atendimento</button>
+                        </div>
+                    </form>
+                </div>
+            )}
         </div>
-      )}
     </div>
   );
 };
@@ -495,7 +700,6 @@ const App = () => {
             } else {
                 let filePayload = null;
                 if (file) {
-                    // FIX: Properly handle file reading by checking result type and adding error handling.
                     const base64Data = await new Promise((resolve, reject) => {
                         const reader = new FileReader();
                         reader.onloadend = () => {
@@ -628,7 +832,6 @@ const App = () => {
       setAiHistory([]);
       setSelectedFile(null);
 
-      // FIX: Added missing arguments to processBotTurn call.
       await processBotTurn(ChatState.GREETING, {}, undefined, undefined);
       return;
     }
@@ -649,7 +852,6 @@ const App = () => {
   
   useEffect(() => {
     if (messages.length === 0) {
-      // FIX: Added missing arguments to processBotTurn call.
       processBotTurn(ChatState.GREETING, {}, undefined, undefined);
     }
   }, []);
@@ -692,11 +894,10 @@ const App = () => {
       <main className="flex-1 overflow-y-hidden">
         {view === 'chatbot' ? (
             <div className="flex flex-col h-full">
-            {/* FIX: Changed to use opening and closing tags because ChatWindow expects a 'children' prop. */}
             <ChatWindow messages={messages} isBotTyping={isBotTyping}></ChatWindow>
             <ChatInput
                 onUserInput={handleUserInput}
-                options={lastMessage?.sender === Sender.BOT ? lastMessage.options : undefined}
+                options={lastMessage?.sender === Sender.BOT ? lastMessage.options : []}
                 requiresTextInput={lastMessage?.sender === Sender.BOT ? lastMessage.requiresTextInput : false}
                 isBotTyping={isBotTyping}
                 onFileChange={setSelectedFile}
