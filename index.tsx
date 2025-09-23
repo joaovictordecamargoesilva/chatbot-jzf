@@ -8,6 +8,7 @@ import { conversationFlow, translations, ChatState as ChatStateValues } from './
 const Sender = {
   USER: 'user',
   BOT: 'bot',
+  ATTENDANT: 'attendant',
 };
 
 // All type aliases and interfaces are removed as they are TypeScript-only.
@@ -32,13 +33,18 @@ const TypingIndicator = () => (
 // Removed interface and TypeScript type annotation `: React.FC`
 const MessageBubble = ({ message }) => {
   const isBot = message.sender === Sender.BOT;
+  const isAttendant = message.sender === Sender.ATTENDANT;
 
   const bubbleClasses = isBot
     ? 'bg-white text-gray-800 self-start'
+    : isAttendant
+    ? 'bg-blue-100 text-gray-800 self-end'
     : 'bg-[#dcf8c6] text-gray-800 self-end';
 
+  const justifyClass = isBot ? 'justify-start' : 'justify-end';
+
   return (
-    <div className={`flex w-full ${isBot ? 'justify-start' : 'justify-end'}`}>
+    <div className={`flex w-full ${justifyClass}`}>
       <div
         className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses}`}
       >
@@ -51,6 +57,11 @@ const MessageBubble = ({ message }) => {
                 <span className="text-xs text-gray-700 font-medium truncate">{message.file.name}</span>
             </div>
         )}
+        {message.timestamp && (
+            <div className="text-right text-[10px] text-gray-500 mt-1">
+                {new Date(message.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+            </div>
+        )}
       </div>
     </div>
   );
@@ -60,7 +71,7 @@ const MessageBubble = ({ message }) => {
 
 // --- START: Merged from components/ChatInput.tsx ---
 // Removed interface and TypeScript type annotations
-const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile }) => {
+const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile, placeholderText = "Mensagem" }) => {
   const [inputValue, setInputValue] = useState('');
   const fileInputRef = useRef(null);
 
@@ -73,6 +84,7 @@ const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFil
   
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
       handleSend();
     }
   };
@@ -88,8 +100,8 @@ const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFil
     }
   };
 
-  if (isBotTyping) {
-    return <div className="h-24 bg-gray-100" />; // Placeholder to maintain height
+  if (isBotTyping && options?.length === 0 && !requiresTextInput) {
+    return <div className="h-24 bg-gray-100" />; // Placeholder to maintain height for bot typing
   }
   
   return (
@@ -126,29 +138,31 @@ const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFil
             </div>
         )}
         <div className="flex items-center space-x-2">
-            <input 
+            {onFileChange && (
+              <button
+                  onClick={handleFileClick}
+                  disabled={isBotTyping}
+                  className="text-gray-500 p-2 rounded-full hover:bg-gray-200 transition duration-200 disabled:text-gray-300"
+                  aria-label="Anexar arquivo"
+              >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+              </button>
+            )}
+             <input 
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileSelected}
                 className="hidden"
                 accept=".pdf,.xml,.csv,.txt,.json,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp"
             />
-            <button
-                onClick={handleFileClick}
-                disabled={isBotTyping}
-                className="text-gray-500 p-2 rounded-full hover:bg-gray-200 transition duration-200 disabled:text-gray-300"
-                aria-label="Anexar arquivo"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-            </button>
             <input
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={selectedFile ? "Descreva o arquivo..." : "Mensagem"}
+                placeholder={selectedFile ? "Descreva o arquivo..." : placeholderText}
                 disabled={isBotTyping}
                 className="flex-grow p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#005e54]"
                 autoFocus
@@ -174,7 +188,7 @@ const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFil
 
 // --- START: Merged from components/ChatWindow.tsx ---
 // Removed interface and type annotations
-const ChatWindow = ({ messages, isBotTyping }) => {
+const ChatWindow = ({ messages, isBotTyping, children }) => {
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -184,10 +198,11 @@ const ChatWindow = ({ messages, isBotTyping }) => {
   return (
     <div className="flex-1 p-4 overflow-y-auto whatsapp-bg">
        <div className="flex flex-col space-y-2">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+        {messages.map((msg, index) => (
+          <MessageBubble key={msg.id || `${msg.timestamp}-${index}`} message={msg} />
         ))}
         {isBotTyping && <TypingIndicator />}
+        {children}
         <div ref={chatEndRef} />
       </div>
     </div>
@@ -197,77 +212,171 @@ const ChatWindow = ({ messages, isBotTyping }) => {
 
 
 // --- START: Merged from components/AttendantPanel.tsx ---
-// Removed interface and type annotations
+// This component has been significantly refactored to support live chat.
 const AttendantPanel = () => {
+  const [view, setView] = useState('queue'); // queue | chat
+  const [activeChatUserId, setActiveChatUserId] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  
   const [requests, setRequests] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  const fetchRequests = useCallback(async () => {
+  
+  const fetchQueue = useCallback(async () => {
     try {
       const response = await fetch('/api/requests');
-      if (!response.ok) {
-        throw new Error('Falha ao buscar dados do servidor.');
-      }
+      if (!response.ok) throw new Error('Falha ao buscar dados da fila.');
       const data = await response.json();
       setRequests(data);
-      setError(null);
+      if (error) setError(null);
     } catch (err) {
       console.error(err);
-      setError('Não foi possível conectar ao servidor do chatbot. Verifique se ele está em execução e se a página foi recarregada.');
+      setError('Não foi possível conectar ao servidor. Verifique se ele está em execução.');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [error]);
 
   useEffect(() => {
-    fetchRequests();
-    const intervalId = setInterval(fetchRequests, 5000); // Atualiza a cada 5 segundos
+    fetchQueue();
+    const intervalId = setInterval(fetchQueue, 5000);
+    return () => clearInterval(intervalId);
+  }, [fetchQueue]);
+  
+  // Effect for polling chat history when a chat is active
+  useEffect(() => {
+    if (view !== 'chat' || !activeChatUserId) return;
 
-    return () => clearInterval(intervalId); // Limpa o intervalo quando o componente é desmontado
-  }, [fetchRequests]);
-
-  const handleResolve = async (id) => {
-    try {
-        const response = await fetch(`/api/requests/resolve/${id}`, {
-            method: 'POST',
-        });
-        if (!response.ok) {
-            throw new Error('Falha ao resolver a solicitação.');
+    const fetchHistory = async () => {
+        try {
+            const response = await fetch(`/api/chats/history/${activeChatUserId}`);
+            if (!response.ok) throw new Error('Falha ao buscar histórico.');
+            const data = await response.json();
+            setChatMessages(data);
+        } catch (err) {
+            console.error(err);
+            setError('Não foi possível carregar o histórico da conversa.');
+        } finally {
+            setIsChatLoading(false);
         }
-        setRequests(prev => prev.filter(req => req.id !== id));
+    };
+    
+    setIsChatLoading(true);
+    fetchHistory();
+    
+    const intervalId = setInterval(fetchHistory, 3000); // Poll for new messages every 3 seconds
+    
+    return () => clearInterval(intervalId);
+  }, [view, activeChatUserId]);
+
+  const handleTakeover = async (req) => {
+    try {
+      const response = await fetch(`/api/chats/takeover/${req.userId}`, { method: 'POST' });
+      if (!response.ok) throw new Error('Falha ao iniciar atendimento.');
+      setActiveChatUserId(req.userId);
+      setView('chat');
     } catch (err) {
-        console.error(err);
-        alert('Ocorreu um erro ao tentar resolver a solicitação.');
+      console.error(err);
+      alert('Ocorreu um erro ao tentar iniciar o atendimento.');
     }
+  };
+  
+  const handleSendAttendantMessage = async (text) => {
+      if (!text.trim() || !activeChatUserId) return;
+      
+      // Optimistic update
+      const optimisticMessage = {
+          sender: Sender.ATTENDANT,
+          text,
+          timestamp: new Date().toISOString()
+      };
+      setChatMessages(prev => [...prev, optimisticMessage]);
+
+      try {
+          const response = await fetch('/api/chats/attendant-reply', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId: activeChatUserId, text }),
+          });
+          if (!response.ok) {
+            throw new Error('Falha ao enviar mensagem.');
+            // Revert optimistic update on failure if desired
+          }
+      } catch (err) {
+          console.error(err);
+          alert('Ocorreu um erro ao enviar a sua mensagem.');
+      }
+  };
+  
+  const handleResolveChat = async () => {
+      if (!activeChatUserId) return;
+      if (!confirm('Tem certeza que deseja resolver e fechar este atendimento?')) return;
+      
+      try {
+          const response = await fetch(`/api/chats/resolve/${activeChatUserId}`, { method: 'POST' });
+          if (!response.ok) throw new Error('Falha ao resolver atendimento.');
+          
+          // Reset state and go back to queue
+          setActiveChatUserId(null);
+          setChatMessages([]);
+          setView('queue');
+          await fetchQueue(); // Refresh queue immediately
+      } catch (err) {
+          console.error(err);
+          alert('Ocorreu um erro ao tentar resolver o atendimento.');
+      }
   };
 
   const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => {
-    }, (err) => {
-      console.error('Falha ao copiar texto: ', err);
-    });
+    navigator.clipboard.writeText(text).then(() => {}, (err) => console.error('Falha ao copiar texto: ', err));
   };
-
-  if (isLoading) {
-    return <div className="flex-1 p-4 text-center text-gray-500">Carregando solicitações...</div>;
-  }
   
-  if (error) {
-    return <div className="flex-1 p-4 text-center text-red-500 bg-red-50">{error}</div>;
+  if (view === 'chat') {
+    return (
+        <div className="flex flex-col h-full bg-gray-100">
+            <header className="p-3 bg-white border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+                <div>
+                  <button onClick={() => setView('queue')} className="text-blue-600 hover:underline text-sm">&larr; Voltar para a Fila</button>
+                  <p className="font-mono text-lg text-gray-800">{activeChatUserId}</p>
+                </div>
+                <button onClick={handleResolveChat} className="bg-green-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-green-600 transition-colors">
+                    Resolver Atendimento
+                </button>
+            </header>
+            <ChatWindow messages={chatMessages} isBotTyping={isChatLoading}>
+              {isChatLoading && chatMessages.length === 0 && (
+                <div className="text-center text-gray-500 p-4">Carregando histórico...</div>
+              )}
+            </ChatWindow>
+            <ChatInput 
+                onUserInput={handleSendAttendantMessage}
+                requiresTextInput={true}
+                isBotTyping={false}
+                onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
+                selectedFile={null}
+                placeholderText="Digite sua mensagem..."
+            />
+        </div>
+    );
   }
 
+  // Default view is 'queue'
   return (
     <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-bold text-gray-700">Fila de Atendimento</h2>
-        <button onClick={fetchRequests} className="p-2 rounded-full hover:bg-gray-200 transition-colors" title="Atualizar Agora">
-             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5M20 4h-5v5M4 20h5v-5M12 4V1m0 22v-3m8.9-15.9l-2.12-2.12M4.22 19.78l2.12-2.12M1 12H4m19 0h-3m-3.9-8.9l2.12-2.12M19.78 4.22l-2.12 2.12" />
+        <button onClick={fetchQueue} disabled={isLoading} className="p-2 rounded-full hover:bg-gray-200 transition-colors disabled:opacity-50" title="Atualizar Agora">
+             <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 text-gray-600 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5m0-11l-4 4m0 0l4 4m-4-4h12" transform="rotate(0)"/>
              </svg>
         </button>
       </div>
-      {requests.length === 0 ? (
+       {error && <div className="p-4 text-center text-red-500 bg-red-50 rounded-lg mb-4">{error}</div>}
+      
+      {isLoading && requests.length === 0 ? (
+         <div className="flex-1 p-4 text-center text-gray-500">Carregando solicitações...</div>
+      ) : requests.length === 0 ? (
         <div className="text-center text-gray-500 mt-16">
             <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
@@ -293,10 +402,10 @@ const AttendantPanel = () => {
                 <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap border-l-4 border-gray-200 pl-3">{req.message}</p>
                  <div className="text-right mt-3">
                     <button
-                        onClick={() => handleResolve(req.id)}
-                        className="bg-green-500 text-white text-xs font-bold py-1 px-3 rounded-md hover:bg-green-600 transition-colors"
+                        onClick={() => handleTakeover(req)}
+                        className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600 transition-colors"
                     >
-                        Marcar como Resolvido
+                        Atender
                     </button>
                 </div>
             </div>
@@ -322,7 +431,7 @@ const App = () => {
   const abortControllerRef = useRef(null);
   
   const addMessage = useCallback((message) => {
-    setMessages((prev) => [...prev, { ...message, id: Date.now() + Math.random() }]);
+    setMessages((prev) => [...prev, { ...message, id: Date.now() + Math.random(), timestamp: new Date().toISOString() }]);
   }, []);
   
   const getFlowResponse = useCallback((state, context) => {
@@ -421,7 +530,8 @@ const App = () => {
 
                 let finalStreamedText = '';
                 const messageId = Date.now() + Math.random();
-                setMessages(prev => [...prev, { id: messageId, text: '', sender: Sender.BOT }]);
+                const timestamp = new Date().toISOString();
+                setMessages(prev => [...prev, { id: messageId, text: '', sender: Sender.BOT, timestamp }]);
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -544,7 +654,7 @@ const App = () => {
 
   return (
     <div className="flex flex-col h-screen max-w-2xl mx-auto bg-white shadow-2xl rounded-lg overflow-hidden">
-       <header className="bg-[#005e54] text-white p-3 flex items-center justify-between shadow-md">
+       <header className="bg-[#005e54] text-white p-3 flex items-center justify-between shadow-md flex-shrink-0">
         <div className="flex items-center">
             <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mr-3 flex-shrink-0">
                <svg className="w-8 h-8 text-[#005e54]" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
@@ -575,21 +685,23 @@ const App = () => {
         </button>
       </header>
       
-      {view === 'chatbot' ? (
-        <>
-          <ChatWindow messages={messages} isBotTyping={isBotTyping} />
-          <ChatInput
-            onUserInput={handleUserInput}
-            options={lastMessage?.sender === Sender.BOT ? lastMessage.options : undefined}
-            requiresTextInput={lastMessage?.sender === Sender.BOT ? lastMessage.requiresTextInput : false}
-            isBotTyping={isBotTyping}
-            onFileChange={setSelectedFile}
-            selectedFile={selectedFile}
-          />
-        </>
-      ) : (
-        <AttendantPanel />
-      )}
+      <main className="flex-1 overflow-y-hidden">
+        {view === 'chatbot' ? (
+            <div className="flex flex-col h-full">
+            <ChatWindow messages={messages} isBotTyping={isBotTyping} />
+            <ChatInput
+                onUserInput={handleUserInput}
+                options={lastMessage?.sender === Sender.BOT ? lastMessage.options : undefined}
+                requiresTextInput={lastMessage?.sender === Sender.BOT ? lastMessage.requiresTextInput : false}
+                isBotTyping={isBotTyping}
+                onFileChange={setSelectedFile}
+                selectedFile={selectedFile}
+            />
+            </div>
+        ) : (
+            <AttendantPanel />
+        )}
+      </main>
     </div>
   );
 };
