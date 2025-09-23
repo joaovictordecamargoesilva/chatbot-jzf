@@ -14,5 +14,8 @@
     "@google/genai": "^1.2.0",
     "express": "^4.19.2",
     "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@wppconnect-team/wppconnect": "^1.37.5"
   }
 }
