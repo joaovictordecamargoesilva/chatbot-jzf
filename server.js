@@ -1,4 +1,5 @@
 
+
 // --- SERVIDOR DE API EXCLUSIVO PARA RENDER ---
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
@@ -240,6 +241,23 @@ apiRouter.post('/chat', async (req, res) => {
 apiRouter.get('/attendants', (req, res) => res.status(200).json(ATTENDANTS));
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 apiRouter.get('/chats/active', (req, res) => res.status(200).json(Array.from(activeChats.values())));
+
+apiRouter.get('/clients', (req, res) => {
+    const clients = new Map();
+    // Add clients from active chats/sessions
+    for (const session of userSessions.values()) {
+        if (!clients.has(session.userId) && session.userName) {
+            clients.set(session.userId, { userId: session.userId, userName: session.userName });
+        }
+    }
+    // Add clients from archived chats
+    for (const chat of archivedChats.values()) {
+        if (!clients.has(chat.userId) && chat.userName) {
+            clients.set(chat.userId, { userId: chat.userId, userName: chat.userName });
+        }
+    }
+    res.status(200).json(Array.from(clients.values()));
+});
 
 apiRouter.get('/chats/history', (req, res) => {
     const historyList = Array.from(archivedChats.values()).map(s => ({
