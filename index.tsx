@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -381,9 +382,17 @@ const App = () => {
             } else {
                 let filePayload = null;
                 if (file) {
-                    const base64Data = await new Promise((resolve) => {
+                    // FIX: Properly handle file reading by checking result type and adding error handling.
+                    const base64Data = await new Promise((resolve, reject) => {
                         const reader = new FileReader();
-                        reader.onloadend = () => resolve((reader.result).split(',')[1]);
+                        reader.onloadend = () => {
+                            if (typeof reader.result === 'string') {
+                                resolve(reader.result.split(',')[1]);
+                            } else {
+                                reject(new Error('Failed to read file as a data URL string.'));
+                            }
+                        };
+                        reader.onerror = reject;
                         reader.readAsDataURL(file);
                     });
                     filePayload = { name: file.name, type: file.type, data: base64Data };
@@ -505,7 +514,8 @@ const App = () => {
       setAiHistory([]);
       setSelectedFile(null);
 
-      await processBotTurn(ChatState.GREETING, {});
+      // FIX: Added missing arguments to processBotTurn call.
+      await processBotTurn(ChatState.GREETING, {}, undefined, undefined);
       return;
     }
 
@@ -525,7 +535,8 @@ const App = () => {
   
   useEffect(() => {
     if (messages.length === 0) {
-      processBotTurn(ChatState.GREETING, {});
+      // FIX: Added missing arguments to processBotTurn call.
+      processBotTurn(ChatState.GREETING, {}, undefined, undefined);
     }
   }, []);
 
