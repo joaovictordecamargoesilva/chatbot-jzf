@@ -2,8 +2,8 @@
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
 import express from 'express';
-// FIX: Import the correct class 'GoogleGenerativeAI' from the installed package version.
-import { GoogleGenerativeAI } from '@google/genai';
+// @google/genai-ts FIX: Use the correct class name as per the new SDK guidelines.
+import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -13,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "6.0.0_MULTI_ATTENDANT";
+const SERVER_VERSION = "7.0.0_COLLABORATION_HUB";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -33,11 +33,13 @@ const ATTENDANTS = [
     { id: '2', name: 'Maria Silva', departments: ['Contábil', 'Fiscal'] },
     { id: '3', name: 'Carlos Souza', departments: ['Financeiro', 'Agendamento'] },
 ];
+let nextAttendantId = ATTENDANTS.length + 1;
 const userSessions = new Map();
 const requestQueue = [];
 const activeChats = new Map();
 const archivedChats = new Map();
 const outboundGatewayQueue = [];
+let syncedContacts = [];
 let nextRequestId = 1;
 
 
@@ -54,10 +56,11 @@ app.use(express.json({ limit: '50mb' }));
 let ai = null;
 if (API_KEY) {
     try {
-        // FIX: Use the correct constructor for this SDK version, passing the API key directly.
-        ai = new GoogleGenerativeAI(API_KEY);
+        // @google/genai-ts FIX: Use the correct constructor with a named apiKey parameter as per the new SDK guidelines.
+        ai = new GoogleGenAI({apiKey: API_KEY});
         console.log("[JZF Chatbot Server] Cliente Google GenAI inicializado com sucesso.");
-    } catch (error) {
+    } catch (error)
+ {
         console.error("[JZF Chatbot Server] ERRO: Falha ao inicializar o cliente Google GenAI.", error);
     }
 } else {
@@ -74,6 +77,7 @@ function getSession(userId, userName = null) {
             context: { history: {} },
             aiHistory: [],
             messageLog: [],
+            internalNotes: [], // Adicionado para o chat interno
             handledBy: 'bot', // 'bot' | 'human'
             attendantId: null,
             createdAt: new Date().toISOString(),
@@ -218,30 +222,37 @@ apiRouter.post('/chat', async (req, res) => {
     if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) return res.status(400).send("Endpoint /api/chat é exclusivo para o assistente de IA.");
     
     try {
-        // FIX: Refactor to use the older SDK's API (`getGenerativeModel` and `startChat`).
-        const systemInstructionText = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
-        
-        const model = ai.getGenerativeModel({
-            model: 'gemini-2.5-flash',
-            systemInstruction: systemInstructionText,
-        });
-
-        const chat = model.startChat({
-            history: session.aiHistory || [],
-        });
+        // @google/genai-ts FIX: Refactored to use the modern, stateless `generateContentStream` API.
+        const systemInstruction = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
         
         const contentParts = [];
-        if (file) contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
-        if (message) contentParts.push({ text: message });
+        if (file) {
+            contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
+        }
+        if (message) {
+            contentParts.push({ text: message });
+        }
 
-        const result = await chat.sendMessageStream(contentParts);
+        // Combine history with the new user message
+        const contents = [
+            ...(session.aiHistory || []),
+            { role: 'user', parts: contentParts }
+        ];
+
+        const responseStream = await ai.models.generateContentStream({
+            model: 'gemini-2.5-flash',
+            contents: contents,
+            config: {
+                systemInstruction: systemInstruction,
+            }
+        });
         
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        for await (const chunk of result.stream) {
-          // The old SDK's stream chunk has a `text()` method.
-          if (chunk && typeof chunk.text === 'function') {
-            res.write(chunk.text());
-          }
+        for await (const chunk of responseStream) {
+            // The new SDK's stream chunk has a `text` property.
+            if (chunk && chunk.text) {
+              res.write(chunk.text);
+            }
         }
         res.end();
     } catch (error) {
@@ -252,25 +263,46 @@ apiRouter.post('/chat', async (req, res) => {
 
 // --- ROTAS DO PAINEL DE ATENDIMENTO ---
 apiRouter.get('/attendants', (req, res) => res.status(200).json(ATTENDANTS));
+
+apiRouter.post('/attendants', (req, res) => {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim().length < 3) {
+        return res.status(400).json({ error: 'O nome é obrigatório e deve ter pelo menos 3 caracteres.' });
+    }
+    const newAttendant = {
+        id: String(nextAttendantId++),
+        name: name.trim(),
+        departments: [], // Pode ser expandido no futuro
+    };
+    ATTENDANTS.push(newAttendant);
+    console.log(`[Attendants] Novo atendente criado: ${newAttendant.name} (ID: ${newAttendant.id})`);
+    res.status(201).json(newAttendant);
+});
+
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 apiRouter.get('/chats/active', (req, res) => res.status(200).json(Array.from(activeChats.values())));
 
 apiRouter.get('/clients', (req, res) => {
     const clients = new Map();
-    // Add clients from active chats/sessions
-    for (const session of userSessions.values()) {
-        if (!clients.has(session.userId) && session.userName) {
-            clients.set(session.userId, { userId: session.userId, userName: session.userName });
+    // Prioridade 1: Contatos sincronizados do WhatsApp
+    syncedContacts.forEach(c => {
+        if (!clients.has(c.userId)) {
+            clients.set(c.userId, { userId: c.userId, userName: c.userName });
         }
+    });
+    // Prioridade 2: Sessões de usuário ativas (podem ter nomes mais atualizados)
+    for (const session of userSessions.values()) {
+        clients.set(session.userId, { userId: session.userId, userName: session.userName });
     }
-    // Add clients from archived chats
+    // Prioridade 3: Chats arquivados
     for (const chat of archivedChats.values()) {
-        if (!clients.has(chat.userId) && chat.userName) {
+         if (!clients.has(chat.userId)) {
             clients.set(chat.userId, { userId: chat.userId, userName: chat.userName });
         }
     }
     res.status(200).json(Array.from(clients.values()));
 });
+
 
 apiRouter.get('/chats/history', (req, res) => {
     const historyList = Array.from(archivedChats.values()).map(s => ({
@@ -286,10 +318,38 @@ apiRouter.get('/chats/history/:userId', (req, res) => {
     const { userId } = req.params;
     const session = getSession(userId) || archivedChats.get(userId);
     if (session) {
-        res.status(200).json(session.messageLog || []);
+        res.status(200).json({
+            messageLog: session.messageLog || [],
+            internalNotes: session.internalNotes || []
+        });
     } else {
         res.status(404).send('Histórico não encontrado.');
     }
+});
+
+apiRouter.post('/chats/internal-note/:userId', (req, res) => {
+    const { userId } = req.params;
+    const { attendantId, text } = req.body;
+    const attendant = ATTENDANTS.find(a => a.id === attendantId);
+
+    if (!attendant) return res.status(400).send('Atendente inválido.');
+    if (!text || !text.trim()) return res.status(400).send('O texto da nota é obrigatório.');
+
+    const session = getSession(userId);
+    if (!session || session.handledBy !== 'human') {
+        return res.status(403).send('Não é possível adicionar uma nota a este chat.');
+    }
+
+    const note = {
+        attendantId,
+        attendantName: attendant.name,
+        text,
+        timestamp: new Date().toISOString()
+    };
+    session.internalNotes.push(note);
+
+    console.log(`[Internal Chat] Nova nota de ${attendant.name} adicionada ao chat de ${userId}.`);
+    res.status(201).json(note);
 });
 
 apiRouter.post('/chats/takeover/:userId', (req, res) => {
@@ -413,7 +473,7 @@ apiRouter.post('/chats/initiate', (req, res) => {
 });
 
 
-// --- ROTA DO GATEWAY ---
+// --- ROTAS DO GATEWAY ---
 apiRouter.get('/gateway/poll-outbound', (req, res) => {
     if (outboundGatewayQueue.length > 0) {
         const messagesToSend = [...outboundGatewayQueue];
@@ -423,6 +483,18 @@ apiRouter.get('/gateway/poll-outbound', (req, res) => {
         res.status(204).send(); // No Content
     }
 });
+
+apiRouter.post('/gateway/sync-contacts', (req, res) => {
+    const { contacts } = req.body;
+    if (Array.isArray(contacts)) {
+        syncedContacts = contacts;
+        console.log(`[Gateway Sync] ${contacts.length} contatos sincronizados do WhatsApp.`);
+        res.status(200).send('Contatos sincronizados.');
+    } else {
+        res.status(400).send('Formato de contatos inválido.');
+    }
+});
+
 
 app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
