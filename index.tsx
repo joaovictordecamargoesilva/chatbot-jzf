@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -397,7 +398,9 @@ const AttendantPanel = () => {
   }, [panelView]);
 
   const handleLogin = (attendantId) => {
-    const attendant = attendants.find(a => a.id === attendantId);
+    // FIX: (Line 815) To prevent potential type mismatches where attendant ID could be a number
+    // from one source and a string from another, we ensure the comparison is always string vs. string.
+    const attendant = attendants.find(a => String(a.id) === attendantId);
     setCurrentAttendant(attendant);
   };
   
@@ -1052,7 +1055,9 @@ const App = () => {
         setAiHistory(savedAiHistory || []);
         setIsBotTyping(false);
     } else {
-      processBotTurn(ChatState.GREETING, { history: {} });
+      // FIX: (Line 1055) The function processBotTurn expects 4 arguments, but was being called with 2.
+      // We pass null for the optional userInput and file arguments on initial load.
+      processBotTurn(ChatState.GREETING, { history: {} }, null, null);
     }
   }, [processBotTurn]);
 
@@ -1091,7 +1096,9 @@ const App = () => {
             Painel do Atendente
         </button>
       </header>
-      <ChatWindow messages={messages} isBotTyping={isBotTyping} />
+      {/* FIX: (Line 1094) The ChatWindow component requires a 'children' prop.
+          Explicitly passing 'null' satisfies this requirement for cases where no children are needed. */}
+      <ChatWindow messages={messages} isBotTyping={isBotTyping}>{null}</ChatWindow>
       <ChatInput
         onUserInput={handleUserInput}
         options={options}
