@@ -7,7 +7,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "gateway": "node whatsapp-gateway.js"
+    "gateway": "node whatsapp-gateway.js",
+    "dev": "concurrently \"npm start\" \"npm run gateway\""
   },
   "author": "JZF Contabilidade",
   "license": "ISC",
@@ -20,5 +21,7 @@
     "@wppconnect-team/wppconnect": "^1.37.5",
     "node-fetch": "^3.3.2"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
 }
