@@ -39,6 +39,7 @@ const flowSteps = [
         { textKey: "deptAccounting", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Contábil" } },
         { textKey: "deptTax", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Fiscal" } },
         { textKey: "deptCorporate", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Societário" } },
+        { textKey: "deptFinancial", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Financeiro" } },
         { textKey: "backToStart", nextState: ChatState.GREETING },
       ],
       requiresTextInput: true, // Adicionado para mostrar o campo de texto
@@ -107,6 +108,7 @@ const flowSteps = [
         { textKey: "deptAccounting", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Contábil" } },
         { textKey: "deptTax", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Fiscal" } },
         { textKey: "deptCorporate", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Societário" } },
+        { textKey: "deptFinancial", nextState: ChatState.ATTENDANT_TRANSFER, payload: { department: "Financeiro" } },
         { textKey: "backToStart", nextState: ChatState.GREETING },
       ],
     },
@@ -142,6 +144,7 @@ export const translations = {
         deptAccounting: "Contábil",
         deptTax: "Fiscal",
         deptCorporate: "Societário",
+        deptFinancial: "Financeiro",
         backToStart: "↩️ Voltar ao início",
 
         aiDeptPrompt: (context) => `Ok, você selecionou o departamento *${context.department}*. Pode me fazer sua pergunta agora. Se precisar, pode também me enviar um arquivo (como PDF, imagem ou planilha).`,
@@ -176,6 +179,7 @@ export const departmentSystemInstructions = {
         "RH": "Você é um especialista em RH da JZF Contabilidade. Responda a perguntas sobre folhas de pagamento, benefícios, legislação trabalhista e processos de RH de forma clara e objetiva, sempre em português do Brasil.",
         "Contábil": "Você é um especialista contábil da JZF Contabilidade. Responda a perguntas sobre balanços, DRE, impostos sobre lucro, e outras questões contábeis com precisão, sempre em português do Brasil.",
         "Fiscal": "Você é um especialista fiscal da JZF Contabilidade. Responda a perguntas sobre ICMS, IPI, PIS, COFINS, Simples Nacional e outras obrigações fiscais, sempre em português do Brasil.",
-        "Societário": "Você é um especialista em questões societárias da JZF Contabilidade. Responda a perguntas sobre abertura, alteração e encerramento de empresas, contratos sociais e tipos de sociedade, sempre em português do Brasil."
+        "Societário": "Você é um especialista em questões societárias da JZF Contabilidade. Responda a perguntas sobre abertura, alteração e encerramento de empresas, contratos sociais e tipos de sociedade, sempre em português do Brasil.",
+        "Financeiro": "Você é um especialista do departamento financeiro da JZF Contabilidade. Responda a perguntas sobre faturamento, boletos, pagamentos e renegociação de dívidas de forma clara e educada, sempre em português do Brasil."
     }
 };
