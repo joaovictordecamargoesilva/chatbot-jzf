@@ -13,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "7.0.0_COLLABORATION_HUB";
+const SERVER_VERSION = "8.0.0_STABLE_HUB";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -28,12 +28,8 @@ const __dirname = path.dirname(__filename);
 
 // --- DADOS EM MEMÓRIA ---
 // Em um app de produção, isso seria substituído por um banco de dados.
-const ATTENDANTS = [
-    { id: '1', name: 'João Victor', departments: ['RH', 'Societário'] },
-    { id: '2', name: 'Maria Silva', departments: ['Contábil', 'Fiscal'] },
-    { id: '3', name: 'Carlos Souza', departments: ['Financeiro', 'Agendamento'] },
-];
-let nextAttendantId = ATTENDANTS.length + 1;
+const ATTENDANTS = [];
+let nextAttendantId = 1; // Inicia o contador em 1
 const userSessions = new Map();
 const requestQueue = [];
 const activeChats = new Map();
