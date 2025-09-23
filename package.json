@@ -1,19 +1,16 @@
 {
-  "name": "chatbot-jzf",
-  "version": "1.0.0",
-  "type": "module",
+  "name": "jzf-chatbot-server",
+  "version": "3.0.0",
+  "description": "Servidor de API limpo para o Chatbot de Contabilidade JZF.",
   "main": "server.js",
+  "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node server.js"
   },
+  "author": "JZF Contabilidade",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "body-parser": "^1.20.2"
-  },
-  "engines": {
-    "node": "22.x"
-  },
-  "author": "Joao Victor de Camargo e Silva",
-  "license": "ISC"
+    "@google/genai": "^0.12.0",
+    "express": "^4.19.2"
+  }
 }
