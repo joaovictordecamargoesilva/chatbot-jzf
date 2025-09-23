@@ -13,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "4.0.2_MIME_FIX_MODERN";
+const SERVER_VERSION = "5.0.0_HUMAN_TAKEOVER";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -21,7 +21,6 @@ const app = express();
 const port = process.env.PORT || 3000;
 const { API_KEY } = process.env;
 
-// FIX: Define o MIME type correto para arquivos .tsx. Esta é a sintaxe moderna e recomendada para o Express.
 express.static.mime.types['tsx'] = 'text/javascript';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,9 +48,11 @@ if (API_KEY) {
     console.warn("[JZF Chatbot Server] AVISO: API_KEY não definida. Funcionalidades de IA estarão desativadas.");
 }
 
-// --- GERENCIAMENTO DE SESSÃO E FILA ---
+// --- GERENCIAMENTO DE SESSÃO, FILA E ATENDIMENTO ---
 const userSessions = new Map();
 const requestQueue = [];
+const activeChats = new Map();
+const outboundGatewayQueue = [];
 let nextRequestId = 1;
 
 function getSession(userId) {
@@ -60,13 +61,19 @@ function getSession(userId) {
             userId: userId,
             currentState: ChatState.GREETING,
             context: { history: {} },
-            aiHistory: []
+            aiHistory: [],
+            messageLog: [],
+            handledBy: 'bot',
         });
     }
     return userSessions.get(userId);
 }
 
 function addRequestToQueue(userId, department, message, fullContext) {
+    if (requestQueue.some(r => r.userId === userId) || activeChats.has(userId)) {
+        console.log(`[Queue] Bloqueada adição de ${userId} à fila pois já existe uma solicitação.`);
+        return;
+    }
     const request = {
         id: nextRequestId++,
         userId,
@@ -92,8 +99,13 @@ async function processMessage(session, userInput, replies) {
             nextState = selectedOption.nextState;
             payload = selectedOption.payload;
         } else {
-            replies.push("Opção inválida. Por favor, digite apenas o número da opção desejada.");
-            replies.push(formatFlowStepForWhatsapp(currentStep, session.context));
+            const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
+            replies.push(invalidOptionMsg);
+            session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
+            
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            replies.push(stepFormatted);
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
             return;
         }
     } else if (currentStep && currentStep.requiresTextInput) {
@@ -108,7 +120,9 @@ async function processMessage(session, userInput, replies) {
     }
     
     if (nextState === ChatState.END_SESSION) {
-        replies.push(translations.pt.sessionEnded);
+        const endMsg = translations.pt.sessionEnded;
+        replies.push(endMsg);
+        session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
         userSessions.delete(userId);
         return;
     }
@@ -131,8 +145,9 @@ async function processMessage(session, userInput, replies) {
                 : `Cliente pediu para falar com o setor ${department}.`;
             addRequestToQueue(userId, department, reason, session.context);
         }
-
-        replies.push(formatFlowStepForWhatsapp(step, session.context));
+        const formattedReply = formatFlowStepForWhatsapp(step, session.context);
+        replies.push(formattedReply);
+        session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
         
         if (step.nextState && !step.requiresTextInput && (!step.options || step.options.length === 0)) {
             currentState = step.nextState;
@@ -159,7 +174,14 @@ const apiRouter = express.Router();
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
   const { userId, userInput } = req.body;
   if (!userId || userInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
+  
   const session = getSession(userId);
+  session.messageLog.push({ sender: 'user', text: userInput, timestamp: new Date() });
+
+  if (session.handledBy === 'human') {
+      return res.status(200).json({ replies: [] }); // Message is logged, attendant will see it.
+  }
+
   const replies = [];
   try {
     await processMessage(session, userInput, replies);
@@ -195,16 +217,71 @@ apiRouter.post('/chat', async (req, res) => {
     }
 });
 
+// --- ROTAS DO PAINEL DE ATENDIMENTO ---
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
 
-apiRouter.post('/requests/resolve/:id', (req, res) => {
-    const requestId = parseInt(req.params.id, 10);
-    const index = requestQueue.findIndex(r => r.id === requestId);
-    if (index !== -1) {
-        requestQueue.splice(index, 1);
-        res.status(200).send('Solicitação resolvida.');
+apiRouter.get('/chats/history/:userId', (req, res) => {
+    const session = getSession(req.params.userId);
+    res.status(200).json(session.messageLog || []);
+});
+
+apiRouter.post('/chats/takeover/:userId', (req, res) => {
+    const { userId } = req.params;
+    const queueIndex = requestQueue.findIndex(r => r.userId === userId);
+    if (queueIndex === -1) return res.status(404).send('Solicitação não encontrada na fila.');
+    
+    requestQueue.splice(queueIndex, 1);
+    const session = getSession(userId);
+    session.handledBy = 'human';
+    activeChats.set(userId, session);
+
+    const takeoverMessage = `Olá! Um de nossos atendentes irá te ajudar agora.`;
+    outboundGatewayQueue.push({ userId, text: takeoverMessage });
+    session.messageLog.push({ sender: 'bot', text: takeoverMessage, timestamp: new Date() });
+
+    console.log(`[Takeover] Atendimento para ${userId} iniciado.`);
+    res.status(200).send('Atendimento iniciado.');
+});
+
+apiRouter.post('/chats/attendant-reply', (req, res) => {
+    const { userId, text } = req.body;
+    if (!userId || !text) return res.status(400).send('userId e text são obrigatórios.');
+
+    const session = getSession(userId);
+    if (!session || session.handledBy !== 'human') {
+        return res.status(400).send('Este usuário não está em atendimento humano.');
+    }
+
+    outboundGatewayQueue.push({ userId, text });
+    session.messageLog.push({ sender: 'attendant', text, timestamp: new Date() });
+    
+    res.status(200).send('Mensagem enfileirada para envio.');
+});
+
+apiRouter.post('/chats/resolve/:userId', (req, res) => {
+    const { userId } = req.params;
+    if (activeChats.has(userId)) {
+        const closingMessage = "Seu atendimento foi concluído. Se precisar de mais alguma coisa, é só chamar! A JZF Contabilidade agradece o seu contato.";
+        outboundGatewayQueue.push({ userId, text: closingMessage });
+        
+        userSessions.delete(userId); 
+        activeChats.delete(userId);
+
+        console.log(`[Resolve] Atendimento para ${userId} resolvido.`);
+        res.status(200).send('Atendimento resolvido.');
     } else {
-        res.status(404).send('Solicitação não encontrada.');
+        res.status(404).send('Nenhum atendimento ativo encontrado para este usuário.');
+    }
+});
+
+// --- ROTA DO GATEWAY ---
+apiRouter.get('/gateway/poll-outbound', (req, res) => {
+    if (outboundGatewayQueue.length > 0) {
+        const messagesToSend = [...outboundGatewayQueue];
+        outboundGatewayQueue.length = 0; // Limpa a fila
+        res.status(200).json(messagesToSend);
+    } else {
+        res.status(204).send(); // No Content
     }
 });
 
@@ -212,7 +289,6 @@ app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
 // --- SERVINDO ARQUIVOS ESTÁTICOS ---
-// A configuração padrão do express.static é suficiente. O es-module-shim no frontend cuidará da transpilação.
 app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
