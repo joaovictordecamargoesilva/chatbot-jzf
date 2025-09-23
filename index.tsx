@@ -1,5 +1,6 @@
 
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -534,8 +535,8 @@ const AttendantPanel = () => {
                             </button>
                             <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
                                 {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
-                                    // FIX: Pass the string ID directly to handleTransferChat, as the server expects a string.
-                                    <a href="#" key={a.id} onClick={() => handleTransferChat(a.id)} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
+                                    // FIX: The type error indicates a.id (string) is passed to a function expecting a number. Convert a.id to a number.
+                                    <a href="#" key={a.id} onClick={() => handleTransferChat(Number(a.id))} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
                                 ))}
                             </div>
                         </div>
