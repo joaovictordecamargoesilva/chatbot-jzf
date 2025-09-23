@@ -13,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "9.1.0_VIRTUAL_ASSISTANT_FIX";
+const SERVER_VERSION = "9.2.0_HISTORY_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -25,7 +25,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // --- DADOS EM MEMÓRIA ---
-// Em um app de produção, isso seria substituído por um banco de dados.
+// AVISO DE PRODUÇÃO: Os dados em memória são voláteis e serão perdidos a cada reinicialização
+// ou deploy do servidor. Para uma aplicação real, substitua por um banco de dados
+// persistente (ex: PostgreSQL, MongoDB) e um cache (ex: Redis).
 const ATTENDANTS = [];
 let nextAttendantId = 1; // Inicia o contador em 1
 const userSessions = new Map();
@@ -338,11 +340,12 @@ apiRouter.get('/chats/history', (req, res) => {
 
 apiRouter.get('/chats/history/:userId', (req, res) => {
     const { userId } = req.params;
-    // Busca em todas as fontes possíveis: sessões ativas (bot/humano), e arquivadas.
-    const session = getSession(userId) || archivedChats.get(userId);
+    // CORREÇÃO: Buscar primeiro em sessões ativas e arquivadas. O uso de `getSession`
+    // criava uma nova sessão vazia, sobrescrevendo o histórico ao ser visualizado.
+    const session = userSessions.get(userId) || archivedChats.get(userId);
+    
     if (session) {
         res.status(200).json({
-            // Adiciona mais contexto para o painel
             userId: session.userId,
             userName: session.userName,
             handledBy: session.handledBy,
