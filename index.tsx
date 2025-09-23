@@ -3,48 +3,20 @@ import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
 
 // --- START: Merged from types.ts ---
-// FIX: Added 'as const' to correctly infer literal types for Sender, resolving type errors.
+// FIX: Removed 'as const' as it's TypeScript syntax. The browser runs JavaScript.
 const Sender = {
   USER: 'user',
   BOT: 'bot',
-} as const;
+};
 
-type ChatState = typeof ChatStateValues[keyof typeof ChatStateValues];
+// All type aliases and interfaces are removed as they are TypeScript-only.
 const ChatState = ChatStateValues;
-
-
-interface Option {
-  text: string;
-  nextState: ChatState;
-  payload?: any;
-}
-
-interface Message {
-  id: number;
-  text: string | React.ReactNode;
-  sender: 'user' | 'bot';
-  options?: Option[];
-  requiresTextInput?: boolean;
-  file?: { name: string };
-}
-
-interface ConversationFlowStep {
-    text?: string | ((context: any) => string);
-    textKey?: string;
-    options?: Array<{
-        text?: string;
-        textKey?: string;
-        nextState: ChatState;
-        payload?: any;
-    }>;
-    requiresTextInput?: boolean;
-    nextState?: ChatState;
-}
 // --- END: Merged from types.ts ---
 
 
 // --- START: Merged from components/TypingIndicator.tsx ---
-const TypingIndicator: React.FC = () => (
+// Removed TypeScript type annotation `: React.FC`
+const TypingIndicator = () => (
   <div className="flex items-center space-x-1.5 p-4 self-start">
     <span className="sr-only">Bot está digitando</span>
     <div className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
@@ -56,11 +28,8 @@ const TypingIndicator: React.FC = () => (
 
 
 // --- START: Merged from components/MessageBubble.tsx ---
-interface MessageBubbleProps {
-  message: Message;
-}
-
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
+// Removed interface and TypeScript type annotation `: React.FC`
+const MessageBubble = ({ message }) => {
   const isBot = message.sender === Sender.BOT;
 
   const bubbleClasses = isBot
@@ -89,18 +58,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
 
 
 // --- START: Merged from components/ChatInput.tsx ---
-interface ChatInputProps {
-  onUserInput: (text: string, option?: Option) => void;
-  options?: Option[];
-  requiresTextInput?: boolean;
-  isBotTyping: boolean;
-  onFileChange: (file: File | null) => void;
-  selectedFile: File | null;
-}
-
-const ChatInput: React.FC<ChatInputProps> = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile }) => {
+// Removed interface and TypeScript type annotations
+const ChatInput = ({ onUserInput, options, requiresTextInput, isBotTyping, onFileChange, selectedFile }) => {
   const [inputValue, setInputValue] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef(null);
 
   const handleSend = () => {
     if (inputValue.trim() || selectedFile) {
@@ -109,7 +70,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onUserInput, options, requiresTex
     }
   };
   
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       handleSend();
     }
@@ -119,7 +80,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onUserInput, options, requiresTex
     fileInputRef.current?.click();
   };
 
-  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelected = (e) => {
     onFileChange(e.target.files?.[0] ?? null);
     if(fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -211,13 +172,9 @@ const ChatInput: React.FC<ChatInputProps> = ({ onUserInput, options, requiresTex
 
 
 // --- START: Merged from components/ChatWindow.tsx ---
-interface ChatWindowProps {
-  messages: Message[];
-  isBotTyping: boolean;
-}
-
-const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isBotTyping }) => {
-  const chatEndRef = useRef<HTMLDivElement>(null);
+// Removed interface and type annotations
+const ChatWindow = ({ messages, isBotTyping }) => {
+  const chatEndRef = useRef(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -239,18 +196,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isBotTyping }) => {
 
 
 // --- START: Merged from components/AttendantPanel.tsx ---
-interface Request {
-  id: number;
-  userId: string;
-  department: string;
-  message: string;
-  timestamp: string;
-}
-
-const AttendantPanel: React.FC = () => {
-  const [requests, setRequests] = useState<Request[]>([]);
+// Removed interface and type annotations
+const AttendantPanel = () => {
+  const [requests, setRequests] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(null);
 
   const fetchRequests = useCallback(async () => {
     try {
@@ -258,7 +208,7 @@ const AttendantPanel: React.FC = () => {
       if (!response.ok) {
         throw new Error('Falha ao buscar dados do servidor.');
       }
-      const data: Request[] = await response.json();
+      const data = await response.json();
       setRequests(data);
       setError(null);
     } catch (err) {
@@ -276,7 +226,7 @@ const AttendantPanel: React.FC = () => {
     return () => clearInterval(intervalId); // Limpa o intervalo quando o componente é desmontado
   }, [fetchRequests]);
 
-  const handleResolve = async (id: number) => {
+  const handleResolve = async (id) => {
     try {
         const response = await fetch(`/api/requests/resolve/${id}`, {
             method: 'POST',
@@ -291,7 +241,7 @@ const AttendantPanel: React.FC = () => {
     }
   };
 
-  const copyToClipboard = (text: string) => {
+  const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text).then(() => {
     }, (err) => {
       console.error('Falha ao copiar texto: ', err);
@@ -359,39 +309,33 @@ const AttendantPanel: React.FC = () => {
 
 
 // --- START: Merged from App.tsx ---
-interface FilePayload {
-  name: string;
-  type: string;
-  data: string; // base64
-}
-
-const App: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isBotTyping, setIsBotTyping] = useState<boolean>(true);
-  const [currentChatState, setCurrentChatState] = useState<ChatState>(ChatState.GREETING);
-  const [conversationContext, setConversationContext] = useState<any>({ history: {} });
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [aiHistory, setAiHistory] = useState<any[]>([]);
-  const [view, setView] = useState<'chatbot' | 'attendant'>('chatbot');
+const App = () => {
+  const [messages, setMessages] = useState([]);
+  const [isBotTyping, setIsBotTyping] = useState(true);
+  const [currentChatState, setCurrentChatState] = useState(ChatState.GREETING);
+  const [conversationContext, setConversationContext] = useState({ history: {} });
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [aiHistory, setAiHistory] = useState([]);
+  const [view, setView] = useState('chatbot');
   
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllerRef = useRef(null);
   
-  const addMessage = useCallback((message: Omit<Message, 'id'>) => {
+  const addMessage = useCallback((message) => {
     setMessages((prev) => [...prev, { ...message, id: Date.now() + Math.random() }]);
   }, []);
   
-  const getFlowResponse = useCallback((state: ChatState, context: any): Omit<Message, 'id' | 'sender'> => {
-    const flowStep: ConversationFlowStep | undefined = conversationFlow.get(state);
+  const getFlowResponse = useCallback((state, context) => {
+    const flowStep = conversationFlow.get(state);
     
     if (!flowStep) {
-        const greetingStep = conversationFlow.get(ChatState.GREETING)!;
+        const greetingStep = conversationFlow.get(ChatState.GREETING);
         return {
-            text: translations.pt[greetingStep.textKey!] || "Error: Greeting text not found.",
-            options: greetingStep.options?.map(opt => ({...opt, text: translations.pt[opt.textKey!]})),
+            text: translations.pt[greetingStep.textKey] || "Error: Greeting text not found.",
+            options: greetingStep.options?.map(opt => ({...opt, text: translations.pt[opt.textKey]})),
         };
     }
 
-    let responseText: string | React.ReactNode;
+    let responseText;
     if (flowStep.textKey) {
         const template = translations.pt[flowStep.textKey];
         responseText = typeof template === 'function' ? template(context) : template;
@@ -415,7 +359,7 @@ const App: React.FC = () => {
     };
   }, []);
   
-  const processBotTurn = useCallback(async (nextState: ChatState, context: any, userInput?: string, file?: File) => {
+  const processBotTurn = useCallback(async (nextState, context, userInput, file) => {
     setIsBotTyping(true);
     
     if (abortControllerRef.current) {
@@ -435,11 +379,11 @@ const App: React.FC = () => {
                      setAiHistory([]); 
                 }
             } else {
-                let filePayload: FilePayload | null = null;
+                let filePayload = null;
                 if (file) {
-                    const base64Data = await new Promise<string>((resolve) => {
+                    const base64Data = await new Promise((resolve) => {
                         const reader = new FileReader();
-                        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+                        reader.onloadend = () => resolve((reader.result).split(',')[1]);
                         reader.readAsDataURL(file);
                     });
                     filePayload = { name: file.name, type: file.type, data: base64Data };
@@ -493,7 +437,7 @@ const App: React.FC = () => {
         } else {
             await new Promise(res => setTimeout(res, 1000));
             setAiHistory([]); // Reset AI history when leaving the AI flow
-            let currentState: ChatState | undefined = nextState;
+            let currentState = nextState;
             let currentContext = { ...context };
             
             if(userInput && (currentChatState === ChatState.SCHEDULING_NEW_CLIENT_DETAILS || currentChatState === ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS)) {
@@ -521,7 +465,7 @@ const App: React.FC = () => {
             }
         }
     } catch (error) {
-        if ((error as Error).name === 'AbortError') {
+        if (error.name === 'AbortError') {
             console.log("Busca abortada");
             return;
         }
@@ -540,7 +484,7 @@ const App: React.FC = () => {
     }
   }, [addMessage, getFlowResponse, currentChatState, aiHistory]);
 
-  const handleUserInput = async (userInput: string, option?: Option) => {
+  const handleUserInput = async (userInput, option) => {
     const userMessageText = option?.text ?? userInput;
     
     addMessage({
