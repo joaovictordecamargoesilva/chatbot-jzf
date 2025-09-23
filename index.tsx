@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -286,7 +287,7 @@ const AttendantPanel = () => {
         clearInterval(titleIntervalRef.current);
         titleIntervalRef.current = null;
     }
-    document.title = "Assistente Virtual | JZF Contabilidade";
+    document.title = "Assistente Virtual | Painel";
   };
   
   // Polling for queue and active chats
@@ -307,7 +308,7 @@ const AttendantPanel = () => {
         if (!titleIntervalRef.current) {
             let toggle = false;
             titleIntervalRef.current = setInterval(() => {
-                document.title = toggle ? "!! NOVO ATENDIMENTO !!" : "Assistente Virtual | JZF Contabilidade";
+                document.title = toggle ? "!! NOVO ATENDIMENTO !!" : "Assistente Virtual | Painel";
                 toggle = !toggle;
             }, 1000);
         }
@@ -411,8 +412,11 @@ const AttendantPanel = () => {
         body: JSON.stringify({ attendantId: currentAttendant.id })
       });
       if (!response.ok) throw new Error('Falha ao iniciar atendimento.');
+      // FIX: The `activeChat` state was being set with the stale `req` object.
+      // It should be set with the response from the server, which contains the full, updated active chat information.
+      const newActiveChat = await response.json();
       setChatView('customer'); // Default to customer view
-      setActiveChat(req);
+      setActiveChat(newActiveChat);
     } catch (err) {
       console.error(err);
       alert('Ocorreu um erro ao tentar iniciar o atendimento.');
@@ -1084,12 +1088,9 @@ const App = () => {
   return (
     <div className="flex flex-col h-full max-w-4xl mx-auto bg-white shadow-2xl rounded-lg overflow-hidden">
       <header className="p-3 bg-[#005e54] text-white flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center space-x-3">
-          <img src="https://jzf.com.br/wp-content/uploads/2022/07/logo-jzf-branca.png" alt="Logo JZF" className="w-8 h-8 rounded-full object-contain bg-white p-1" />
-          <div>
-            <h1 className="font-semibold text-lg">Assistente JZF</h1>
+        <div>
+            <h1 className="font-semibold text-lg">Assistente Virtual</h1>
             <p className="text-xs text-gray-200">Online</p>
-          </div>
         </div>
         <button onClick={() => setView('attendant')} className="text-xs bg-white text-[#005e54] font-bold py-1 px-2 rounded hover:bg-gray-200 transition-colors">
             Painel do Atendente
