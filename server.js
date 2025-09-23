@@ -567,6 +567,8 @@ app.use((err, req, res, next) => {
   res.status(500).send('Algo deu errado no servidor!');
 });
 
+console.log('[Server Setup] Configuration complete. Attempting to start listener...');
+
 app.listen(port, () => {
     console.log(`[JZF Chatbot Server] Servidor escutando na porta ${port}.`);
     console.log('[JZF Chatbot Server] Servidor ONLINE e pronto para receber requisições.');
