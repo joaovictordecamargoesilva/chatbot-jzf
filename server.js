@@ -1,3 +1,4 @@
+
 // --- SERVIDOR DE API EXCLUSIVO PARA RENDER ---
 // Versão para deploy limpo. Nenhuma lógica do wppconnect deve estar aqui.
 
@@ -13,7 +14,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "8.0.0_STABLE_HUB";
+const SERVER_VERSION = "9.0.0_INTERNAL_CHAT";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -35,6 +36,7 @@ const requestQueue = [];
 const activeChats = new Map();
 const archivedChats = new Map();
 const outboundGatewayQueue = [];
+const internalChats = new Map();
 let syncedContacts = [];
 let nextRequestId = 1;
 
@@ -73,7 +75,6 @@ function getSession(userId, userName = null) {
             context: { history: {} },
             aiHistory: [],
             messageLog: [],
-            internalNotes: [], // Adicionado para o chat interno
             handledBy: 'bot', // 'bot' | 'human'
             attendantId: null,
             createdAt: new Date().toISOString(),
@@ -204,7 +205,24 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
 
   const replies = [];
   try {
-    await processMessage(session, userInput, replies);
+    // Check for global commands first
+    const lowerInput = userInput.trim().toLowerCase();
+    if (['voltar', 'inicio', 'início', 'menu'].includes(lowerInput)) {
+        session.currentState = ChatState.GREETING;
+        session.context = { history: {} };
+        const greetingStep = conversationFlow.get(ChatState.GREETING);
+        const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
+        replies.push(formattedReply);
+        session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
+    } else if (['sair', 'encerrar', 'finalizar'].includes(lowerInput)) {
+        const endMsg = translations.pt.sessionEnded;
+        replies.push(endMsg);
+        session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
+        session.currentState = ChatState.GREETING; // Reset for next time
+        session.context = { history: {} };
+    } else {
+        await processMessage(session, userInput, replies);
+    }
     res.status(200).json({ replies });
   } catch (error) {
     console.error(`[Webhook] Erro CRÍTICO ao processar mensagem para ${userId}:`, error);
@@ -218,7 +236,6 @@ apiRouter.post('/chat', async (req, res) => {
     if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) return res.status(400).send("Endpoint /api/chat é exclusivo para o assistente de IA.");
     
     try {
-        // @google/genai-ts FIX: Refactored to use the modern, stateless `generateContentStream` API.
         const systemInstruction = departmentSystemInstructions.pt[session.conversationContext.department] || "Você é um assistente prestativo.";
         
         const contentParts = [];
@@ -229,7 +246,6 @@ apiRouter.post('/chat', async (req, res) => {
             contentParts.push({ text: message });
         }
 
-        // Combine history with the new user message
         const contents = [
             ...(session.aiHistory || []),
             { role: 'user', parts: contentParts }
@@ -245,7 +261,6 @@ apiRouter.post('/chat', async (req, res) => {
         
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         for await (const chunk of responseStream) {
-            // The new SDK's stream chunk has a `text` property.
             if (chunk && chunk.text) {
               res.write(chunk.text);
             }
@@ -268,7 +283,7 @@ apiRouter.post('/attendants', (req, res) => {
     const newAttendant = {
         id: String(nextAttendantId++),
         name: name.trim(),
-        departments: [], // Pode ser expandido no futuro
+        departments: [],
     };
     ATTENDANTS.push(newAttendant);
     console.log(`[Attendants] Novo atendente criado: ${newAttendant.name} (ID: ${newAttendant.id})`);
@@ -280,17 +295,14 @@ apiRouter.get('/chats/active', (req, res) => res.status(200).json(Array.from(act
 
 apiRouter.get('/clients', (req, res) => {
     const clients = new Map();
-    // Prioridade 1: Contatos sincronizados do WhatsApp
     syncedContacts.forEach(c => {
         if (!clients.has(c.userId)) {
             clients.set(c.userId, { userId: c.userId, userName: c.userName });
         }
     });
-    // Prioridade 2: Sessões de usuário ativas (podem ter nomes mais atualizados)
     for (const session of userSessions.values()) {
         clients.set(session.userId, { userId: session.userId, userName: session.userName });
     }
-    // Prioridade 3: Chats arquivados
     for (const chat of archivedChats.values()) {
          if (!clients.has(chat.userId)) {
             clients.set(chat.userId, { userId: chat.userId, userName: chat.userName });
@@ -316,36 +328,10 @@ apiRouter.get('/chats/history/:userId', (req, res) => {
     if (session) {
         res.status(200).json({
             messageLog: session.messageLog || [],
-            internalNotes: session.internalNotes || []
         });
     } else {
         res.status(404).send('Histórico não encontrado.');
     }
-});
-
-apiRouter.post('/chats/internal-note/:userId', (req, res) => {
-    const { userId } = req.params;
-    const { attendantId, text } = req.body;
-    const attendant = ATTENDANTS.find(a => a.id === attendantId);
-
-    if (!attendant) return res.status(400).send('Atendente inválido.');
-    if (!text || !text.trim()) return res.status(400).send('O texto da nota é obrigatório.');
-
-    const session = getSession(userId);
-    if (!session || session.handledBy !== 'human') {
-        return res.status(403).send('Não é possível adicionar uma nota a este chat.');
-    }
-
-    const note = {
-        attendantId,
-        attendantName: attendant.name,
-        text,
-        timestamp: new Date().toISOString()
-    };
-    session.internalNotes.push(note);
-
-    console.log(`[Internal Chat] Nova nota de ${attendant.name} adicionada ao chat de ${userId}.`);
-    res.status(201).json(note);
 });
 
 apiRouter.post('/chats/takeover/:userId', (req, res) => {
@@ -466,6 +452,45 @@ apiRouter.post('/chats/initiate', (req, res) => {
 
     console.log(`[Initiate] Nova conversa iniciada com ${userId} por ${attendant.name}.`);
     res.status(201).json(activeChatInfo);
+});
+
+// --- ROTAS DO CHAT INTERNO ---
+const getInternalChatId = (id1, id2) => [String(id1), String(id2)].sort().join('-');
+
+apiRouter.get('/internal-chats/:attendantId/:partnerId', (req, res) => {
+    const { attendantId, partnerId } = req.params;
+    const chatId = getInternalChatId(attendantId, partnerId);
+    const chatHistory = internalChats.get(chatId) || [];
+    res.status(200).json(chatHistory);
+});
+
+apiRouter.post('/internal-chats', (req, res) => {
+    const { senderId, recipientId, text } = req.body;
+
+    if (!senderId || !recipientId || !text || !text.trim()) {
+        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text are required.' });
+    }
+
+    const sender = ATTENDANTS.find(a => String(a.id) === String(senderId));
+    if (!sender) {
+        return res.status(404).json({ error: 'Sender not found.' });
+    }
+    
+    const chatId = getInternalChatId(senderId, recipientId);
+    if (!internalChats.has(chatId)) {
+        internalChats.set(chatId, []);
+    }
+
+    const message = {
+        senderId,
+        senderName: sender.name,
+        text,
+        timestamp: new Date().toISOString()
+    };
+    
+    internalChats.get(chatId).push(message);
+    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}`);
+    res.status(201).json(message);
 });
 
 
