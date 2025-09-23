@@ -31,7 +31,7 @@ const flowSteps = [
         { textKey: "optionAttendant", nextState: ChatState.ATTENDANT_SELECT },
         { textKey: "optionEndSession", nextState: ChatState.END_SESSION },
       ],
-      requiresTextInput: true, // Adicionado para mostrar o campo de texto
+      requiresTextInput: false,
     },
   ],
   // AI Assistant Flow
@@ -47,14 +47,17 @@ const flowSteps = [
         { textKey: "deptFinancial", nextState: ChatState.AI_ASSISTANT_CHATTING, payload: { department: "Financeiro" } },
         { textKey: "backToStart", nextState: ChatState.GREETING },
       ],
-      requiresTextInput: true, // Adicionado para mostrar o campo de texto
+      requiresTextInput: false,
     },
   ],
   [
     ChatState.AI_ASSISTANT_CHATTING,
     {
       textKey: 'aiDeptPrompt',
-      options: [{ textKey: "backToStart", nextState: ChatState.GREETING }],
+      options: [
+        { textKey: "optionHumanTransfer", nextState: ChatState.ATTENDANT_SELECT },
+        { textKey: "backToStart", nextState: ChatState.GREETING }
+      ],
       requiresTextInput: true,
     },
   ],
@@ -142,10 +145,11 @@ export const conversationFlow = new Map(flowSteps);
 export const translations = {
     pt: {
         greeting: "Olá! Eu sou o assistente virtual da JZF Contabilidade. Como posso te ajudar hoje?",
-        optionAiAssistant: "🤖 Falar com Assistente IA",
+        optionAiAssistant: "🤖 Falar com Assistente Virtual",
         optionScheduling: "📅 Agendar um horário",
         optionAttendant: "🙋‍♂️ Falar com um atendente",
         optionEndSession: "🚪 Encerrar conversa",
+        optionHumanTransfer: "🗣️ Falar com um atendente",
         
         aiDeptSelect: "Para qual departamento você gostaria de direcionar sua pergunta?",
         deptRH: "RH (Recursos Humanos)",
@@ -155,7 +159,7 @@ export const translations = {
         deptFinancial: "Financeiro",
         backToStart: "↩️ Voltar ao início",
 
-        aiDeptPrompt: (context) => `Ok, você selecionou o departamento *${context.department}*. Pode me fazer sua pergunta agora. Se precisar, pode também me enviar um arquivo (como PDF, imagem ou planilha).`,
+        aiDeptPrompt: (context) => `Ok, você selecionou o departamento *${context.department}*. Pode me fazer sua pergunta agora. Se precisar, pode também me enviar um arquivo (como PDF, imagem ou planilha).\n\nSe preferir, escolha uma das opções abaixo:`,
 
         schedulingClientType: "Para começar o agendamento, por favor, me informe: você já é nosso cliente?",
         clientTypeYes: "Sim, já sou cliente",
@@ -182,12 +186,14 @@ export const translations = {
 };
 
 // --- INSTRUÇÕES DE SISTEMA PARA A IA ---
+const instructionSuffix = "Sempre responda em português do Brasil. Se você não souber a resposta para uma pergunta, peça desculpas, diga que não entendeu e pergunte se o usuário gostaria de falar com um atendente humano para obter ajuda especializada.";
+
 export const departmentSystemInstructions = {
     pt: {
-        "RH": "Você é um especialista em RH da JZF Contabilidade. Responda a perguntas sobre folhas de pagamento, benefícios, legislação trabalhista e processos de RH de forma clara e objetiva, sempre em português do Brasil.",
-        "Contábil": "Você é um especialista contábil da JZF Contabilidade. Responda a perguntas sobre balanços, DRE, impostos sobre lucro, e outras questões contábeis com precisão, sempre em português do Brasil.",
-        "Fiscal": "Você é um especialista fiscal da JZF Contabilidade. Responda a perguntas sobre ICMS, IPI, PIS, COFINS, Simples Nacional e outras obrigações fiscais, sempre em português do Brasil.",
-        "Societário": "Você é um especialista em questões societárias da JZF Contabilidade. Responda a perguntas sobre abertura, alteração e encerramento de empresas, contratos sociais e tipos de sociedade, sempre em português do Brasil.",
-        "Financeiro": "Você é um especialista do departamento financeiro da JZF Contabilidade. Responda a perguntas sobre faturamento, boletos, pagamentos e renegociação de dívidas de forma clara e educada, sempre em português do Brasil."
+        "RH": `Você é um especialista em RH da JZF Contabilidade. Responda a perguntas sobre folhas de pagamento, benefícios, legislação trabalhista e processos de RH de forma clara e objetiva. ${instructionSuffix}`,
+        "Contábil": `Você é um especialista contábil da JZF Contabilidade. Responda a perguntas sobre balanços, DRE, impostos sobre lucro, e outras questões contábeis com precisão. ${instructionSuffix}`,
+        "Fiscal": `Você é um especialista fiscal da JZF Contabilidade. Responda a perguntas sobre ICMS, IPI, PIS, COFINS, Simples Nacional e outras obrigações fiscais. ${instructionSuffix}`,
+        "Societário": `Você é um especialista em questões societárias da JZF Contabilidade. Responda a perguntas sobre abertura, alteração e encerramento de empresas, contratos sociais e tipos de sociedade. ${instructionSuffix}`,
+        "Financeiro": `Você é um especialista do departamento financeiro da JZF Contabilidade. Responda a perguntas sobre faturamento, boletos, pagamentos e renegociação de dívidas de forma clara e educada. ${instructionSuffix}`
     }
 };
