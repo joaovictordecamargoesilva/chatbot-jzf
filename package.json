@@ -1,7 +1,8 @@
+
 {
   "name": "jzf-chatbot-server",
   "version": "3.0.0",
-  "description": "Servidor de API limpo para o Chatbot de Contabilidade JZF.",
+  "description": "Servidor de API para o Chatbot de Atendimento.",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -12,10 +13,10 @@
   "license": "ISC",
   "dependencies": {
     "@google/genai": "^1.2.0",
-    "express": "^4.19.2",
-    "node-fetch": "^3.3.2"
+    "express": "^4.19.2"
   },
   "devDependencies": {
-    "@wppconnect-team/wppconnect": "^1.37.5"
+    "@wppconnect-team/wppconnect": "^1.37.5",
+    "node-fetch": "^3.3.2"
   }
 }
