@@ -15,6 +15,11 @@ export const ChatState = {
   END_SESSION: 'END_SESSION',
 };
 
+const commonNavigationOptions = [
+    { textKey: "backToStart", nextState: ChatState.GREETING },
+    { textKey: "optionEndSession", nextState: ChatState.END_SESSION },
+];
+
 const flowSteps = [
   [
     ChatState.GREETING,
@@ -70,7 +75,8 @@ const flowSteps = [
     {
         textKey: "schedulingNewClientDetails",
         requiresTextInput: true,
-        nextState: ChatState.SCHEDULING_SUMMARY
+        nextState: ChatState.SCHEDULING_SUMMARY,
+        options: commonNavigationOptions,
     }
   ],
   [
@@ -78,7 +84,8 @@ const flowSteps = [
     {
         textKey: "schedulingExistingClientDetails",
         requiresTextInput: true,
-        nextState: ChatState.SCHEDULING_SUMMARY
+        nextState: ChatState.SCHEDULING_SUMMARY,
+        options: commonNavigationOptions,
     }
   ],
   [
@@ -88,6 +95,7 @@ const flowSteps = [
       options: [
         { textKey: "confirmYes", nextState: ChatState.SCHEDULING_CONFIRMED },
         { textKey: "confirmNo", nextState: ChatState.SCHEDULING_CLIENT_TYPE },
+        ...commonNavigationOptions
       ],
     },
   ],
