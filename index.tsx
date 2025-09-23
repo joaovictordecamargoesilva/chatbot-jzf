@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -66,7 +59,7 @@ const MessageBubble = ({ message }) => {
         {message.file && (
             <div className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2-2z" />
                 </svg>
                 <span className="text-xs text-gray-700 font-medium truncate">{message.file.name}</span>
             </div>
@@ -222,6 +215,24 @@ const ChatWindow = ({ messages, isBotTyping, children }) => {
 };
 // --- END: Merged from components/ChatWindow.tsx ---
 
+// --- START: NEW COMPONENT InternalNoteBubble.tsx ---
+const InternalNoteBubble = ({ note }) => {
+    return (
+        <div className="flex w-full justify-center my-1">
+            <div className="max-w-4/5 w-full bg-yellow-100 border-l-4 border-yellow-400 text-gray-800 p-3 rounded-r-lg shadow-sm">
+                <div className="flex justify-between items-center mb-1">
+                    <p className="font-bold text-xs text-yellow-800">{note.attendantName}</p>
+                    <span className="text-[10px] text-gray-500">
+                        {new Date(note.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                </div>
+                <p className="text-sm whitespace-pre-wrap">{note.text}</p>
+            </div>
+        </div>
+    );
+};
+// --- END: NEW COMPONENT InternalNoteBubble.tsx ---
+
 
 // --- START: Merged from components/AttendantPanel.tsx ---
 const AttendantPanel = () => {
@@ -230,6 +241,7 @@ const AttendantPanel = () => {
   const [panelView, setPanelView] = useState('queue'); // queue, active, history, newChat
   const [activeChat, setActiveChat] = useState(null); // { userId, userName, ... }
   const [chatMessages, setChatMessages] = useState([]);
+  const [internalNotes, setInternalNotes] = useState([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [requests, setRequests] = useState([]);
   const [activeChats, setActiveChats] = useState([]);
@@ -238,26 +250,32 @@ const AttendantPanel = () => {
   const [error, setError] = useState(null);
   const notificationAudioRef = useRef(null);
   const titleIntervalRef = useRef(null);
+  const [chatView, setChatView] = useState('customer'); // 'customer' or 'internal'
   
   // State for "New Chat" feature
   const [clients, setClients] = useState([]);
   const [newChatSearch, setNewChatSearch] = useState('');
   const [selectedRecipient, setSelectedRecipient] = useState(null);
 
+  // State for "Create User" feature
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+
 
   // Fetch attendants on mount
+  const fetchAttendants = async () => {
+    try {
+      const res = await fetch('/api/attendants');
+      if (!res.ok) throw new Error("Failed to fetch attendants");
+      const data = await res.json();
+      setAttendants(data);
+    } catch (err) {
+      console.error(err);
+      setError("Não foi possível carregar a lista de atendentes.");
+    }
+  };
+  
   useEffect(() => {
-    const fetchAttendants = async () => {
-      try {
-        const res = await fetch('/api/attendants');
-        if (!res.ok) throw new Error("Failed to fetch attendants");
-        const data = await res.json();
-        setAttendants(data);
-      } catch (err) {
-        console.error(err);
-        setError("Não foi possível carregar a lista de atendentes.");
-      }
-    };
     fetchAttendants();
     notificationAudioRef.current = new Audio('https://cdn.jsdelivr.net/gh/google/ai-studio-files/examples/uber_notification.mp3');
   }, []);
@@ -316,7 +334,7 @@ const AttendantPanel = () => {
     }
   }, [fetchData, panelView]);
   
-  // Polling for active chat history
+  // Polling for active chat history AND internal notes
   useEffect(() => {
     if (!activeChat) return;
 
@@ -325,7 +343,8 @@ const AttendantPanel = () => {
             const response = await fetch(`/api/chats/history/${activeChat.userId}`);
             if (!response.ok) throw new Error('Falha ao buscar histórico.');
             const data = await response.json();
-            setChatMessages(data);
+            setChatMessages(data.messageLog);
+            setInternalNotes(data.internalNotes);
         } catch (err) {
             console.error(err);
             setError('Não foi possível carregar o histórico da conversa.');
@@ -360,6 +379,7 @@ const AttendantPanel = () => {
       fetchArchived();
     } else if (panelView === 'newChat') {
       const fetchClients = async () => {
+        setIsLoading(true);
         try {
           const res = await fetch('/api/clients');
           if (!res.ok) throw new Error('Falha ao buscar clientes.');
@@ -368,6 +388,8 @@ const AttendantPanel = () => {
         } catch (err) {
           console.error(err);
           setError("Não foi possível carregar a lista de clientes.");
+        } finally {
+            setIsLoading(false);
         }
       };
       fetchClients();
@@ -387,6 +409,7 @@ const AttendantPanel = () => {
         body: JSON.stringify({ attendantId: currentAttendant.id })
       });
       if (!response.ok) throw new Error('Falha ao iniciar atendimento.');
+      setChatView('customer'); // Default to customer view
       setActiveChat(req);
     } catch (err) {
       console.error(err);
@@ -395,6 +418,7 @@ const AttendantPanel = () => {
   };
 
   const handleOpenActiveChat = (chat) => {
+    setChatView('customer'); // Default to customer view
     setActiveChat(chat);
   };
   
@@ -414,6 +438,28 @@ const AttendantPanel = () => {
       }
   };
   
+  const handleSendInternalNote = async (text) => {
+    if (!text.trim() || !activeChat) return;
+    const optimisticNote = {
+        attendantId: currentAttendant.id,
+        attendantName: currentAttendant.name,
+        text,
+        timestamp: new Date().toISOString()
+    };
+    setInternalNotes(prev => [...prev, optimisticNote]);
+    try {
+        await fetch(`/api/chats/internal-note/${activeChat.userId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ attendantId: currentAttendant.id, text }),
+        });
+    } catch (err) {
+        console.error(err);
+        alert('Ocorreu um erro ao enviar a nota interna.');
+        setInternalNotes(prev => prev.filter(n => n.timestamp !== optimisticNote.timestamp)); // Revert on error
+    }
+  };
+
   const handleResolveChat = async () => {
       if (!activeChat) return;
       if (!confirm('Tem certeza que deseja resolver e fechar este atendimento?')) return;
@@ -426,6 +472,7 @@ const AttendantPanel = () => {
           alert("Atendimento finalizado e arquivado com sucesso!");
           setActiveChat(null);
           setChatMessages([]);
+          setInternalNotes([]);
           setPanelView('queue');
           await fetchData();
       } catch (err) {
@@ -440,12 +487,12 @@ const AttendantPanel = () => {
         await fetch(`/api/chats/transfer/${activeChat.userId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            // FIX: Ensure the newAttendantId is a string, as expected by the server.
-            body: JSON.stringify({ newAttendantId: String(newAttendantId), transferringAttendantId: currentAttendant.id }),
+            body: JSON.stringify({ newAttendantId: newAttendantId, transferringAttendantId: currentAttendant.id }),
         });
         alert("Atendimento transferido com sucesso!");
         setActiveChat(null);
         setChatMessages([]);
+        setInternalNotes([]);
         setPanelView('queue');
         await fetchData();
     } catch (err) {
@@ -474,6 +521,7 @@ const AttendantPanel = () => {
         const newChat = await response.json();
         alert("Conversa iniciada com sucesso!");
         setActiveChat(newChat); // Open the new chat immediately
+        setChatView('customer'); // Ensure view is correct
         // Reset form
         setNewChatSearch('');
         setSelectedRecipient(null);
@@ -483,6 +531,29 @@ const AttendantPanel = () => {
         alert(`Ocorreu um erro ao iniciar a conversa: ${err.message}`);
     }
   };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    if (!newUserName.trim()) {
+        alert("O nome do usuário não pode estar em branco.");
+        return;
+    }
+    try {
+        const response = await fetch('/api/attendants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newUserName }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        alert("Usuário criado com sucesso!");
+        setNewUserName('');
+        setShowCreateUser(false);
+        await fetchAttendants(); // Refresh the list
+    } catch (err) {
+        console.error(err);
+        alert(`Erro ao criar usuário: ${err.message}`);
+    }
+};
 
   // Handlers for New Chat autocomplete
   const handleSearchChange = (e) => {
@@ -507,14 +578,43 @@ const AttendantPanel = () => {
         <div className="w-full max-w-sm bg-white p-8 rounded-lg shadow-md">
           <h2 className="text-2xl font-bold text-center text-gray-700 mb-2">Painel de Atendimento</h2>
           <p className="text-center text-gray-500 mb-6">Selecione seu usuário para continuar</p>
-          <select 
-            onChange={(e) => handleLogin(e.target.value)}
-            defaultValue=""
-            className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54] mb-4"
-          >
-            <option value="" disabled>Selecione um atendente...</option>
-            {attendants.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+          
+          {!showCreateUser ? (
+            <>
+              <select 
+                onChange={(e) => handleLogin(e.target.value)}
+                defaultValue=""
+                className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54] mb-4"
+              >
+                <option value="" disabled>Selecione um atendente...</option>
+                {attendants.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+              <button onClick={() => setShowCreateUser(true)} className="w-full text-center text-sm text-blue-600 hover:underline">
+                Criar Novo Usuário
+              </button>
+            </>
+          ) : (
+            <form onSubmit={handleCreateUser}>
+                <label htmlFor="new-user-name" className="block text-sm font-medium text-gray-700">Nome do Novo Atendente</label>
+                <input
+                    id="new-user-name"
+                    type="text"
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    className="mt-1 w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#005e54]"
+                    autoFocus
+                />
+                <div className="flex items-center justify-between mt-4">
+                    <button type="button" onClick={() => setShowCreateUser(false)} className="text-sm text-gray-600 hover:underline">
+                        Cancelar
+                    </button>
+                    <button type="submit" className="bg-blue-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-blue-600">
+                        Salvar
+                    </button>
+                </div>
+            </form>
+          )}
+
           {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
         </div>
       </div>
@@ -539,8 +639,7 @@ const AttendantPanel = () => {
                             </button>
                             <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
                                 {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
-                                    // FIX: The error "Type 'string' is not assignable to type 'number'" suggests the function expects a number. Parse the string ID to an integer.
-                                    <a href="#" key={a.id} onClick={() => handleTransferChat(parseInt(a.id, 10))} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
+                                    <a href="#" key={a.id} onClick={(e) => { e.preventDefault(); handleTransferChat(a.id); }} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
                                 ))}
                             </div>
                         </div>
@@ -550,18 +649,49 @@ const AttendantPanel = () => {
                     </div>
                 )}
             </header>
-            <ChatWindow messages={chatMessages} isBotTyping={isChatLoading}>
-              {isChatLoading && chatMessages.length === 0 && (
-                <div className="text-center text-gray-500 p-4">Carregando histórico...</div>
-              )}
-            </ChatWindow>
+            
+            <div className="flex-shrink-0 bg-gray-50 border-b border-gray-200">
+                <nav className="flex -mb-px">
+                    <button onClick={() => setChatView('customer')} className={`py-2 px-4 text-sm font-medium ${chatView === 'customer' ? 'border-b-2 border-blue-500 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
+                        Conversa com Cliente
+                    </button>
+                    <button onClick={() => setChatView('internal')} className={`py-2 px-4 text-sm font-medium ${chatView === 'internal' ? 'border-b-2 border-yellow-500 text-yellow-600' : 'text-gray-500 hover:text-gray-700'}`}>
+                        Notas Internas <span className="ml-1 bg-yellow-400 text-yellow-800 text-xs font-bold rounded-full px-2">{internalNotes.length}</span>
+                    </button>
+                </nav>
+            </div>
+
+            {chatView === 'customer' ? (
+                <ChatWindow messages={chatMessages} isBotTyping={isChatLoading}>
+                  {isChatLoading && chatMessages.length === 0 && (
+                    <div className="text-center text-gray-500 p-4">Carregando histórico...</div>
+                  )}
+                </ChatWindow>
+            ) : (
+                <div className="flex-1 p-2 overflow-y-auto bg-gray-200">
+                    <div className="flex flex-col space-y-2">
+                        {internalNotes.map((note) => <InternalNoteBubble key={note.timestamp} note={note} />)}
+                        {internalNotes.length === 0 && <div className="text-center text-gray-500 p-8">Nenhuma nota interna ainda.</div>}
+                    </div>
+                </div>
+            )}
+
             {isMyChat ? (
-                <ChatInput 
-                    onUserInput={handleSendAttendantMessage} options={[]}
-                    requiresTextInput={true} isBotTyping={false}
-                    onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
-                    selectedFile={null} placeholderText="Digite sua mensagem..."
-                />
+                chatView === 'customer' ? (
+                    <ChatInput 
+                        onUserInput={handleSendAttendantMessage} options={[]}
+                        requiresTextInput={true} isBotTyping={false}
+                        onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
+                        selectedFile={null} placeholderText="Digite sua mensagem..."
+                    />
+                ) : ( // Internal chat input
+                    <ChatInput
+                        onUserInput={handleSendInternalNote} options={[]}
+                        requiresTextInput={true} isBotTyping={false}
+                        onFileChange={null} // No file changes for notes
+                        selectedFile={null} placeholderText="Adicionar nota interna... (@mencao)"
+                    />
+                )
             ) : (
                 <div className="p-4 bg-gray-200 text-center text-sm text-gray-600">
                     Este chat está sendo atendido por <strong>{attendants.find(a => a.id === activeChat.attendantId)?.name || 'outro atendente'}</strong>. (Modo Leitura)
@@ -650,6 +780,7 @@ const AttendantPanel = () => {
              {panelView === 'newChat' && (
                 <div>
                     <h3 className="text-lg font-bold text-gray-700 mb-3">Iniciar Nova Conversa</h3>
+                    { isLoading ? <div className="text-center text-gray-500 p-4">Carregando contatos...</div> :
                     <form onSubmit={handleInitiateChat} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 space-y-4">
                         <div className="relative">
                             <label htmlFor="recipient" className="block text-sm font-medium text-gray-700">Cliente</label>
@@ -687,6 +818,7 @@ const AttendantPanel = () => {
                            <button type="submit" className="bg-green-500 text-white text-sm font-bold py-2 px-4 rounded-md hover:bg-green-600">Enviar e Iniciar Atendimento</button>
                         </div>
                     </form>
+                    }
                 </div>
             )}
         </div>
@@ -892,105 +1024,89 @@ const App = () => {
     const isEndSession = option?.nextState === ChatState.END_SESSION;
     if (isEndSession) {
       setIsBotTyping(true);
-      await new Promise(res => setTimeout(res, 500));
-      addMessage({ text: translations.pt.sessionEnded, sender: Sender.BOT });
-      await new Promise(res => setTimeout(res, 1500));
-      
-      setMessages([]);
-      setConversationContext({ history: {} });
-      setAiHistory([]);
-      setSelectedFile(null);
-
-      await processBotTurn(ChatState.GREETING, {}, undefined, undefined);
+      setTimeout(() => {
+        addMessage({ text: translations.pt.sessionEnded, sender: Sender.BOT });
+        setIsBotTyping(false);
+      }, 1000);
       return;
     }
-
-    let nextState = option ? option.nextState : currentChatState;
-    let contextUpdate = option?.payload ? { ...conversationContext, ...option.payload } : { ...conversationContext };
-
-    if (nextState === ChatState.AI_ASSISTANT_CHATTING && option?.payload?.department) {
-        contextUpdate.department = option.payload.department;
-        setAiHistory([]);
+    
+    const nextState = option?.nextState ?? conversationFlow.get(currentChatState)?.nextState ?? ChatState.GREETING;
+    const context = { ...conversationContext, ...option?.payload };
+    setConversationContext(context);
+    
+    processBotTurn(nextState, context, userInput, selectedFile);
+    
+    if (selectedFile) {
+        setSelectedFile(null); // Clear file after sending
     }
-    
-    setConversationContext(contextUpdate);
-    
-    await processBotTurn(nextState, contextUpdate, userInput, selectedFile || undefined);
-    setSelectedFile(null);
   };
-  
-  useEffect(() => {
-    if (messages.length === 0) {
-      processBotTurn(ChatState.GREETING, {}, undefined, undefined);
-    }
-  }, []);
 
-  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  useEffect(() => {
+    const savedSession = localStorage.getItem('chatSession');
+    if (savedSession) {
+        const { messages, state, context, aiHistory: savedAiHistory } = JSON.parse(savedSession);
+        setMessages(messages);
+        setCurrentChatState(state);
+        setConversationContext(context);
+        setAiHistory(savedAiHistory || []);
+        setIsBotTyping(false);
+    } else {
+      processBotTurn(ChatState.GREETING, { history: {} });
+    }
+  }, [processBotTurn]);
+
+  useEffect(() => {
+    const sessionToSave = {
+        messages,
+        state: currentChatState,
+        context: conversationContext,
+        aiHistory: aiHistory
+    };
+    localStorage.setItem('chatSession', JSON.stringify(sessionToSave));
+  }, [messages, currentChatState, conversationContext, aiHistory]);
+
+  const currentFlowStep = conversationFlow.get(currentChatState);
+  const options = getFlowResponse(currentChatState, conversationContext).options || [];
+  let requiresTextInput = currentFlowStep?.requiresTextInput ?? false;
+  if (currentChatState === ChatState.AI_ASSISTANT_CHATTING && aiHistory.length > 0) {
+      requiresTextInput = true;
+  }
+  
+  if (view === 'attendant') {
+    return <AttendantPanel />;
+  }
 
   return (
-    <div className="flex flex-col h-screen max-w-2xl mx-auto bg-white shadow-2xl rounded-lg overflow-hidden">
-       <header className="bg-[#005e54] text-white p-3 flex items-center justify-between shadow-md flex-shrink-0">
-        <div className="flex items-center">
-            <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mr-3 flex-shrink-0">
-               <svg className="w-8 h-8 text-[#005e54]" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold">JZF Contabilidade</h1>
-              <p className="text-sm text-gray-200">
-                {view === 'chatbot' ? 'Assistente Virtual' : 'Painel de Atendimento'}
-              </p>
-            </div>
+    <div className="flex flex-col h-full max-w-4xl mx-auto bg-white shadow-2xl rounded-lg overflow-hidden">
+      <header className="p-3 bg-[#005e54] text-white flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center space-x-3">
+          <img src="https://jzf.com.br/wp-content/uploads/2022/07/logo-jzf-branca.png" alt="Logo JZF" className="w-8 h-8 rounded-full object-contain bg-white p-1" />
+          <div>
+            <h1 className="font-semibold text-lg">Assistente JZF</h1>
+            <p className="text-xs text-gray-200">Online</p>
+          </div>
         </div>
-        <button 
-          onClick={() => setView(v => v === 'chatbot' ? 'attendant' : 'chatbot')}
-          className="p-2 rounded-full hover:bg-white/20 transition-colors"
-          title={view === 'chatbot' ? 'Ver Painel de Atendimento' : 'Ver Simulação do Chatbot'}
-        >
-          {view === 'chatbot' ? (
-             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-          )}
+        <button onClick={() => setView('attendant')} className="text-xs bg-white text-[#005e54] font-bold py-1 px-2 rounded hover:bg-gray-200 transition-colors">
+            Painel do Atendente
         </button>
       </header>
-      
-      <main className="flex-1 overflow-y-hidden">
-        {view === 'chatbot' ? (
-            <div className="flex flex-col h-full">
-            {/* FIX: Pass null as children to satisfy the component's prop requirements. */}
-            <ChatWindow messages={messages} isBotTyping={isBotTyping}>{null}</ChatWindow>
-            <ChatInput
-                onUserInput={handleUserInput}
-                options={lastMessage?.sender === Sender.BOT ? lastMessage.options : []}
-                requiresTextInput={lastMessage?.sender === Sender.BOT ? lastMessage.requiresTextInput : false}
-                isBotTyping={isBotTyping}
-                onFileChange={setSelectedFile}
-                selectedFile={selectedFile}
-            />
-            </div>
-        ) : (
-            <AttendantPanel />
-        )}
-      </main>
+      <ChatWindow messages={messages} isBotTyping={isBotTyping} />
+      <ChatInput
+        onUserInput={handleUserInput}
+        options={options}
+        requiresTextInput={requiresTextInput}
+        isBotTyping={isBotTyping}
+        onFileChange={setSelectedFile}
+        selectedFile={selectedFile}
+      />
     </div>
   );
 };
 // --- END: Merged from App.tsx ---
 
 
-// --- Final Render Call ---
-const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
-}
-
-const root = ReactDOM.createRoot(rootElement);
+const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
     <App />
