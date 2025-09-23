@@ -1,48 +1,72 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chatbot</title>
-  </head>
-  <body>
-    <div id="root"></div>
-
-    <!-- Import React e Babel -->
-    <script type="importmap">
-      {
-        "imports": {
-          "react": "https://esm.sh/react@18.3.1",
-          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
-          "./chatbotLogic.js": "./chatbotLogic.js"
+    <title>Chatbot Contábil</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 1. Load Babel for in-browser transpilation -->
+    <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+    
+    <!-- 2. Configure es-module-shims to use Babel for .tsx files -->
+    <script>
+      window.esmsInitOptions = {
+        shimMode: true,
+        async fetch(url, options) {
+          const res = await fetch(url, options);
+          if (!res.ok) return res;
+          
+          // Transpile .tsx files and any local .js files (like chatbotLogic.js)
+          if (url.pathname.endsWith('.tsx') || (url.pathname.endsWith('.js') && !url.href.includes('esm.sh'))) {
+            const source = await res.text();
+            const { code } = Babel.transform(source, {
+              presets: ['react', 'typescript'],
+              filename: url.href
+            });
+            return new Response(new Blob([code], { type: 'application/javascript' }));
+          }
+          
+          return res;
         }
       }
     </script>
+    
+    <!-- 3. ES Module Shims: Polyfill for importmaps -->
+    <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+    
+    <!-- 4. IMPORT MAP - 100% LIMPO PARA FRONTEND -->
+    <!-- Apenas dependências do NAVEGADOR (frontend) devem estar aqui. -->
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "./chatbotLogic.js": "./chatbotLogic.js",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react/": "https://aistudiocdn.com/react@^19.1.1/",
+    "express": "https://aistudiocdn.com/express@^5.1.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.20.0",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "url": "https://aistudiocdn.com/url@^0.11.4",
+    "@wppconnect-team/wppconnect": "https://aistudiocdn.com/@wppconnect-team/wppconnect@^1.37.5",
+    "node-fetch": "https://aistudiocdn.com/node-fetch@^3.3.2"
+  }
+}
+</script>
 
-    <!-- Babel standalone para compilar TSX -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
-
-    <script>
-      // Configura o es-module-shims para transformar TSX com Babel
-      esmsInitOptions = {
-        async fetch(url) {
-          if (/\.tsx?$/.test(url)) {
-            const res = await fetch(url);
-            const src = await res.text();
-            const { code } = Babel.transform(src, {
-              presets: ["react", "typescript"], // 👈 agora entende TS + JSX
-            });
-            return new Response(code, {
-              headers: { "Content-Type": "application/javascript" },
-            });
-          }
-          return fetch(url);
-        },
-      };
-    </script>
-
-    <!-- Importa o ponto de entrada React -->
-    <script type="module" src="./index.tsx"></script>
+    <style>
+      .whatsapp-bg {
+        background-color: #e5ddd5;
+        background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
+      }
+    </style>
+</head>
+  <body class="bg-gray-200">
+    <div id="root"></div>
+    
+    <!-- 5. Load the main TSX module. The shim will intercept, transpile, and execute this. -->
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>
