@@ -1,6 +1,8 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
+// FIX: The missing exports 'conversationFlow' and 'translations' have been added to chatbotLogic.js.
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
 
 // --- START: Merged from types.ts ---
@@ -351,6 +353,8 @@ const AttendantPanel = () => {
             </ChatWindow>
             <ChatInput 
                 onUserInput={handleSendAttendantMessage}
+                // FIX: Added missing 'options' prop, which is required by ChatInput.
+                options={[]}
                 requiresTextInput={true}
                 isBotTyping={false}
                 onFileChange={() => alert('Envio de arquivos pelo atendente não implementado.')}
@@ -688,7 +692,8 @@ const App = () => {
       <main className="flex-1 overflow-y-hidden">
         {view === 'chatbot' ? (
             <div className="flex flex-col h-full">
-            <ChatWindow messages={messages} isBotTyping={isBotTyping} />
+            {/* FIX: Changed to use opening and closing tags because ChatWindow expects a 'children' prop. */}
+            <ChatWindow messages={messages} isBotTyping={isBotTyping}></ChatWindow>
             <ChatInput
                 onUserInput={handleUserInput}
                 options={lastMessage?.sender === Sender.BOT ? lastMessage.options : undefined}
