@@ -3,6 +3,8 @@
 
 
 
+
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -537,8 +539,8 @@ const AttendantPanel = () => {
                             </button>
                             <div className="absolute right-0 mt-1 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden group-hover:block">
                                 {attendants.filter(a => a.id !== currentAttendant.id).map(a => (
-                                    // FIX: The attendant ID must be passed as a string to match the backend API requirement.
-                                    <a href="#" key={a.id} onClick={() => handleTransferChat(a.id)} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
+                                    // FIX: The error "Type 'string' is not assignable to type 'number'" suggests the function expects a number. Parse the string ID to an integer.
+                                    <a href="#" key={a.id} onClick={() => handleTransferChat(parseInt(a.id, 10))} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{a.name}</a>
                                 ))}
                             </div>
                         </div>
