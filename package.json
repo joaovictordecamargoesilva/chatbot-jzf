@@ -11,6 +11,9 @@
   },
   "author": "JZF Contabilidade",
   "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@google/genai": "^1.2.0",
     "express": "^4.19.2",
