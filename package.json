@@ -5,7 +5,8 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "gateway": "node whatsapp-gateway.js"
   },
   "author": "JZF Contabilidade",
   "license": "ISC",
