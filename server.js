@@ -13,7 +13,29 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "9.4.0_FILE_UPLOAD";
+// --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
+// Essencial para produção: captura exceções não tratadas e rejeições de promise
+// para evitar que o servidor trave silenciosamente, o que causa erros 502.
+process.on('uncaughtException', (err, origin) => {
+  console.error(`[FATAL] Exceção não capturada: ${err.message}`, {
+    stack: err.stack,
+    origin: origin,
+  });
+  // Para erros graves, é mais seguro encerrar o processo e deixar o orquestrador (Render) reiniciá-lo.
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Rejeição de Promise não tratada:', {
+    reason: reason,
+    promise: promise,
+  });
+  // Encerrar o processo em caso de rejeições não tratadas também é uma prática segura.
+  process.exit(1);
+});
+
+
+const SERVER_VERSION = "9.5.0_STABILITY_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
