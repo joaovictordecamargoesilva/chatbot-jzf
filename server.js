@@ -56,6 +56,7 @@ const userSessions = new Map();
 const requestQueue = [];
 const activeChats = new Map();
 const archivedChats = new Map();
+const MAX_ARCHIVED_CHATS = 500; // Cap para prevenir vazamento de memória
 const outboundGatewayQueue = [];
 const internalChats = new Map();
 let syncedContacts = [];
@@ -85,7 +86,25 @@ if (API_KEY) {
     console.warn("[JZF Chatbot Server] AVISO: API_KEY não definida. Funcionalidades de IA estarão desativadas.");
 }
 
-// --- FUNÇÕES DE GERENCIAMENTO DE SESSÃO ---
+// --- FUNÇÕES DE GERENCIAMENTO DE SESSÃO E DADOS ---
+function archiveSession(session) {
+    if (!session || !session.userId) {
+        console.error('[archiveSession] Tentativa de arquivar sessão inválida.');
+        return;
+    }
+    // Remove a entrada antiga, se houver, para que a nova seja a mais recente.
+    archivedChats.delete(session.userId);
+
+    archivedChats.set(session.userId, { ...session });
+    
+    // Se o mapa exceder o limite, remove o item mais antigo (primeiro a ser inserido).
+    if (archivedChats.size > MAX_ARCHIVED_CHATS) {
+        const oldestKey = archivedChats.keys().next().value;
+        archivedChats.delete(oldestKey);
+        console.log(`[Memory] Limite de arquivos atingido. Chat arquivado mais antigo (${oldestKey}) removido.`);
+    }
+}
+
 function getSession(userId, userName = null) {
     if (!userSessions.has(userId)) {
         userSessions.set(userId, {
@@ -167,10 +186,9 @@ async function processMessage(session, userInput, replies) {
         replies.push(endMsg);
         session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
         
-        // FIX: Arquiva a sessão em vez de apenas resetá-la, para não perder o histórico.
         session.resolvedBy = "Cliente";
         session.resolvedAt = new Date().toISOString();
-        archivedChats.set(userId, { ...session });
+        archiveSession(session);
         userSessions.delete(userId);
         
         console.log(`[Flow] Sessão para ${userId} finalizada pelo cliente e arquivada.`);
@@ -550,7 +568,7 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
     
     session.resolvedBy = attendant.name; // Salva o nome para exibição
     session.resolvedAt = new Date().toISOString();
-    archivedChats.set(userId, { ...session });
+    archiveSession(session);
     
     userSessions.delete(userId); 
     activeChats.delete(userId); // Garante a remoção da lista de ativos se estiver lá
