@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node server.js",
     "gateway": "node whatsapp-gateway.js",
+    "gateway:prod": "BACKEND_URL=https://chatbot-jzf.onrender.com node whatsapp-gateway.js",
     "dev": "concurrently \"npm start\" \"npm run gateway\""
   },
   "author": "JZF Contabilidade",
