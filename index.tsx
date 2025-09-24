@@ -174,33 +174,37 @@ const ChatPanel = ({
             {chatType === 'bot' && <p className="text-xs text-blue-500">Em atendimento com o Assistente Virtual</p>}
         </div>
         
-        {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
-            <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setTransferModalOpen(true)}
-              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-300 transition-colors"
-              aria-label="Transferir Atendimento"
-            >
-              Transferir
-            </button>
-            <button
-              onClick={() => onResolveChat(selectedChat.userId)}
-              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-green-600 rounded-lg hover:bg-green-700 focus:ring-4 focus:outline-none focus:ring-green-300 transition-colors"
-              aria-label="Resolver Atendimento"
-            >
-              Resolver
-            </button>
-          </div>
-        )}
-        {chatType === 'bot' && attendant && (
-             <button
-              onClick={() => onTakeoverChat(selectedChat.userId)}
-              className="px-3 py-1.5 text-xs font-medium text-center text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:ring-4 focus:outline-none focus:ring-purple-300 transition-colors"
-              aria-label="Assumir Atendimento"
-            >
-              Assumir Atendimento
-            </button>
-        )}
+        <div className="flex items-center space-x-2">
+            {chatType === 'bot' && attendant && (
+                 <button
+                  onClick={() => onTakeoverChat(selectedChat.userId)}
+                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:ring-4 focus:outline-none focus:ring-purple-300 transition-colors"
+                  aria-label="Assumir Atendimento"
+                >
+                  Assumir Atendimento
+                </button>
+            )}
+
+            {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
+                <button
+                  onClick={() => setTransferModalOpen(true)}
+                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-300 transition-colors"
+                  aria-label="Transferir Atendimento"
+                >
+                  Transferir
+                </button>
+            )}
+
+            {((chatType === 'human' && attendant?.id === selectedChat.attendantId) || chatType === 'bot') && attendant && (
+                <button
+                  onClick={() => onResolveChat(selectedChat.userId)}
+                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-green-600 rounded-lg hover:bg-green-700 focus:ring-4 focus:outline-none focus:ring-green-300 transition-colors"
+                  aria-label="Resolver Atendimento"
+                >
+                  Resolver
+                </button>
+            )}
+        </div>
       </header>
 
       {/* Corpo do Chat */}
