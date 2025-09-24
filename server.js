@@ -499,25 +499,29 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
     const { attendantId } = req.body;
     const attendant = ATTENDANTS.find(a => a.id === attendantId);
 
-    if (activeChats.has(userId)) {
-        const session = getSession(userId);
-        if(session.attendantId !== attendantId) return res.status(403).send('Apenas o atendente responsável pode resolver o chat.');
-
-        const closingMessage = `Seu atendimento foi concluído por *${attendant.name}*. Se precisar de mais alguma coisa, é só chamar! A JZF Contabilidade agradece o seu contato.`;
-        outboundGatewayQueue.push({ userId, text: closingMessage });
-        
-        session.resolvedBy = attendant.name; // Salva o nome para exibição
-        session.resolvedAt = new Date().toISOString();
-        archivedChats.set(userId, { ...session });
-        
-        userSessions.delete(userId); 
-        activeChats.delete(userId);
-
-        console.log(`[Resolve] Atendimento para ${userId} resolvido por ${attendant.name}.`);
-        res.status(200).send('Atendimento resolvido.');
-    } else {
-        res.status(404).send('Nenhum atendimento ativo encontrado para este usuário.');
+    const session = userSessions.get(userId);
+    if (!session) {
+        return res.status(404).send('Nenhum atendimento ativo encontrado para este usuário.');
     }
+    
+    // Se o chat for humano, apenas o atendente responsável pode fechar.
+    // Se for do bot, qualquer atendente pode fechar.
+    if (session.handledBy === 'human' && session.attendantId !== attendantId) {
+        return res.status(403).send('Apenas o atendente responsável pode resolver o chat.');
+    }
+
+    const closingMessage = `Seu atendimento foi concluído por *${attendant.name}*. Se precisar de mais alguma coisa, é só chamar! A JZF Contabilidade agradece o seu contato.`;
+    outboundGatewayQueue.push({ userId, text: closingMessage });
+    
+    session.resolvedBy = attendant.name; // Salva o nome para exibição
+    session.resolvedAt = new Date().toISOString();
+    archivedChats.set(userId, { ...session });
+    
+    userSessions.delete(userId); 
+    activeChats.delete(userId); // Garante a remoção da lista de ativos se estiver lá
+
+    console.log(`[Resolve] Atendimento para ${userId} resolvido por ${attendant.name}.`);
+    res.status(200).send('Atendimento resolvido.');
 });
 
 apiRouter.post('/chats/initiate', (req, res) => {
