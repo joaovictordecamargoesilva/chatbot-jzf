@@ -56,8 +56,7 @@ if (API_KEY) {
         // @google/genai-ts FIX: Use the correct constructor with a named apiKey parameter as per the new SDK guidelines.
         ai = new GoogleGenAI({apiKey: API_KEY});
         console.log("[JZF Chatbot Server] Cliente Google GenAI inicializado com sucesso.");
-    } catch (error)
- {
+    } catch (error) {
         console.error("[JZF Chatbot Server] ERRO: Falha ao inicializar o cliente Google GenAI.", error);
     }
 } else {
