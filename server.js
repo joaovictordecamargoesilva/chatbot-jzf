@@ -370,7 +370,9 @@ apiRouter.get('/clients', (req, res) => {
         }
     });
     for (const session of userSessions.values()) {
-        clients.set(session.userId, { userId: session.userId, userName: session.userName });
+        if (!clients.has(session.userId)) {
+           clients.set(session.userId, { userId: session.userId, userName: session.userName });
+        }
     }
     for (const chat of archivedChats.values()) {
          if (!clients.has(chat.userId)) {
@@ -521,7 +523,7 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
 
 apiRouter.post('/chats/initiate', (req, res) => {
     const { recipientNumber, message, attendantId } = req.body;
-    const attendant = ATTENDANTS.find(a => a.id === attendantId);
+    const attendant = ATTENDANTS.find(a => String(a.id) === String(attendantId));
     if (!attendant) return res.status(400).send('Atendente inválido.');
 
     const userId = recipientNumber.endsWith('@c.us') ? recipientNumber : `${recipientNumber}@c.us`;
@@ -530,7 +532,10 @@ apiRouter.post('/chats/initiate', (req, res) => {
         return res.status(409).send('Já existe uma conversa ativa ou na fila para este número.');
     }
 
-    const session = getSession(userId, `Contato (${userId.split('@')[0]})`);
+    const clientContact = syncedContacts.find(c => c.userId === userId);
+    const userName = clientContact?.userName || `Contato (${userId.split('@')[0]})`;
+
+    const session = getSession(userId, userName);
     session.handledBy = 'human';
     session.attendantId = attendantId;
     session.messageLog.push({ sender: 'system', text: `Conversa iniciada por ${attendant.name}.`, timestamp: new Date() });
