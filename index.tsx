@@ -390,17 +390,114 @@ function App() {
   const [initiateMessage, setInitiateMessage] = useState('');
   const [clientSearchTerm, setClientSearchTerm] = useState('');
 
+  // --- NOVOS ESTADOS PARA NOTIFICAÇÕES ---
+  const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), ai_active: new Set(), internal: new Set() });
+  const [internalChatsSummary, setInternalChatsSummary] = useState({});
+  const prevData = useRef(null);
+
+  // --- LÓGICA DE NOTIFICAÇÕES ---
+  const showBrowserNotification = useCallback((title, options) => {
+    if (document.hidden && Notification.permission === 'granted') {
+      const notification = new Notification(title, options);
+      const audio = new Audio('https://cdn.jsdelivr.net/gh/google/ai-prototyping-sdk/templates/demos/chat-panel/src/notification.mp3');
+      audio.play().catch(e => console.error("Erro ao tocar áudio:", e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!prevData.current) { // Inicializa na primeira renderização
+        prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
+        return;
+    }
+  
+    const newNotifications = { ...notifications };
+    let changed = false;
+
+    // 1. Fila de Requisições
+    if (requestQueue.length > prevData.current.requestQueue.length) {
+        const newRequest = requestQueue[0];
+        showBrowserNotification("Nova solicitação na fila", { body: `Cliente: ${newRequest.userName}\nMotivo: ${newRequest.message}` });
+        newNotifications.queue = requestQueue.length;
+        changed = true;
+    } else if (requestQueue.length < prevData.current.requestQueue.length) {
+        newNotifications.queue = requestQueue.length;
+        changed = true;
+    }
+
+    // 2. Chats Ativos (Humanos)
+    const activeNotifications = new Set(notifications.active);
+    activeChats.forEach(chat => {
+      const prevChat = prevData.current.activeChats.find(c => c.userId === chat.userId);
+      if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
+        if (selectedChat?.userId !== chat.userId) {
+          activeNotifications.add(chat.userId);
+          showBrowserNotification(`Nova mensagem de ${chat.userName}`, { body: chat.lastMessage.text });
+        }
+      }
+    });
+    if (activeNotifications.size !== notifications.active.size) {
+        newNotifications.active = activeNotifications;
+        changed = true;
+    }
+
+    // 3. Chats Virtuais (IA)
+    const aiNotifications = new Set(notifications.ai_active);
+    aiActiveChats.forEach(chat => {
+      const prevChat = prevData.current.aiActiveChats.find(c => c.userId === chat.userId);
+      if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
+         if (selectedChat?.userId !== chat.userId) {
+            aiNotifications.add(chat.userId);
+            showBrowserNotification(`Cliente interagiu com IA: ${chat.userName}`, { body: chat.lastMessage.text });
+         }
+      }
+    });
+    if (aiNotifications.size !== notifications.ai_active.size) {
+        newNotifications.ai_active = aiNotifications;
+        changed = true;
+    }
+    
+    // 4. Chat Interno
+    const internalNotifications = new Set(notifications.internal);
+    Object.keys(internalChatsSummary).forEach(partnerId => {
+      const current = internalChatsSummary[partnerId];
+      const prev = prevData.current.internalChatsSummary[partnerId];
+      if ( current?.lastMessage && current.lastMessage.senderId !== attendant.id && (!prev?.lastMessage || new Date(current.lastMessage.timestamp) > new Date(prev.lastMessage.timestamp))) {
+         if (internalChatPartner?.id !== partnerId) {
+            internalNotifications.add(partnerId);
+            const senderName = attendants.find(a => a.id === current.lastMessage.senderId)?.name || 'Colega';
+            showBrowserNotification(`Mensagem interna de ${senderName}`, { body: current.lastMessage.text });
+         }
+      }
+    });
+    if (internalNotifications.size !== notifications.internal.size) {
+        newNotifications.internal = internalNotifications;
+        changed = true;
+    }
+
+    if (changed) {
+        setNotifications(newNotifications);
+    }
+
+    const totalNotifications = newNotifications.queue + newNotifications.active.size + newNotifications.ai_active.size + newNotifications.internal.size;
+    document.title = totalNotifications > 0 ? `(${totalNotifications}) JZF Atendimento` : 'JZF Atendimento';
+
+    prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
+
+  }, [requestQueue, activeChats, aiActiveChats, internalChatsSummary]);
+
 
   const fetchData = useCallback(async () => {
+    if (!attendant) return;
     try {
-      const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes] = await Promise.all([
+      const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes, internalSummaryRes] = await Promise.all([
         fetch('/api/requests'),
         fetch('/api/chats/active'),
         fetch('/api/chats/history'),
         fetch('/api/attendants'),
-        fetch('/api/chats/ai-active') // Busca os chats da IA
+        fetch('/api/chats/ai-active'),
+        fetch(`/api/internal-chats/summary/${attendant.id}`)
       ]);
-      if (!reqRes.ok || !activeRes.ok || !historyRes.ok || !attendantsRes.ok || !aiChatsRes.ok) {
+      if (!reqRes.ok || !activeRes.ok || !historyRes.ok || !attendantsRes.ok || !aiChatsRes.ok || !internalSummaryRes.ok) {
         throw new Error('Falha ao buscar dados do servidor.');
       }
       const reqData = await reqRes.json();
@@ -408,24 +505,32 @@ function App() {
       const historyData = await historyRes.json();
       const attendantsData = await attendantsRes.json();
       const aiChatsData = await aiChatsRes.json();
+      const internalSummaryData = await internalSummaryRes.json();
 
       setRequestQueue(reqData);
       setActiveChats(activeData);
       setChatHistory(historyData);
       setAttendants(attendantsData);
       setAiActiveChats(aiChatsData);
+      setInternalChatsSummary(internalSummaryData);
       
     } catch (err) {
       setError(err.message);
       console.error(err);
     }
+  }, [attendant]);
+
+  useEffect(() => {
+    fetch('/api/attendants').then(res => res.json()).then(setAttendants);
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000); // Atualiza a cada 5 segundos
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    if (attendant) {
+      fetchData();
+      const interval = setInterval(fetchData, 5000); // Atualiza a cada 5 segundos
+      return () => clearInterval(interval);
+    }
+  }, [attendant, fetchData]);
   
   // Efeito para buscar contatos do cliente
   useEffect(() => {
@@ -475,6 +580,9 @@ function App() {
     if (selected) {
       setAttendant(selected);
       localStorage.setItem('attendantId', selected.id);
+      if (Notification.permission !== "granted") {
+        Notification.requestPermission();
+      }
     }
   };
 
@@ -513,6 +621,13 @@ function App() {
             // Adiciona o campo 'handledBy' com base na view ativa, se não vier da API
             const handledBy = activeView === 'ai_active' ? 'bot' : (activeView === 'active' || activeView === 'history' ? 'human' : null);
             setSelectedChat({ ...item, ...data, handledBy: data.handledBy || handledBy });
+
+            // Limpa a notificação ao selecionar o chat
+            const newNotifications = { ...notifications };
+            if (newNotifications[activeView]?.has(item.userId)) {
+                newNotifications[activeView].delete(item.userId);
+                setNotifications(newNotifications);
+            }
         } else {
             throw new Error('Falha ao buscar histórico do chat.');
         }
@@ -697,6 +812,14 @@ function App() {
       setClientSearchTerm('');
   };
 
+  const clearNotificationsForView = (view) => {
+    if (view === 'queue' && notifications.queue > 0) {
+      setNotifications(prev => ({...prev, queue: 0}));
+    } else if (notifications[view]?.size > 0) {
+      setNotifications(prev => ({...prev, [view]: new Set()}));
+    }
+  };
+
 
   useEffect(() => {
     const savedAttendantId = localStorage.getItem('attendantId');
@@ -727,6 +850,12 @@ function App() {
     </li>
   );
 
+  const NavButton = ({ view, label, count, children }) => (
+    <button onClick={() => { setActiveView(view); setSelectedChat(null); setInternalChatPartner(null); clearNotificationsForView(view); }} className={`relative flex-1 p-2 text-sm font-semibold rounded-md ${activeView === view ? 'bg-white shadow' : 'text-gray-600'}`}>
+        {label || children} {count > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">{count}</span>}
+    </button>
+  );
+
   return (
     <div className="flex h-screen font-sans bg-gray-100 text-gray-800">
       {/* Sidebar */}
@@ -746,11 +875,11 @@ function App() {
         
         {/* Abas de Navegação */}
         <nav className="flex p-1 bg-gray-100">
-            <button onClick={() => { setActiveView('queue'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'queue' ? 'bg-white shadow' : 'text-gray-600'}`}>Fila ({requestQueue.length})</button>
-            <button onClick={() => { setActiveView('active'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'active' ? 'bg-white shadow' : 'text-gray-600'}`}>Ativos ({activeChats.length})</button>
-            <button onClick={() => { setActiveView('ai_active'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'ai_active' ? 'bg-white shadow' : 'text-gray-600'}`}>Virtual ({aiActiveChats.length})</button>
-            <button onClick={() => { setActiveView('history'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'history' ? 'bg-white shadow' : 'text-gray-600'}`}>Histórico</button>
-            <button onClick={() => { setActiveView('internal_chat'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'internal_chat' ? 'bg-white shadow' : 'text-gray-600'}`}>Chat Interno</button>
+            <NavButton view="queue" label="Fila" count={notifications.queue} />
+            <NavButton view="active" label="Ativos" count={notifications.active.size} />
+            <NavButton view="ai_active" label="Virtual" count={notifications.ai_active.size} />
+            <NavButton view="history" label="Histórico" count={0} />
+            <NavButton view="internal_chat" label="Chat Interno" count={notifications.internal.size} />
         </nav>
 
         <div ref={sidebarRef} className="flex-1 overflow-y-auto">
@@ -764,13 +893,19 @@ function App() {
             
             {activeView === 'active' && activeChats.map(chat => (
               <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
-                  <p className="text-xs text-gray-500">Atendido por: {attendants.find(a => a.id === chat.attendantId)?.name || '...'}</p>
+                  <div className="flex justify-between items-center">
+                    <p className="text-xs text-gray-500">Atendido por: {attendants.find(a => a.id === chat.attendantId)?.name || '...'}</p>
+                    {notifications.active.has(chat.userId) && <span className="h-2 w-2 bg-blue-500 rounded-full"></span>}
+                  </div>
               </ListItem>
             ))}
 
             {activeView === 'ai_active' && aiActiveChats.map(chat => (
                 <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
-                    <p className="text-xs text-gray-500">Departamento: {chat.department}</p>
+                    <div className="flex justify-between items-center">
+                        <p className="text-xs text-gray-500">Departamento: {chat.department}</p>
+                        {notifications.ai_active.has(chat.userId) && <span className="h-2 w-2 bg-blue-500 rounded-full"></span>}
+                    </div>
                 </ListItem>
             ))}
             
@@ -780,9 +915,27 @@ function App() {
               </ListItem>
             ))}
 
-            {activeView === 'internal_chat' && attendants.filter(a => a.id !== attendant.id).map(a => (
-              <ListItem key={a.id} item={a} onClick={() => setInternalChatPartner(a)} isSelected={internalChatPartner?.id === a.id} />
-            ))}
+            {activeView === 'internal_chat' && attendants.filter(a => a.id !== attendant.id).map(a => {
+                const summary = internalChatsSummary[a.id];
+                const lastMessage = summary?.lastMessage;
+                const hasUnread = notifications.internal.has(a.id);
+                return (
+                   <ListItem key={a.id} item={a} onClick={() => {
+                        setInternalChatPartner(a);
+                        if (hasUnread) {
+                            const newInternal = new Set(notifications.internal);
+                            newInternal.delete(a.id);
+                            setNotifications(p => ({ ...p, internal: newInternal }));
+                        }
+                   }} isSelected={internalChatPartner?.id === a.id}>
+                       {lastMessage && (
+                           <p className={`text-xs truncate mt-1 ${hasUnread ? 'text-gray-800 font-bold' : 'text-gray-500'}`}>
+                               {lastMessage.senderId === attendant.id && 'Você: '}{lastMessage.text}
+                           </p>
+                       )}
+                   </ListItem>
+                );
+            })}
           </ul>
         </div>
       </aside>
@@ -820,7 +973,7 @@ function App() {
                                 <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
                                     <div className={`max-w-md p-2 rounded-lg shadow-sm mb-1 flex flex-col ${isMe ? 'bg-blue-100' : 'bg-white'}`}>
                                         {!isMe && <p className="text-xs font-semibold text-purple-600">{msg.senderName}</p>}
-                                        <div className="text-sm">{msg.text}</div>
+                                        <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
                                         <div className="text-xs text-gray-400 self-end mt-1">
                                           {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                         </div>
@@ -840,7 +993,7 @@ function App() {
                                 placeholder={`Mensagem para ${internalChatPartner.name}...`}
                                 className="w-full p-2 bg-transparent focus:outline-none"
                             />
-                            <button onClick={handleSendInternalMessage} className="p-2 text-blue-600 rounded-full">
+                            <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim()} className="p-2 text-blue-600 rounded-full disabled:text-gray-400">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
                             </button>
                         </div>
