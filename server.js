@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "9.5.0_STABILITY_FIX";
+const SERVER_VERSION = "10.0.0_NOTIFICATIONS";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -367,18 +367,28 @@ apiRouter.post('/attendants', (req, res) => {
 });
 
 apiRouter.get('/requests', (req, res) => res.status(200).json(requestQueue));
-apiRouter.get('/chats/active', (req, res) => res.status(200).json(Array.from(activeChats.values())));
 
-// NOVA ROTA: Retorna chats que estão sendo atendidos pelo bot no estado de conversação com IA
+apiRouter.get('/chats/active', (req, res) => {
+    const chats = Array.from(activeChats.values()).map(chat => {
+        const session = userSessions.get(chat.userId);
+        const lastMessage = session?.messageLog?.[session.messageLog.length - 1] || null;
+        return { ...chat, lastMessage };
+    });
+    res.status(200).json(chats);
+});
+
+// ROTA ATUALIZADA: Retorna chats da IA com a última mensagem para notificações
 apiRouter.get('/chats/ai-active', (req, res) => {
     const aiActiveChats = [];
     for (const session of userSessions.values()) {
         if (session.handledBy === 'bot' && session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+             const lastMessage = session.messageLog?.[session.messageLog.length - 1] || null;
             aiActiveChats.push({
                 userId: session.userId,
                 userName: session.userName,
-                timestamp: session.createdAt, // Pode ser útil ter um timestamp
-                department: session.context.department, // E o departamento
+                timestamp: session.createdAt,
+                department: session.context.department,
+                lastMessage: lastMessage
             });
         }
     }
@@ -582,6 +592,22 @@ apiRouter.post('/chats/initiate', (req, res) => {
 
 // --- ROTAS DO CHAT INTERNO ---
 const getInternalChatId = (id1, id2) => [String(id1), String(id2)].sort().join('-');
+
+apiRouter.get('/internal-chats/summary/:attendantId', (req, res) => {
+    const { attendantId } = req.params;
+    const summary = {};
+    for (const [chatId, messages] of internalChats.entries()) {
+        if (chatId.includes(String(attendantId))) {
+            const partnerId = chatId.split('-').find(id => id !== String(attendantId));
+            if (partnerId && messages.length > 0) {
+                summary[partnerId] = {
+                    lastMessage: messages[messages.length - 1]
+                };
+            }
+        }
+    }
+    res.status(200).json(summary);
+});
 
 apiRouter.get('/internal-chats/:attendantId/:partnerId', (req, res) => {
     const { attendantId, partnerId } = req.params;
