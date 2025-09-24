@@ -118,12 +118,16 @@ const ChatPanel = ({
         }
         const reader = new FileReader();
         reader.onload = (e) => {
-            const base64Data = e.target.result.split(',')[1];
-            setSelectedFile({
-                name: file.name,
-                type: file.type,
-                data: base64Data
-            });
+            // FIX: Add a type check to ensure `e.target.result` is a string.
+            // The result of FileReader can be an ArrayBuffer, which doesn't have a .split() method.
+            if (e.target && typeof e.target.result === 'string') {
+                const base64Data = e.target.result.split(',')[1];
+                setSelectedFile({
+                    name: file.name,
+                    type: file.type,
+                    data: base64Data
+                });
+            }
         };
         reader.readAsDataURL(file);
     }
@@ -374,6 +378,15 @@ function App() {
   
   const sidebarRef = useRef(null); // Ref para a barra lateral rolável
 
+  // Estados para o modal de iniciar chat
+  const [isInitiateModalOpen, setInitiateModalOpen] = useState(false);
+  const [clients, setClients] = useState([]);
+  const [initiateStep, setInitiateStep] = useState('select'); // 'select' | 'message'
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [initiateMessage, setInitiateMessage] = useState('');
+  const [clientSearchTerm, setClientSearchTerm] = useState('');
+
+
   const fetchData = useCallback(async () => {
     try {
       const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes] = await Promise.all([
@@ -409,6 +422,24 @@ function App() {
     const interval = setInterval(fetchData, 5000); // Atualiza a cada 5 segundos
     return () => clearInterval(interval);
   }, [fetchData]);
+  
+  // Efeito para buscar contatos do cliente
+  useEffect(() => {
+    const fetchClients = async () => {
+        try {
+            const res = await fetch('/api/clients');
+            if (res.ok) {
+                const data = await res.json();
+                setClients(data);
+            }
+        } catch (err) {
+            console.error("Falha ao buscar clientes:", err);
+        }
+    };
+    if (attendant) {
+        fetchClients();
+    }
+  }, [attendant]);
 
   // Efeito para buscar histórico de chat interno
   useEffect(() => {
@@ -624,6 +655,44 @@ function App() {
     }
   };
 
+  const handleInitiateChat = async () => {
+    if (!initiateMessage.trim() || !attendant || !selectedClient) return;
+    try {
+        const res = await fetch('/api/chats/initiate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                recipientNumber: selectedClient.userId,
+                message: initiateMessage.trim(),
+                attendantId: attendant.id
+            })
+        });
+        if (res.ok) {
+            const newChat = await res.json();
+            handleCloseInitiateModal();
+            await fetchData(); // Atualiza todas as listas
+            setActiveView('active');
+            // Espera um pouco para o React atualizar o DOM antes de selecionar
+            setTimeout(() => {
+                handleSelectChatItem(newChat);
+            }, 100);
+        } else {
+            const errorText = await res.text();
+            throw new Error(errorText || "Falha ao iniciar conversa.");
+        }
+    } catch (err) {
+        alert(err.message);
+    }
+  };
+
+  const handleCloseInitiateModal = () => {
+      setInitiateModalOpen(false);
+      setInitiateStep('select');
+      setSelectedClient(null);
+      setInitiateMessage('');
+      setClientSearchTerm('');
+  };
+
 
   useEffect(() => {
     const savedAttendantId = localStorage.getItem('attendantId');
@@ -636,6 +705,11 @@ function App() {
   if (!attendant) {
     return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} />;
   }
+
+  const filteredClients = clients.filter(c =>
+    c.userName.toLowerCase().includes(clientSearchTerm.toLowerCase()) ||
+    c.userId.includes(clientSearchTerm)
+  );
 
   // Componente para item da lista lateral
   // FIX: Add default props for isSelected and children to fix usage errors.
@@ -656,8 +730,13 @@ function App() {
         <div className="p-4 border-b border-gray-200">
           <h1 className="text-xl font-bold text-gray-800">JZF Atendimento</h1>
           <div className="mt-2 text-sm text-gray-600">
-            <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
-            <button onClick={handleLogout} className="text-xs text-red-500 hover:underline">Sair</button>
+             <div className="flex items-center justify-between">
+                <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
+                <div>
+                  <button onClick={() => setInitiateModalOpen(true)} className="text-xs font-semibold text-blue-600 hover:underline mr-3">Novo Chat</button>
+                  <button onClick={handleLogout} className="text-xs text-red-500 hover:underline">Sair</button>
+                </div>
+            </div>
           </div>
         </div>
         
@@ -767,6 +846,69 @@ function App() {
            </div>
         )}
       </main>
+
+      {/* Modal para Iniciar Chat */}
+      {isInitiateModalOpen && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-lg flex flex-col" style={{height: '80vh'}}>
+                  {initiateStep === 'select' && (
+                      <>
+                          <h3 className="text-lg font-semibold mb-4">Iniciar Nova Conversa</h3>
+                          <p className="text-sm text-gray-600 mb-4">Selecione um contato para enviar uma mensagem.</p>
+                          <input
+                              type="text"
+                              placeholder="Buscar por nome ou número..."
+                              value={clientSearchTerm}
+                              onChange={e => setClientSearchTerm(e.target.value)}
+                              className="w-full p-2 border border-gray-300 rounded-md mb-4"
+                          />
+                          <div className="flex-1 overflow-y-auto border rounded-md">
+                              <ul>
+                                  {filteredClients.length > 0 ? filteredClients.map(client => (
+                                      <li
+                                          key={client.userId}
+                                          onClick={() => {
+                                              setSelectedClient(client);
+                                              setInitiateStep('message');
+                                          }}
+                                          className="p-3 cursor-pointer hover:bg-gray-100 border-b"
+                                      >
+                                          <p className="font-semibold">{client.userName}</p>
+                                          <p className="text-xs text-gray-500">{client.userId.split('@')[0]}</p>
+                                      </li>
+                                  )) : <li className="p-4 text-center text-gray-500">Nenhum contato encontrado.</li>}
+                              </ul>
+                          </div>
+                          <div className="flex justify-end mt-4">
+                              <button onClick={handleCloseInitiateModal} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Cancelar</button>
+                          </div>
+                      </>
+                  )}
+                  {initiateStep === 'message' && (
+                      <>
+                          <h3 className="text-lg font-semibold mb-4">Enviar Mensagem</h3>
+                          <p className="text-sm text-gray-600 mb-4">
+                              Para: <span className="font-semibold">{selectedClient?.userName} ({selectedClient?.userId.split('@')[0]})</span>
+                          </p>
+                          <textarea
+                              value={initiateMessage}
+                              onChange={e => setInitiateMessage(e.target.value)}
+                              placeholder="Digite sua primeira mensagem..."
+                              className="w-full flex-1 p-2 border border-gray-300 rounded-md mb-4 resize-none"
+                          ></textarea>
+                          <div className="flex justify-between">
+                              <button onClick={() => setInitiateStep('select')} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Voltar</button>
+                              <div>
+                                  <button onClick={handleCloseInitiateModal} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 mr-2">Cancelar</button>
+                                  <button onClick={handleInitiateChat} disabled={!initiateMessage.trim()} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-blue-300">Enviar e Iniciar</button>
+                              </div>
+                          </div>
+                      </>
+                  )}
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }
