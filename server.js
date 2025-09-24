@@ -547,7 +547,9 @@ apiRouter.post('/chats/initiate', (req, res) => {
     const activeChatInfo = { userId, userName: session.userName, attendantId, timestamp: new Date().toISOString() };
     activeChats.set(userId, activeChatInfo);
 
-    outboundGatewayQueue.push({ userId, text: message });
+    // FORMATA A MENSAGEM PARA O WHATSAPP COM NOME EM NEGRITO
+    const messageForWhatsapp = `*${attendant.name}*: ${message}`;
+    outboundGatewayQueue.push({ userId, text: messageForWhatsapp });
 
     console.log(`[Initiate] Nova conversa iniciada com ${userId} por ${attendant.name}.`);
     res.status(201).json(activeChatInfo);
