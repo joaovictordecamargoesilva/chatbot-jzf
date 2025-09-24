@@ -635,10 +635,10 @@ apiRouter.get('/internal-chats/:attendantId/:partnerId', (req, res) => {
 });
 
 apiRouter.post('/internal-chats', (req, res) => {
-    const { senderId, recipientId, text } = req.body;
+    const { senderId, recipientId, text, file } = req.body;
 
-    if (!senderId || !recipientId || !text || !text.trim()) {
-        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text are required.' });
+    if (!senderId || !recipientId || ((!text || !text.trim()) && !file)) {
+        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text or a file are required.' });
     }
 
     const sender = ATTENDANTS.find(a => String(a.id) === String(senderId));
@@ -655,11 +655,12 @@ apiRouter.post('/internal-chats', (req, res) => {
         senderId,
         senderName: sender.name,
         text,
+        file,
         timestamp: new Date().toISOString()
     };
     
     internalChats.get(chatId).push(message);
-    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}`);
+    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}. File: ${file ? file.name : 'No'}`);
     res.status(201).json(message);
 });
 
