@@ -56,7 +56,8 @@ const flowSteps = [
       textKey: 'aiDeptPrompt',
       options: [
         { textKey: "optionHumanTransfer", nextState: ChatState.ATTENDANT_SELECT },
-        { textKey: "backToStart", nextState: ChatState.GREETING }
+        { textKey: "backToStart", nextState: ChatState.GREETING },
+        { textKey: "optionEndSession", nextState: ChatState.END_SESSION },
       ],
       requiresTextInput: true,
     },
@@ -186,7 +187,7 @@ export const translations = {
 };
 
 // --- INSTRUÇÕES DE SISTEMA PARA A IA ---
-const instructionSuffix = "Sempre responda em português do Brasil. Se você não souber a resposta para uma pergunta, peça desculpas, diga que não entendeu e pergunte se o usuário gostaria de falar com um atendente humano para obter ajuda especializada.";
+const instructionSuffix = "Responda sempre em português do Brasil. Ao final de cada resposta completa e útil, adicione uma frase perguntando se o usuário precisa de mais alguma coisa e lembre-o de que ele pode usar a opção '🚪 Encerrar conversa' para finalizar o atendimento. Exemplo: 'Isso ajuda a esclarecer sua dúvida? Se não precisar de mais nada, é só escolher a opção para encerrar.' Se você não souber a resposta para uma pergunta, peça desculpas, diga que não entendeu e sugira que o usuário fale com um atendente humano para obter ajuda especializada.";
 
 export const departmentSystemInstructions = {
     pt: {
