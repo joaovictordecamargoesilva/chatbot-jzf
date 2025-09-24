@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -483,7 +484,7 @@ function App() {
 
     prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
 
-  }, [requestQueue, activeChats, aiActiveChats, internalChatsSummary]);
+  }, [requestQueue, activeChats, aiActiveChats, internalChatsSummary, selectedChat, internalChatPartner, attendant, attendants, showBrowserNotification]);
 
 
   const fetchData = useCallback(async () => {
@@ -623,10 +624,20 @@ function App() {
             setSelectedChat({ ...item, ...data, handledBy: data.handledBy || handledBy });
 
             // Limpa a notificação ao selecionar o chat
-            const newNotifications = { ...notifications };
-            if (newNotifications[activeView]?.has(item.userId)) {
-                newNotifications[activeView].delete(item.userId);
-                setNotifications(newNotifications);
+            const notificationSet = notifications[activeView];
+
+            // CORREÇÃO: Verifica se a notificação é um Set e se o item existe antes de tentar deletar.
+            // Isso previne o erro ".has is not a function" em abas como 'Fila' ou 'Histórico'.
+            if (notificationSet instanceof Set && notificationSet.has(item.userId)) {
+                // Cria um NOVO Set para garantir a imutabilidade do estado
+                const updatedSet = new Set(notificationSet);
+                updatedSet.delete(item.userId);
+                
+                // Atualiza o estado com o novo objeto e o novo Set
+                setNotifications(prev => ({
+                    ...prev,
+                    [activeView]: updatedSet
+                }));
             }
         } else {
             throw new Error('Falha ao buscar histórico do chat.');
@@ -815,7 +826,7 @@ function App() {
   const clearNotificationsForView = (view) => {
     if (view === 'queue' && notifications.queue > 0) {
       setNotifications(prev => ({...prev, queue: 0}));
-    } else if (notifications[view]?.size > 0) {
+    } else if (notifications[view] instanceof Set && notifications[view].size > 0) {
       setNotifications(prev => ({...prev, [view]: new Set()}));
     }
   };
@@ -850,7 +861,8 @@ function App() {
     </li>
   );
 
-  const NavButton = ({ view, label, count, children }) => (
+  // FIX: Add a default value for the 'children' prop to make it optional, fixing usage errors.
+  const NavButton = ({ view, label, count, children = null }) => (
     <button onClick={() => { setActiveView(view); setSelectedChat(null); setInternalChatPartner(null); clearNotificationsForView(view); }} className={`relative flex-1 p-2 text-sm font-semibold rounded-md ${activeView === view ? 'bg-white shadow' : 'text-gray-600'}`}>
         {label || children} {count > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">{count}</span>}
     </button>
