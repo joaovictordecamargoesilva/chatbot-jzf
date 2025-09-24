@@ -13,7 +13,7 @@ import {
   translations
 } from './chatbotLogic.js';
 
-const SERVER_VERSION = "9.2.0_HISTORY_FIX";
+const SERVER_VERSION = "9.4.0_FILE_UPLOAD";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -110,27 +110,31 @@ async function processMessage(session, userInput, replies) {
     let currentStep = conversationFlow.get(session.currentState);
     let nextState, payload;
 
-    // LÓGICA CORRIGIDA: Prioriza a seleção numérica, mas permite texto se o passo exigir.
     const choice = parseInt(userInput.trim(), 10);
     const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
 
     if (selectedOption) {
-        // O usuário digitou um número e ele corresponde a uma opção válida.
         nextState = selectedOption.nextState;
         payload = selectedOption.payload;
     } else if (currentStep.requiresTextInput) {
-        // O passo permite texto livre e o usuário não digitou uma opção numérica válida.
         nextState = currentStep.nextState;
         session.context.history[session.currentState] = userInput;
     } else {
-        // O usuário digitou algo que não é nem uma opção válida nem um texto permitido.
-        const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
-        replies.push(invalidOptionMsg);
-        session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
-        const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
-        replies.push(stepFormatted);
-        session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
-        return; // Encerra o processamento aqui
+        // CORREÇÃO: Se o estado for GREETING, qualquer texto inicial (ex: "oi")
+        // não deve gerar um erro de "opção inválida", apenas exibir o menu.
+        if (session.currentState === ChatState.GREETING) {
+            nextState = session.currentState; // Fica no mesmo estado para reenviar a mensagem.
+            payload = null;
+        } else {
+            // Para todos os outros estados, o comportamento antigo de erro é mantido.
+            const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
+            replies.push(invalidOptionMsg);
+            session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            replies.push(stepFormatted);
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+            return; // Encerra o processamento aqui
+        }
     }
     
     if (payload) {
@@ -141,7 +145,6 @@ async function processMessage(session, userInput, replies) {
         const endMsg = translations.pt.sessionEnded;
         replies.push(endMsg);
         session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
-        // Em vez de deletar, podemos apenas resetar para o início
         session.currentState = ChatState.GREETING;
         session.context = { history: {} };
         return;
@@ -201,10 +204,60 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   if (session.handledBy === 'human') {
       return res.status(200).json({ replies: [] }); // Message is logged, attendant will see it.
   }
+  
+  // INÍCIO: LÓGICA EXCLUSIVA PARA O ASSISTENTE VIRTUAL DE IA
+  if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+      const replies = [];
+      const currentStep = conversationFlow.get(session.currentState);
+      const choice = parseInt(userInput.trim(), 10);
+      const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+      // Se o usuário selecionou uma opção do menu (ex: "Falar com atendente"), processa normalmente
+      if (selectedOption) {
+          await processMessage(session, userInput, replies);
+      } else {
+          // Caso contrário, é uma pergunta para a IA
+          if (!ai) {
+              const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
+              replies.push(errorMsg);
+              session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+          } else {
+              try {
+                  // Adiciona a pergunta do usuário ao histórico da IA para dar contexto
+                  session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+                  
+                  // @google/genai-ts FIX: Use generateContent directly.
+                  const response = await ai.models.generateContent({
+                      model: 'gemini-2.5-flash',
+                      contents: session.aiHistory,
+                      config: {
+                          systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo.",
+                      }
+                  });
+
+                  // @google/genai-ts FIX: Use .text property for direct text output.
+                  const aiResponseText = response.text;
+                  replies.push(aiResponseText);
+                  
+                  // Atualiza os logs da sessão com a resposta da IA
+                  session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+                  session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
+
+              } catch (error) {
+                  console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
+                  const errorMsg = translations.pt.error;
+                  replies.push(errorMsg);
+                  session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+              }
+          }
+      }
+      // Retorna a resposta (da IA ou do fluxo normal)
+      return res.status(200).json({ replies });
+  }
+  // FIM: LÓGICA EXCLUSIVA PARA O ASSISTENTE VIRTUAL DE IA
 
   const replies = [];
   try {
-    // Check for global commands first
     const lowerInput = userInput.trim().toLowerCase();
     if (['voltar', 'inicio', 'início', 'menu'].includes(lowerInput)) {
         session.currentState = ChatState.GREETING;
@@ -217,7 +270,7 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
         const endMsg = translations.pt.sessionEnded;
         replies.push(endMsg);
         session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
-        session.currentState = ChatState.GREETING; // Reset for next time
+        session.currentState = ChatState.GREETING;
         session.context = { history: {} };
     } else {
         await processMessage(session, userInput, replies);
@@ -394,16 +447,21 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
 });
 
 apiRouter.post('/chats/attendant-reply', (req, res) => {
-    const { userId, text, attendantId } = req.body;
-    if (!userId || !text) return res.status(400).send('userId e text são obrigatórios.');
+    const { userId, text, attendantId, file } = req.body;
+    if (!userId || (!text && !file)) {
+        return res.status(400).send('userId e um texto ou arquivo são obrigatórios.');
+    }
 
     const session = getSession(userId);
     if (!session || session.handledBy !== 'human' || session.attendantId !== attendantId) {
         return res.status(403).send('Permissão negada para responder a este chat.');
     }
-
-    outboundGatewayQueue.push({ userId, text });
-    session.messageLog.push({ sender: 'attendant', text, timestamp: new Date() });
+    
+    // O texto servirá como legenda se um arquivo for enviado
+    outboundGatewayQueue.push({ userId, text, file });
+    
+    const fileLog = file ? { name: file.name, type: file.type } : null;
+    session.messageLog.push({ sender: 'attendant', text, file: fileLog, timestamp: new Date() });
     
     res.status(200).send('Mensagem enfileirada para envio.');
 });
