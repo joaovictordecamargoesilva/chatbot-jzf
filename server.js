@@ -144,8 +144,14 @@ async function processMessage(session, userInput, replies) {
         const endMsg = translations.pt.sessionEnded;
         replies.push(endMsg);
         session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
-        session.currentState = ChatState.GREETING;
-        session.context = { history: {} };
+        
+        // FIX: Arquiva a sessão em vez de apenas resetá-la, para não perder o histórico.
+        session.resolvedBy = "Cliente";
+        session.resolvedAt = new Date().toISOString();
+        archivedChats.set(userId, { ...session });
+        userSessions.delete(userId);
+        
+        console.log(`[Flow] Sessão para ${userId} finalizada pelo cliente e arquivada.`);
         return;
     }
     
@@ -266,11 +272,8 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
         replies.push(formattedReply);
         session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
     } else if (['sair', 'encerrar', 'finalizar'].includes(lowerInput)) {
-        const endMsg = translations.pt.sessionEnded;
-        replies.push(endMsg);
-        session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
-        session.currentState = ChatState.GREETING;
-        session.context = { history: {} };
+        // Este bloco agora é tratado pela lógica principal do processMessage que arquiva a sessão.
+        await processMessage(session, '2', replies); // Simula a escolha da opção "Encerrar"
     } else {
         await processMessage(session, userInput, replies);
     }
