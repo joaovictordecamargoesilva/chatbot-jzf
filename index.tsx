@@ -87,9 +87,11 @@ const ChatPanel = ({
   attendants,
 }) => {
   const [message, setMessage] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
   const [isTransferModalOpen, setTransferModalOpen] = useState(false);
   const [transferToAttendantId, setTransferToAttendantId] = useState('');
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
   
   const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
 
@@ -104,12 +106,36 @@ const ChatPanel = ({
   
   useEffect(() => {
      setMessage(''); // Limpa o campo de mensagem ao trocar de chat
+     setSelectedFile(null);
   }, [selectedChat?.userId]);
+  
+  const handleFileSelect = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        if (file.size > 15 * 1024 * 1024) { // Limite de 15MB
+            alert("O arquivo é muito grande. O limite é de 15MB.");
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const base64Data = e.target.result.split(',')[1];
+            setSelectedFile({
+                name: file.name,
+                type: file.type,
+                data: base64Data
+            });
+        };
+        reader.readAsDataURL(file);
+    }
+    event.target.value = null; // Reseta para poder selecionar o mesmo arquivo novamente
+  };
+
 
   const handleSend = () => {
-    if ((message.trim() || message.startsWith('/finalizar')) && selectedChat && attendant) {
-      onSendMessage(selectedChat.userId, message.trim(), attendant.id);
+    if ((message.trim() || selectedFile) && selectedChat && attendant) {
+      onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFile);
       setMessage('');
+      setSelectedFile(null);
     }
   };
 
@@ -185,7 +211,29 @@ const ChatPanel = ({
       {/* Rodapé do Chat (Input) */}
       {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
           <footer className="bg-gray-200 p-3">
+             {/* Preview do arquivo selecionado */}
+            {selectedFile && (
+                <div className="p-2 mb-2 bg-blue-100 rounded-lg flex items-center justify-between text-sm shadow-sm border border-blue-200">
+                    <div className="flex items-center space-x-2 truncate">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                           <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                        </svg>
+                        <span className="text-gray-700 truncate">{selectedFile.name}</span>
+                    </div>
+                    <button onClick={() => setSelectedFile(null)} className="text-red-500 hover:text-red-700 font-bold text-lg leading-none" aria-label="Remover arquivo">&times;</button>
+                </div>
+            )}
             <div className="flex items-center bg-white rounded-full shadow-sm px-2">
+              <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+              <button 
+                onClick={() => fileInputRef.current.click()}
+                className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                aria-label="Anexar arquivo"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+              </button>
               <input
                 type="text"
                 value={message}
@@ -197,7 +245,8 @@ const ChatPanel = ({
               />
               <button
                 onClick={handleSend}
-                className="p-2 text-blue-600 hover:text-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                disabled={!message.trim() && !selectedFile}
+                className="p-2 text-blue-600 hover:text-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:text-gray-400"
                 aria-label="Enviar mensagem"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
@@ -322,6 +371,8 @@ function App() {
   const [internalChatMessages, setInternalChatMessages] = useState([]);
   const internalMessagesEndRef = useRef(null);
   const [internalMessage, setInternalMessage] = useState('');
+  
+  const sidebarRef = useRef(null); // Ref para a barra lateral rolável
 
   const fetchData = useCallback(async () => {
     try {
@@ -460,7 +511,7 @@ function App() {
     }
   };
 
-  const handleSendMessage = async (userId, text, attendantId) => {
+  const handleSendMessage = async (userId, text, attendantId, file) => {
       // Slash command para finalizar
       if (text === '/finalizar') {
           handleResolveChat(userId);
@@ -470,6 +521,7 @@ function App() {
       const tempMessage = {
           sender: Sender.ATTENDANT,
           text: text,
+          file: file ? { name: file.name } : null, // Para UI otimista
           timestamp: new Date().toISOString()
       };
       // Atualiza a UI imediatamente para feedback rápido
@@ -479,7 +531,7 @@ function App() {
           await fetch('/api/chats/attendant-reply', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, text, attendantId }),
+              body: JSON.stringify({ userId, text, attendantId, file }),
           });
           // O fetch periódico vai confirmar a mensagem, então não precisamos refetch aqui.
       } catch (err) {
@@ -490,6 +542,7 @@ function App() {
 
   const handleResolveChat = async (userId) => {
     if (!attendant) return;
+    const sidebarScrollPosition = sidebarRef.current?.scrollTop;
     try {
       const res = await fetch(`/api/chats/resolve/${userId}`, {
         method: 'POST',
@@ -501,6 +554,9 @@ function App() {
         setSelectedChat(null);
         setActiveView('queue'); // Volta para a fila
         await fetchData(); // Atualiza os dados
+        requestAnimationFrame(() => {
+            if (sidebarRef.current) sidebarRef.current.scrollTop = sidebarScrollPosition;
+        });
       } else {
         throw new Error('Falha ao resolver o atendimento.');
       }
@@ -511,6 +567,7 @@ function App() {
   
   const handleTransferChat = async (userId, newAttendantId) => {
     if (!attendant) return;
+    const sidebarScrollPosition = sidebarRef.current?.scrollTop;
     try {
       const res = await fetch(`/api/chats/transfer/${userId}`, {
         method: 'POST',
@@ -526,6 +583,9 @@ function App() {
         setSelectedChat(null);
         setActiveView('queue'); // Volta para a fila
         await fetchData(); // Atualiza os dados
+        requestAnimationFrame(() => {
+            if (sidebarRef.current) sidebarRef.current.scrollTop = sidebarScrollPosition;
+        });
       } else {
         const errorText = await res.text();
         throw new Error(errorText || 'Falha ao transferir o atendimento.');
@@ -610,7 +670,7 @@ function App() {
             <button onClick={() => { setActiveView('internal_chat'); setSelectedChat(null); }} className={`flex-1 p-2 text-sm font-semibold rounded-md ${activeView === 'internal_chat' ? 'bg-white shadow' : 'text-gray-600'}`}>Chat Interno</button>
         </nav>
 
-        <div className="flex-1 overflow-y-auto">
+        <div ref={sidebarRef} className="flex-1 overflow-y-auto">
           <ul>
             {activeView === 'queue' && requestQueue.map(req => (
               <ListItem key={req.id} item={req} onClick={() => handleTakeoverChat(req.userId)}>
