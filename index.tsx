@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -380,6 +381,8 @@ function App() {
   const [internalChatMessages, setInternalChatMessages] = useState([]);
   const internalMessagesEndRef = useRef(null);
   const [internalMessage, setInternalMessage] = useState('');
+  const [internalSelectedFile, setInternalSelectedFile] = useState(null);
+  const internalFileInputRef = useRef(null);
   
   const sidebarRef = useRef(null); // Ref para a barra lateral rolável
 
@@ -756,18 +759,49 @@ function App() {
     }
   };
   
+  const handleInternalFileSelect = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        if (file.size > 15 * 1024 * 1024) { // Limite de 15MB
+            alert("O arquivo é muito grande. O limite é de 15MB.");
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            if (e.target && typeof e.target.result === 'string') {
+                const base64Data = e.target.result.split(',')[1];
+                setInternalSelectedFile({
+                    name: file.name,
+                    type: file.type,
+                    data: base64Data
+                });
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+    event.target.value = null; // Reseta para poder selecionar o mesmo arquivo novamente
+  };
+
   const handleSendInternalMessage = async () => {
-    if (!internalMessage.trim() || !attendant || !internalChatPartner) return;
+    if ((!internalMessage.trim() && !internalSelectedFile) || !attendant || !internalChatPartner) return;
+    
     const text = internalMessage.trim();
+    const file = internalSelectedFile;
+
     setInternalMessage('');
+    setInternalSelectedFile(null);
     
     const tempMessage = {
       senderId: attendant.id,
       senderName: attendant.name,
       text,
+      file: file ? { name: file.name } : null,
       timestamp: new Date().toISOString()
     };
     setInternalChatMessages(prev => [...prev, tempMessage]);
+
+    // Omite o dado base64 para não sobrecarregar o servidor com arquivos no chat interno
+    const fileForServer = file ? { name: file.name, type: file.type } : null;
 
     try {
       await fetch('/api/internal-chats', {
@@ -777,6 +811,7 @@ function App() {
           senderId: attendant.id,
           recipientId: internalChatPartner.id,
           text,
+          file: fileForServer,
         }),
       });
     } catch (err) {
@@ -942,7 +977,7 @@ function App() {
                    }} isSelected={internalChatPartner?.id === a.id}>
                        {lastMessage && (
                            <p className={`text-xs truncate mt-1 ${hasUnread ? 'text-gray-800 font-bold' : 'text-gray-500'}`}>
-                               {lastMessage.senderId === attendant.id && 'Você: '}{lastMessage.text}
+                               {lastMessage.senderId === attendant.id && 'Você: '}{lastMessage.text || (lastMessage.file ? `Arquivo: ${lastMessage.file.name}`: '...')}
                            </p>
                        )}
                    </ListItem>
@@ -986,6 +1021,15 @@ function App() {
                                     <div className={`max-w-md p-2 rounded-lg shadow-sm mb-1 flex flex-col ${isMe ? 'bg-blue-100' : 'bg-white'}`}>
                                         {!isMe && <p className="text-xs font-semibold text-purple-600">{msg.senderName}</p>}
                                         <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
+                                        {msg.file && (
+                                            <div className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                                                    <path d="M8 8.5a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" />
+                                                </svg>
+                                                <span className="text-xs text-gray-700 truncate">{msg.file.name}</span>
+                                            </div>
+                                        )}
                                         <div className="text-xs text-gray-400 self-end mt-1">
                                           {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                         </div>
@@ -996,7 +1040,28 @@ function App() {
                         <div ref={internalMessagesEndRef} />
                     </div>
                     <footer className="bg-gray-200 p-3">
+                        {internalSelectedFile && (
+                            <div className="p-2 mb-2 bg-blue-100 rounded-lg flex items-center justify-between text-sm shadow-sm border border-blue-200">
+                                <div className="flex items-center space-x-2 truncate">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                       <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                                    </svg>
+                                    <span className="text-gray-700 truncate">{internalSelectedFile.name}</span>
+                                </div>
+                                <button onClick={() => setInternalSelectedFile(null)} className="text-red-500 hover:text-red-700 font-bold text-lg leading-none" aria-label="Remover arquivo">&times;</button>
+                            </div>
+                        )}
                         <div className="flex items-center bg-white rounded-full shadow-sm px-2">
+                             <input type="file" ref={internalFileInputRef} onChange={handleInternalFileSelect} className="hidden" />
+                              <button 
+                                onClick={() => internalFileInputRef.current.click()}
+                                className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                aria-label="Anexar arquivo"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                </svg>
+                              </button>
                             <input
                                 type="text"
                                 value={internalMessage}
@@ -1005,7 +1070,7 @@ function App() {
                                 placeholder={`Mensagem para ${internalChatPartner.name}...`}
                                 className="w-full p-2 bg-transparent focus:outline-none"
                             />
-                            <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim()} className="p-2 text-blue-600 rounded-full disabled:text-gray-400">
+                            <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim() && !internalSelectedFile} className="p-2 text-blue-600 rounded-full disabled:text-gray-400">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
                             </button>
                         </div>
