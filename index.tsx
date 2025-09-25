@@ -138,6 +138,7 @@ const ChatPanel = ({
   const [transferToAttendantId, setTransferToAttendantId] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const messageInputRef = useRef(null); // Ref para o campo de texto
   
   const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
 
@@ -210,6 +211,7 @@ const ChatPanel = ({
       onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFiles);
       setMessage('');
       setSelectedFiles([]);
+      messageInputRef.current?.focus(); // Devolve o foco ao input
     }
   };
 
@@ -318,6 +320,7 @@ const ChatPanel = ({
                 </svg>
               </button>
               <input
+                ref={messageInputRef}
                 type="text"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -458,6 +461,7 @@ function App() {
   // MODIFICAÇÃO: Suporte a múltiplos arquivos no chat interno
   const [internalSelectedFiles, setInternalSelectedFiles] = useState([]);
   const internalFileInputRef = useRef(null);
+  const internalMessageInputRef = useRef(null); // Ref para o input de msg interna
   
   const sidebarRef = useRef(null); // Ref para a barra lateral rolável
 
@@ -740,7 +744,8 @@ function App() {
             const handledBy = activeView === 'ai_active' ? 'bot' : (activeView === 'active' || activeView === 'history' ? 'human' : null);
             setSelectedChat({ ...item, ...data, handledBy: data.handledBy || handledBy });
 
-            const notificationSet = notifications[activeView];
+            const notificationSetKey = activeView === 'queue' ? (activeChats.some(c => c.userId === item.userId) ? 'active' : 'ai_active') : activeView;
+            const notificationSet = notifications[notificationSetKey];
 
             if (notificationSet instanceof Set && notificationSet.has(item.userId)) {
                 const updatedSet = new Set(notificationSet);
@@ -748,7 +753,7 @@ function App() {
                 
                 setNotifications(prev => ({
                     ...prev,
-                    [activeView]: updatedSet
+                    [notificationSetKey]: updatedSet
                 }));
             }
         } else {
@@ -771,10 +776,18 @@ function App() {
       });
       if (res.ok) {
         alert('Atendimento assumido com sucesso!');
-        await fetchData();
         const takeoverData = await res.json();
+        await fetchData(); 
+        
+        // CORREÇÃO: Mudar de aba apenas DEPOIS que os dados forem atualizados
         setActiveView('active');
-        handleSelectChatItem(takeoverData);
+
+        // Seleciona o chat após a mudança de view e a atualização de dados
+        // Usamos um pequeno timeout para garantir que o React renderize a nova lista 'active'
+        setTimeout(() => {
+             handleSelectChatItem(takeoverData);
+        }, 100);
+
       } else {
         throw new Error('Falha ao assumir o atendimento.');
       }
@@ -903,6 +916,7 @@ function App() {
 
     setInternalMessage('');
     setInternalSelectedFiles([]);
+    internalMessageInputRef.current?.focus(); // Foco automático
     
     const tempMessage = {
       senderId: attendant.id,
@@ -966,12 +980,17 @@ function App() {
       setClientSearchTerm('');
   };
 
-  const clearNotificationsForView = (view) => {
-    if (view === 'queue' && notifications.queue > 0) {
-      setNotifications(prev => ({...prev, queue: 0}));
-    } else if (notifications[view] instanceof Set && notifications[view].size > 0) {
-      setNotifications(prev => ({...prev, [view]: new Set()}));
-    }
+  const handleNavClick = (view) => {
+      setActiveView(view);
+      setSelectedChat(null);
+      setInternalChatPartner(null);
+
+      // Limpa as notificações *visuais* da aba clicada
+      if (view === 'queue' && notifications.queue > 0) {
+        setNotifications(prev => ({...prev, queue: 0}));
+      } else if (notifications[view] instanceof Set && notifications[view].size > 0) {
+        setNotifications(prev => ({...prev, [view]: new Set()}));
+      }
   };
 
 
@@ -981,13 +1000,6 @@ function App() {
       handleLogin(savedAttendantId);
     }
   }, [attendants]);
-  
-  // Efeito para limpar estados ao trocar de aba, melhorando a fluidez da UI
-  useEffect(() => {
-    setSelectedChat(null);
-    setInternalChatPartner(null);
-    clearNotificationsForView(activeView);
-  }, [activeView]);
 
 
   if (!attendant) {
@@ -1002,7 +1014,6 @@ function App() {
   const ListItem = ({ item, onClick, isSelected = false, children = null }) => (
     <li
       onClick={onClick}
-      // Removido 'transition-colors' para evitar "piscar" durante atualizações de dados
       className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-100 ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
     >
       <p className="font-semibold text-gray-800 truncate">{item.userName || item.name || item.id}</p>
@@ -1011,8 +1022,7 @@ function App() {
   );
 
   const NavButton = ({ view, label, count, children = null }) => (
-    // Simplificado o onClick para melhorar a resposta da UI
-    <button onClick={() => setActiveView(view)} className={`relative flex-1 p-2 text-sm font-semibold rounded-md transition-colors duration-150 ${activeView === view ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-200'}`}>
+    <button onClick={() => handleNavClick(view)} className={`relative flex-1 p-2 text-sm font-semibold rounded-md transition-colors duration-150 ${activeView === view ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-200'}`}>
         {label || children} {count > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">{count}</span>}
     </button>
   );
@@ -1178,6 +1188,7 @@ function App() {
                                 </svg>
                               </button>
                             <input
+                                ref={internalMessageInputRef}
                                 type="text"
                                 value={internalMessage}
                                 onChange={e => setInternalMessage(e.target.value)}
