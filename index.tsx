@@ -485,7 +485,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!prevData.current) { // Inicializa na primeira renderização
+    if (!prevData.current || !attendant) { // Adicionado guarda para `attendant`
         prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
         return;
     }
@@ -508,11 +508,23 @@ function App() {
     const activeNotifications = new Set(notifications.active);
     activeChats.forEach(chat => {
       const prevChat = prevData.current.activeChats.find(c => c.userId === chat.userId);
+      
+      // Condição 1: Nova mensagem de usuário
       if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
         if (selectedChat?.userId !== chat.userId) {
           activeNotifications.add(chat.userId);
-          showBrowserNotification(`Nova mensagem de ${chat.userName}`, { body: chat.lastMessage.text });
+          // Melhoria: Adiciona fallback para mensagens com apenas arquivos
+          showBrowserNotification(`Nova mensagem de ${chat.userName}`, { body: chat.lastMessage.text || 'Arquivo recebido.' });
         }
+      }
+
+      // Condição 2: Chat transferido PARA o atendente atual
+      if (chat.attendantId === attendant.id && prevChat && prevChat.attendantId !== attendant.id) {
+          const transferrer = attendants.find(a => a.id === prevChat.attendantId);
+          const transferrerName = transferrer ? transferrer.name : 'outro atendente';
+          
+          activeNotifications.add(chat.userId);
+          showBrowserNotification(`Atendimento transferido para você`, { body: `Cliente: ${chat.userName}\nDe: ${transferrerName}` });
       }
     });
     if (activeNotifications.size !== notifications.active.size) {
@@ -527,7 +539,7 @@ function App() {
       if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
          if (selectedChat?.userId !== chat.userId) {
             aiNotifications.add(chat.userId);
-            showBrowserNotification(`Cliente interagiu com IA: ${chat.userName}`, { body: chat.lastMessage.text });
+            showBrowserNotification(`Cliente interagiu com IA: ${chat.userName}`, { body: chat.lastMessage.text || 'Arquivo recebido.' });
          }
       }
     });
@@ -545,7 +557,7 @@ function App() {
          if (internalChatPartner?.id !== partnerId) {
             internalNotifications.add(partnerId);
             const senderName = attendants.find(a => a.id === current.lastMessage.senderId)?.name || 'Colega';
-            showBrowserNotification(`Mensagem interna de ${senderName}`, { body: current.lastMessage.text });
+            showBrowserNotification(`Mensagem interna de ${senderName}`, { body: current.lastMessage.text || 'Arquivo recebido.' });
          }
       }
     });
@@ -969,6 +981,13 @@ function App() {
       handleLogin(savedAttendantId);
     }
   }, [attendants]);
+  
+  // Efeito para limpar estados ao trocar de aba, melhorando a fluidez da UI
+  useEffect(() => {
+    setSelectedChat(null);
+    setInternalChatPartner(null);
+    clearNotificationsForView(activeView);
+  }, [activeView]);
 
 
   if (!attendant) {
@@ -983,7 +1002,8 @@ function App() {
   const ListItem = ({ item, onClick, isSelected = false, children = null }) => (
     <li
       onClick={onClick}
-      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-200 transition-colors ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
+      // Removido 'transition-colors' para evitar "piscar" durante atualizações de dados
+      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-100 ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
     >
       <p className="font-semibold text-gray-800 truncate">{item.userName || item.name || item.id}</p>
       {children}
@@ -991,7 +1011,8 @@ function App() {
   );
 
   const NavButton = ({ view, label, count, children = null }) => (
-    <button onClick={() => { setActiveView(view); setSelectedChat(null); setInternalChatPartner(null); clearNotificationsForView(view); }} className={`relative flex-1 p-2 text-sm font-semibold rounded-md ${activeView === view ? 'bg-white shadow' : 'text-gray-600'}`}>
+    // Simplificado o onClick para melhorar a resposta da UI
+    <button onClick={() => setActiveView(view)} className={`relative flex-1 p-2 text-sm font-semibold rounded-md transition-colors duration-150 ${activeView === view ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-200'}`}>
         {label || children} {count > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">{count}</span>}
     </button>
   );
@@ -1022,7 +1043,7 @@ function App() {
             <NavButton view="internal_chat" label="Chat Interno" count={notifications.internal.size} />
         </nav>
 
-        <div ref={sidebarRef} className="flex-1 overflow-y-auto">
+        <div ref={sidebarRef} className="flex-1 overflow-y-auto smooth-scroll">
           <ul>
             {activeView === 'queue' && requestQueue.map(req => (
               <ListItem key={req.id} item={req} onClick={() => handleTakeoverChat(req.userId)}>
