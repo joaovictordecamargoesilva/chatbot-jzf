@@ -603,12 +603,17 @@ function App() {
       const aiChatsData = await aiChatsRes.json();
       const internalSummaryData = await internalSummaryRes.json();
 
-      setRequestQueue(reqData);
-      setActiveChats(activeData);
-      setChatHistory(historyData);
-      setAttendants(attendantsData);
-      setAiActiveChats(aiChatsData);
-      setInternalChatsSummary(internalSummaryData);
+      // --- INÍCIO DA OTIMIZAÇÃO DE PERFORMANCE ---
+      // Compara os dados recebidos com os dados atuais antes de atualizar o estado.
+      // Isso evita re-renderizações desnecessárias, que causam "piscadas" na UI
+      // e lentidão na troca de abas.
+      setRequestQueue(current => JSON.stringify(current) !== JSON.stringify(reqData) ? reqData : current);
+      setActiveChats(current => JSON.stringify(current) !== JSON.stringify(activeData) ? activeData : current);
+      setChatHistory(current => JSON.stringify(current) !== JSON.stringify(historyData) ? historyData : current);
+      setAttendants(current => JSON.stringify(current) !== JSON.stringify(attendantsData) ? attendantsData : current);
+      setAiActiveChats(current => JSON.stringify(current) !== JSON.stringify(aiChatsData) ? aiChatsData : current);
+      setInternalChatsSummary(current => JSON.stringify(current) !== JSON.stringify(internalSummaryData) ? internalSummaryData : current);
+      // --- FIM DA OTIMIZAÇÃO ---
 
       // INÍCIO DA CORREÇÃO: Atualiza o chat aberto em tempo real
       if (selectedChat) {
@@ -1014,7 +1019,7 @@ function App() {
   const ListItem = ({ item, onClick, isSelected = false, children = null }) => (
     <li
       onClick={onClick}
-      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-100 ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
+      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-100 transition-colors duration-75 ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
     >
       <p className="font-semibold text-gray-800 truncate">{item.userName || item.name || item.id}</p>
       {children}
