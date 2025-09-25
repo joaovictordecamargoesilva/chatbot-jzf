@@ -245,7 +245,9 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
       return res.status(400).json({ error: 'userId e (userInput ou file) são obrigatórios.' });
   }
 
-  let processedInput = userInput;
+  // FIX: Garante que `processedInput` seja sempre uma string para evitar `undefined.trim()`.
+  // Esta é a principal correção para o crash do servidor (erro 502).
+  let processedInput = userInput || '';
   let transcription = null;
 
   // --- INÍCIO: LÓGICA DE TRANSCRIÇÃO DE ÁUDIO ---
