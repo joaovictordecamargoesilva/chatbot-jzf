@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -142,8 +143,8 @@ const ChatPanel = ({
      setSelectedFiles([]);
   }, [selectedChat?.userId]);
   
-  // FIX: Removida anotação de tipo do evento para compatibilidade com Babel no navegador.
-  const handleFileSelect = (event) => {
+  // FIX: Adicionada anotação de tipo ao evento para corrigir erros de tipo com arquivos.
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
     if (files.length > 0) {
         const filePromises = files.map(file => {
@@ -209,14 +210,14 @@ const ChatPanel = ({
         <div>
             <h2 className="font-semibold text-gray-800">{selectedChat.userName || selectedChat.userId}</h2>
             {chatType === 'human' && currentAttendant && <p className="text-xs text-gray-500">Atendido por: {currentAttendant.name}</p>}
-            {chatType === 'bot' && <p className="text-xs text-blue-500">Em atendimento com o Assistente Virtual</p>}
+            {chatType === 'bot' && <p className="text-xs text-[#922c26]">Em atendimento com o Assistente Virtual</p>}
         </div>
         
         <div className="flex items-center space-x-2">
             {chatType === 'bot' && attendant && (
                  <button
                   onClick={() => onTakeoverChat(selectedChat.userId)}
-                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:ring-4 focus:outline-none focus:ring-purple-300 transition-colors"
+                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-[#922c26] rounded-lg hover:bg-[#7c2621] focus:ring-4 focus:outline-none focus:ring-red-300 transition-colors"
                   aria-label="Assumir Atendimento"
                 >
                   Assumir Atendimento
@@ -226,7 +227,7 @@ const ChatPanel = ({
             {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
                 <button
                   onClick={() => setTransferModalOpen(true)}
-                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-300 transition-colors"
+                  className="px-3 py-1.5 text-xs font-medium text-center text-white bg-[#922c26] rounded-lg hover:bg-[#7c2621] focus:ring-4 focus:outline-none focus:ring-red-300 transition-colors"
                   aria-label="Transferir Atendimento"
                 >
                   Transferir
@@ -259,11 +260,11 @@ const ChatPanel = ({
           <footer className="bg-gray-200 p-3">
              {/* Preview dos arquivos selecionados */}
             {selectedFiles.length > 0 && (
-                <div className="p-2 mb-2 bg-blue-100 rounded-lg text-sm shadow-sm border border-blue-200 max-h-32 overflow-y-auto">
+                <div className="p-2 mb-2 bg-red-100 rounded-lg text-sm shadow-sm border border-red-200 max-h-32 overflow-y-auto">
                     {selectedFiles.map((file, index) => (
                         <div key={index} className="flex items-center justify-between py-1">
                             <div className="flex items-center space-x-2 truncate">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-[#922c26] flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
                                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
                                 </svg>
                                 <span className="text-gray-700 truncate">{file.name}</span>
@@ -277,7 +278,7 @@ const ChatPanel = ({
               <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
               <button 
                 onClick={() => fileInputRef.current.click()}
-                className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                className="p-2 text-gray-500 hover:text-[#922c26] rounded-full focus:outline-none focus:ring-2 focus:ring-red-400"
                 aria-label="Anexar arquivo"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -296,7 +297,7 @@ const ChatPanel = ({
               <button
                 onClick={handleSend}
                 disabled={!message.trim() && selectedFiles.length === 0}
-                className="p-2 text-blue-600 hover:text-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:text-gray-400"
+                className="p-2 text-[#922c26] hover:text-[#7c2621] rounded-full focus:outline-none focus:ring-2 focus:ring-red-400 disabled:text-gray-400"
                 aria-label="Enviar mensagem"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
@@ -316,7 +317,7 @@ const ChatPanel = ({
             <select
               value={transferToAttendantId}
               onChange={(e) => setTransferToAttendantId(e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded-md mb-4 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full p-2 border border-gray-300 rounded-md mb-4 focus:ring-[#922c26] focus:border-[#922c26]"
             >
               <option value="" disabled>Selecione...</option>
               {attendants
@@ -327,7 +328,7 @@ const ChatPanel = ({
               <button onClick={() => setTransferModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                 Cancelar
               </button>
-              <button onClick={handleTransfer} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+              <button onClick={handleTransfer} className="px-4 py-2 text-sm font-medium text-white bg-[#922c26] rounded-md hover:bg-[#7c2621] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#922c26]">
                 Transferir
               </button>
             </div>
@@ -416,7 +417,7 @@ const Sidebar = ({
                 <h1 className="text-xl font-bold text-gray-800">Atendimentos</h1>
                 <button 
                   onClick={() => setModalOpen(true)}
-                  className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 shadow-sm"
+                  className="p-2 bg-[#922c26] text-white rounded-full hover:bg-[#7c2621] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#922c26] shadow-sm"
                   aria-label="Iniciar nova conversa"
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -447,7 +448,7 @@ const Sidebar = ({
                             <button onClick={() => setModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
                                 Cancelar
                             </button>
-                            <button onClick={handleInitiate} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
+                            <button onClick={handleInitiate} className="px-4 py-2 text-sm font-medium text-white bg-[#922c26] rounded-md hover:bg-[#7c2621]">
                                 Enviar
                             </button>
                         </div>
@@ -463,8 +464,8 @@ const Sidebar = ({
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id)}
                             className={`
-                                ${activeTab === tab.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}
-                                rounded-md px-2 py-1 text-xs font-medium flex-1 text-center whitespace-nowrap
+                                ${activeTab === tab.id ? 'bg-white text-[#922c26] shadow-sm' : 'text-gray-500 hover:text-gray-700'}
+                                rounded-md px-3 py-1 text-xs font-medium text-center whitespace-nowrap
                             `}
                         >
                             {tab.label} {tab.count > 0 && `(${tab.count})`}
@@ -478,7 +479,7 @@ const Sidebar = ({
                     <ul>
                         {chats.map(chat => (
                             <li key={chat.id} onClick={() => onSelectChat(chat.userId, 'bot')}
-                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-red-50' : ''}`}
                             >
                                 <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
                                 <div className="text-sm text-gray-600 truncate">{chat.department ? `Setor: ${chat.department}` : 'Aguardando'}</div>
@@ -491,14 +492,14 @@ const Sidebar = ({
                 {activeTab === 'active' && (
                      <ul>
                         {activeChats
-                          // FIX: Removidas anotações de tipo dos argumentos do sort.
-                          .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                          .map(chat => {
+                          // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
+                          .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                          .map((chat: any) => {
                             const currentAttendant = attendants.find(at => at.id === chat.attendantId);
                             const isMyChat = attendant && chat.attendantId === attendant.id;
                             return (
                                 <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'human')}
-                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-red-50' : ''}`}
                                 >
                                     <div className={`font-semibold ${isMyChat ? 'text-green-700' : 'text-gray-800'}`}>{chat.userName || chat.userId}</div>
                                     <div className="text-sm text-gray-600 truncate">{renderLastMessage(chat.lastMessage)}</div>
@@ -514,15 +515,15 @@ const Sidebar = ({
                 {activeTab === 'ai' && (
                     <ul>
                         {aiChats
-                            // FIX: Removidas anotações de tipo dos argumentos do sort.
-                            .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                            .map(chat => (
+                            // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
+                            .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                            .map((chat: any) => (
                             <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'bot')}
-                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-red-50' : ''}`}
                             >
                                 <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
                                 <div className="text-sm text-gray-600 truncate">{renderLastMessage(chat.lastMessage)}</div>
-                                 <div className="text-xs text-blue-500 mt-1">
+                                 <div className="text-xs text-[#922c26] mt-1">
                                     Setor IA: {chat.department || 'N/A'}
                                 </div>
                             </li>
@@ -533,13 +534,13 @@ const Sidebar = ({
                 {activeTab === 'internal' && (
                     <ul>
                         {Object.entries(internalChatSummary)
-                         // FIX: Removidas anotações de tipo dos argumentos do sort e map.
-                         .sort(([, a], [, b]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                         .map(([partnerId, summary]) => {
+                         // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
+                         .sort(([, a]: [string, any], [, b]: [string, any]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                         .map(([partnerId, summary]: [string, any]) => {
                             const partner = attendants.find(a => a.id === partnerId);
                             return (
                                 <li key={partnerId} onClick={() => onSelectInternalChat(partnerId)}
-                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedInternalChatId === partnerId ? 'bg-blue-50' : ''}`}
+                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedInternalChatId === partnerId ? 'bg-red-50' : ''}`}
                                 >
                                     <div className="font-semibold text-gray-800">{partner?.name || 'Desconhecido'}</div>
                                     <div className="text-sm text-gray-600 truncate">{renderInternalLastMessage(summary.lastMessage)}</div>
@@ -553,7 +554,7 @@ const Sidebar = ({
                     <ul>
                         {history.map(chat => (
                             <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'history')}
-                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-red-50' : ''}`}
                             >
                                 <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
                                 <div className="text-sm text-gray-500">Resolvido por: {chat.resolvedBy}</div>
@@ -594,8 +595,8 @@ const InternalChatPanel = ({
         setSelectedFiles([]);
     }, [partner?.id]);
     
-    // FIX: Removida anotação de tipo do evento para compatibilidade com Babel no navegador.
-    const handleFileSelect = (event) => {
+    // FIX: Adicionada anotação de tipo ao evento para corrigir erros de tipo com arquivos.
+    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files ? Array.from(event.target.files) : [];
         if (files.length > 0) {
             const filePromises = files.map(file => {
@@ -659,7 +660,7 @@ const InternalChatPanel = ({
                     return (
                         <div key={index} className={`flex w-full ${justifyClass}`}>
                             <div className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses}`}>
-                                {!isMe && <div className="font-bold text-xs text-purple-600 mb-1">{msg.senderName}</div>}
+                                {!isMe && <div className="font-bold text-xs text-[#922c26] mb-1">{msg.senderName}</div>}
                                 {msg.text && <div className="text-sm whitespace-pre-wrap">{msg.text}</div>}
                                 
                                 {msg.files && msg.files.map((file, i) => (
@@ -683,7 +684,7 @@ const InternalChatPanel = ({
 
             <footer className="bg-gray-200 p-3">
                  {selectedFiles.length > 0 && (
-                    <div className="p-2 mb-2 bg-blue-100 rounded-lg text-sm shadow-sm border border-blue-200 max-h-32 overflow-y-auto">
+                    <div className="p-2 mb-2 bg-red-100 rounded-lg text-sm shadow-sm border border-red-200 max-h-32 overflow-y-auto">
                         {selectedFiles.map((file, index) => (
                             <div key={index} className="flex items-center justify-between py-1">
                                 <span className="text-gray-700 truncate">{file.name}</span>
@@ -695,7 +696,7 @@ const InternalChatPanel = ({
                 <div className="flex items-center bg-white rounded-full shadow-sm px-2">
                     <button 
                         onClick={() => fileInputRef.current.click()}
-                        className="p-2 text-gray-500 hover:text-blue-600 rounded-full"
+                        className="p-2 text-gray-500 hover:text-[#922c26] rounded-full"
                     >
                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -710,7 +711,7 @@ const InternalChatPanel = ({
                         placeholder="Mensagem interna..."
                         className="w-full p-2 bg-transparent focus:outline-none"
                     />
-                    <button onClick={handleSend} className="p-2 text-blue-600 hover:text-blue-800 rounded-full">
+                    <button onClick={handleSend} className="p-2 text-[#922c26] hover:text-[#7c2621] rounded-full">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
                            <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
                         </svg>
@@ -728,11 +729,12 @@ const App = () => {
     const [attendant, setAttendant] = useState(null);
     const [isLoadingAttendant, setIsLoadingAttendant] = useState(true);
     
-    const [chats, setChats] = useState([]); // Fila de espera
-    const [activeChats, setActiveChats] = useState([]); // Atendimentos ativos (humanos)
-    const [aiChats, setAiChats] = useState([]); // Atendimentos ativos (IA)
-    const [history, setHistory] = useState([]);
-    const [clients, setClients] = useState([]);
+    // FIX: Typed useState hooks to prevent errors on untyped data.
+    const [chats, setChats] = useState<any[]>([]); // Fila de espera
+    const [activeChats, setActiveChats] = useState<any[]>([]); // Atendimentos ativos (humanos)
+    const [aiChats, setAiChats] = useState<any[]>([]); // Atendimentos ativos (IA)
+    const [history, setHistory] = useState<any[]>([]);
+    const [clients, setClients] = useState<any[]>([]);
     
     const [selectedChat, setSelectedChat] = useState(null);
     const [isLoadingChat, setIsLoadingChat] = useState(false);
@@ -740,7 +742,8 @@ const App = () => {
     const [activeTab, setActiveTab] = useState('queue'); // 'queue', 'active', 'ai', 'internal', 'history'
     
     // State para chat interno
-    const [internalChatSummary, setInternalChatSummary] = useState({});
+    // FIX: Typed useState hook to prevent errors on untyped data.
+    const [internalChatSummary, setInternalChatSummary] = useState<any>({});
     const [selectedInternalPartner, setSelectedInternalPartner] = useState(null);
     const [internalChatHistory, setInternalChatHistory] = useState([]);
     const isInternalChatSelected = activeTab === 'internal' && selectedInternalPartner;
@@ -861,7 +864,10 @@ const App = () => {
             if (res.ok) {
                 const newAttendant = await res.json();
                 setAttendants(prev => [...prev, newAttendant]);
-                handleLogin(newAttendant.id);
+                // FIX: Loga o novo atendente diretamente para evitar problemas de
+                //       sincronia com o estado do React.
+                setAttendant(newAttendant);
+                localStorage.setItem('attendantId', newAttendant.id);
             } else {
                 const error = await res.json();
                 alert(`Erro: ${error.error}`);
@@ -1065,9 +1071,9 @@ const App = () => {
     // --- Renderização Principal ---
     return (
       <div className="flex h-screen font-sans antialiased text-gray-900 bg-gray-50">
-          <div className="fixed top-0 left-0 w-full bg-blue-800 text-white p-2 text-center text-xs z-10 shadow-md">
+          <div className="fixed top-0 left-0 w-full bg-[#922c26] text-white p-2 text-center text-xs z-10 shadow-md">
             <span>Você está logado como: <strong>{attendant.name}</strong></span>
-            <button onClick={handleLogout} className="ml-4 text-blue-200 hover:text-white font-bold text-xs">[Sair]</button>
+            <button onClick={handleLogout} className="ml-4 text-red-200 hover:text-white font-bold text-xs">[Sair]</button>
           </div>
           <div className="flex w-full pt-8"> {/* pt-8 para compensar o header fixo */}
              <Sidebar
