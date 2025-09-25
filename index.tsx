@@ -25,9 +25,52 @@ const TypingIndicator = () => (
 );
 // --- END: Merged from components/TypingIndicator.tsx ---
 
-// --- NOVO COMPONENTE: FileRenderer ---
+// --- NOVO COMPONENTE: Lightbox ---
+const Lightbox = ({ src, onClose }) => {
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[100]"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Visualizador de imagem"
+    >
+      <div className="relative p-4 w-full h-full flex items-center justify-center">
+        {/* Evita que o clique na imagem feche o modal */}
+        <img
+          src={src}
+          alt="Visualização ampliada"
+          className="max-w-[90vw] max-h-[90vh] object-contain shadow-lg rounded-md"
+          onClick={(e) => e.stopPropagation()}
+        />
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-white text-4xl font-bold hover:text-gray-300 transition-colors"
+          aria-label="Fechar"
+        >
+          &times;
+        </button>
+      </div>
+    </div>
+  );
+};
+
+
+// --- ATUALIZADO: FileRenderer ---
 // Helper para renderizar diferentes tipos de arquivo de forma inteligente
-const FileRenderer = ({ file }) => {
+const FileRenderer = ({ file, onImageClick }) => {
     // Fallback para arquivos antigos sem dados base64
     if (!file || !file.type || !file.data) {
         return (
@@ -43,7 +86,7 @@ const FileRenderer = ({ file }) => {
     const fileSrc = `data:${file.type};base64,${file.data}`;
 
     if (file.type.startsWith('image/')) {
-        return <img src={fileSrc} alt={file.name} className="mt-2 rounded-lg max-w-xs md:max-w-sm max-h-80 object-contain cursor-pointer" onClick={() => window.open(fileSrc, '_blank')} />;
+        return <img src={fileSrc} alt={file.name} className="mt-2 rounded-lg max-w-xs md:max-w-sm max-h-80 object-contain cursor-pointer" onClick={() => onImageClick(fileSrc)} />;
     }
     if (file.type.startsWith('audio/')) {
         return <audio controls src={fileSrc} className="mt-2 w-full max-w-xs"></audio>;
@@ -67,7 +110,7 @@ const FileRenderer = ({ file }) => {
 
 
 // --- START: Merged from components/MessageBubble.tsx ---
-const MessageBubble = ({ message }) => {
+const MessageBubble = ({ message, onImageClick }) => {
   const isBot = message.sender === Sender.BOT;
   const isAttendant = message.sender === Sender.ATTENDANT;
   const isSystem = message.sender === Sender.SYSTEM;
@@ -105,7 +148,7 @@ const MessageBubble = ({ message }) => {
         {files.length > 0 && (
             <div className="mt-1 flex flex-col space-y-2">
                 {files.map((file, index) => (
-                    <FileRenderer key={index} file={file} />
+                    <FileRenderer key={index} file={file} onImageClick={onImageClick} />
                 ))}
             </div>
         )}
@@ -130,6 +173,7 @@ const ChatPanel = ({
   onTakeoverChat,
   isLoading,
   attendants,
+  onImageClick, // Recebe o handler para abrir a imagem
 }) => {
   const [message, setMessage] = useState('');
   // MODIFICAÇÃO: De selectedFile (objeto) para selectedFiles (array) para múltiplos anexos
@@ -282,7 +326,7 @@ const ChatPanel = ({
       {/* Corpo do Chat */}
       <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
         {selectedChat.messageLog.map((msg, index) => (
-          <MessageBubble key={index} message={msg} />
+          <MessageBubble key={index} message={msg} onImageClick={onImageClick} />
         ))}
         {isLoading && <TypingIndicator />}
         <div ref={messagesEndRef} />
@@ -472,6 +516,9 @@ function App() {
   const [selectedClient, setSelectedClient] = useState(null);
   const [initiateMessage, setInitiateMessage] = useState('');
   const [clientSearchTerm, setClientSearchTerm] = useState('');
+
+  // --- NOVO ESTADO PARA LIGHTBOX ---
+  const [lightboxSrc, setLightboxSrc] = useState(null);
 
   // --- NOVOS ESTADOS PARA NOTIFICAÇÕES ---
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), ai_active: new Set(), internal: new Set() });
@@ -998,6 +1045,14 @@ function App() {
       }
   };
 
+  const handleOpenLightbox = (src) => {
+    setLightboxSrc(src);
+  };
+
+  const handleCloseLightbox = () => {
+    setLightboxSrc(null);
+  };
+
 
   useEffect(() => {
     const savedAttendantId = localStorage.getItem('attendantId');
@@ -1128,6 +1183,7 @@ function App() {
             onTakeoverChat={handleTakeoverChat}
             isLoading={isLoading}
             attendants={attendants}
+            onImageClick={handleOpenLightbox}
           />
         )}
         
@@ -1153,7 +1209,7 @@ function App() {
                                         {msg.text && <div className="text-sm whitespace-pre-wrap">{msg.text}</div>}
                                         {files.length > 0 && (
                                             <div className="mt-1 flex flex-col space-y-2">
-                                                {files.map((file, fileIndex) => <FileRenderer key={fileIndex} file={file} />)}
+                                                {files.map((file, fileIndex) => <FileRenderer key={fileIndex} file={file} onImageClick={handleOpenLightbox} />)}
                                             </div>
                                         )}
                                         <div className="text-xs text-gray-400 self-end mt-1">
@@ -1273,6 +1329,9 @@ function App() {
               </div>
           </div>
       )}
+
+      {/* --- RENDERIZA O LIGHTBOX SE UMA IMAGEM ESTIVER SELECIONADA --- */}
+      {lightboxSrc && <Lightbox src={lightboxSrc} onClose={handleCloseLightbox} />}
 
     </div>
   );
