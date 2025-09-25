@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "12.0.0_AUDIO_TRANSCRIPTION";
+const SERVER_VERSION = "11.0.0_MEDIA_TRANSCRIPTION_TIMEOUT";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -76,7 +76,6 @@ app.use(express.json({ limit: '50mb' }));
 let ai = null;
 if (API_KEY) {
     try {
-        // @google/genai-ts FIX: Use the correct constructor with a named apiKey parameter as per the new SDK guidelines.
         ai = new GoogleGenAI({apiKey: API_KEY});
         console.log("[JZF Chatbot Server] Cliente Google GenAI inicializado com sucesso.");
     } catch (error) {
@@ -86,18 +85,47 @@ if (API_KEY) {
     console.warn("[JZF Chatbot Server] AVISO: API_KEY não definida. Funcionalidades de IA estarão desativadas.");
 }
 
+// --- FUNÇÃO DE TRANSCRIÇÃO DE ÁUDIO COM GEMINI AI ---
+async function transcribeAudio(file) {
+    if (!ai) {
+        console.warn("[Transcribe] Tentativa de transcrever áudio, mas a IA não está inicializada.");
+        return "[Áudio não pôde ser transcrito - IA indisponível]";
+    }
+    if (!file || !file.data || !file.type) {
+        console.error("[Transcribe] Dados de áudio inválidos fornecidos.");
+        return "[Erro na transcrição: dados de áudio ausentes]";
+    }
+
+    try {
+        console.log(`[Transcribe] Iniciando transcrição para arquivo do tipo ${file.type}...`);
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { 
+                parts: [
+                    { inlineData: { mimeType: file.type, data: file.data } },
+                    { text: "Transcreva este áudio em português do Brasil de forma literal." }
+                ]
+            },
+        });
+        const transcription = response.text.trim();
+        console.log(`[Transcribe] Transcrição concluída: "${transcription}"`);
+        return transcription;
+    } catch (error) {
+        console.error("[Transcribe] Erro CRÍTICO durante a chamada da API Gemini para transcrição:", error);
+        return `[Não foi possível transcrever o áudio]`;
+    }
+}
+
+
 // --- FUNÇÕES DE GERENCIAMENTO DE SESSÃO E DADOS ---
 function archiveSession(session) {
     if (!session || !session.userId) {
         console.error('[archiveSession] Tentativa de arquivar sessão inválida.');
         return;
     }
-    // Remove a entrada antiga, se houver, para que a nova seja a mais recente.
     archivedChats.delete(session.userId);
-
     archivedChats.set(session.userId, { ...session });
     
-    // Se o mapa exceder o limite, remove o item mais antigo (primeiro a ser inserido).
     if (archivedChats.size > MAX_ARCHIVED_CHATS) {
         const oldestKey = archivedChats.keys().next().value;
         archivedChats.delete(oldestKey);
@@ -121,7 +149,7 @@ function getSession(userId, userName = null) {
     }
     const session = userSessions.get(userId);
     if (userName && session.userName !== userName) {
-        session.userName = userName; // Atualiza o nome se mudou
+        session.userName = userName;
     }
     return session;
 }
@@ -147,17 +175,14 @@ function addRequestToQueue(session, department, message) {
 // --- PROCESSAMENTO PRINCIPAL DO CHATBOT (Lógica do WhatsApp) ---
 async function processMessage(session, userInput, replies) {
     const { userId } = session;
-    let currentStep = conversationFlow.get(session.currentState);
     
-    // CORREÇÃO CRÍTICA (REDE DE SEGURANÇA): Se o estado da sessão for inválido (nulo ou não existe no
-    // `conversationFlow`), o acesso a `currentStep.options` causaria um crash no servidor (Erro 502).
-    // Esta verificação reseta a sessão para o início de forma segura, garantindo a estabilidade.
-    if (!currentStep) {
-        console.error(`[Flow Safety Net] Estado inválido ou nulo encontrado para a sessão ${userId}: '${session.currentState}'. Resetando para GREETING.`);
+    // SAFEGUARD: Se o estado for inválido, reseta para o início.
+    if (!conversationFlow.has(session.currentState)) {
+        console.error(`[Flow] Estado inválido ou desconhecido: "${session.currentState}" para o usuário ${userId}. Reiniciando a sessão.`);
         session.currentState = ChatState.GREETING;
-        currentStep = conversationFlow.get(ChatState.GREETING);
     }
     
+    let currentStep = conversationFlow.get(session.currentState);
     let nextState, payload;
 
     const choice = parseInt(userInput.trim(), 10);
@@ -170,20 +195,17 @@ async function processMessage(session, userInput, replies) {
         nextState = currentStep.nextState;
         session.context.history[session.currentState] = userInput;
     } else {
-        // CORREÇÃO: Se o estado for GREETING, qualquer texto inicial (ex: "oi")
-        // não deve gerar um erro de "opção inválida", apenas exibir o menu.
         if (session.currentState === ChatState.GREETING) {
-            nextState = session.currentState; // Fica no mesmo estado para reenviar a mensagem.
+            nextState = session.currentState;
             payload = null;
         } else {
-            // Para todos os outros estados, o comportamento antigo de erro é mantido.
             const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
             replies.push(invalidOptionMsg);
             session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
             const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
             replies.push(stepFormatted);
             session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
-            return; // Encerra o processamento aqui
+            return;
         }
     }
     
@@ -195,12 +217,10 @@ async function processMessage(session, userInput, replies) {
         const endMsg = translations.pt.sessionEnded;
         replies.push(endMsg);
         session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
-        
         session.resolvedBy = "Cliente";
         session.resolvedAt = new Date().toISOString();
         archiveSession(session);
         userSessions.delete(userId);
-        
         console.log(`[Flow] Sessão para ${userId} finalizada pelo cliente e arquivada.`);
         return;
     }
@@ -210,7 +230,7 @@ async function processMessage(session, userInput, replies) {
         session.currentState = currentState;
         const step = conversationFlow.get(currentState);
         if (!step) {
-            console.error(`[Flow] Estado inválido: ${currentState}. Reiniciando sessão para ${userId}.`);
+            console.error(`[Flow] Estado inválido no loop: ${currentState}. Reiniciando sessão para ${userId}.`);
             currentState = ChatState.GREETING;
             continue;
         }
@@ -227,11 +247,13 @@ async function processMessage(session, userInput, replies) {
         replies.push(formattedReply);
         session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
         
+        // Se o próximo passo não requer input e não tem opções, avança automaticamente.
+        // A lógica é interrompida se `nextState` não estiver definido (como no ATTENDANT_TRANSFER).
         if (step.nextState && !step.requiresTextInput && (!step.options || step.options.length === 0)) {
             currentState = step.nextState;
             await new Promise(r => setTimeout(r, 500));
         } else {
-            currentState = null;
+            currentState = null; // Interrompe o loop
         }
     }
 }
@@ -250,93 +272,48 @@ function formatFlowStepForWhatsapp(step, context) {
 const apiRouter = express.Router();
 
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
-  const { userId, userName, userInput, file } = req.body;
-  if (!userId || (userInput === undefined && !file)) {
-      return res.status(400).json({ error: 'userId e (userInput ou file) são obrigatórios.' });
+  const { userId, userName, userInput: originalInput, file } = req.body;
+  if (!userId || originalInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
+
+  let effectiveInput = originalInput;
+  
+  // Transcrição de áudio, se houver
+  if (file && file.type && (file.type.startsWith('audio/') || file.type === 'application/ogg')) {
+      const transcription = await transcribeAudio(file);
+      effectiveInput = transcription;
   }
-
-  // FIX: Garante que `processedInput` seja sempre uma string para evitar `undefined.trim()`.
-  // Esta é a principal correção para o crash do servidor (erro 502).
-  let processedInput = userInput || '';
-  let transcription = null;
-
-  // --- INÍCIO: LÓGICA DE TRANSCRIÇÃO DE ÁUDIO ---
-  if (ai && file && file.type && file.type.startsWith('audio/')) {
-      try {
-          console.log(`[Transcription] Iniciando transcrição de áudio para ${userId}...`);
-          
-          // @google/genai-ts FIX: Use generateContent with multiple parts for transcription.
-          const audioPart = {
-              inlineData: {
-                  mimeType: file.type,
-                  data: file.data,
-              },
-          };
-          const textPart = {
-              text: "Transcreva este áudio de forma literal e precisa.",
-          };
-          
-          const response = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
-              contents: { parts: [audioPart, textPart] },
-          });
-          
-          // @google/genai-ts FIX: Use .text property for direct text output.
-          // Adicionada verificação `(response.text || '')` para maior robustez.
-          const transcribedText = (response.text || '').trim();
-          
-          if (transcribedText) {
-              transcription = `Transcrição do áudio:\n"${transcribedText}"`;
-              processedInput = transcribedText; // Usa a transcrição como input principal para o bot
-              console.log(`[Transcription] Sucesso. Texto: "${transcribedText}"`);
-          } else {
-              console.warn(`[Transcription] A transcrição retornou um texto vazio para ${userId}.`);
-              transcription = `Transcrição do áudio:\n[Não foi possível transcrever o conteúdo.]`;
-          }
-
-      } catch (error) {
-          console.error(`[Transcription] Erro CRÍTICO ao transcrever áudio para ${userId}:`, error);
-          transcription = `Transcrição do áudio:\n[Erro ao processar o áudio.]`;
-      }
-  }
-  // --- FIM: LÓGICA DE TRANSCRIÇÃO DE ÁUDIO ---
-
+  
   const session = getSession(userId, userName);
-  // Atualiza o log com a transcrição, se houver
+  // Log da mensagem do usuário com texto (transcrito ou original) e arquivo (com base64)
   session.messageLog.push({ 
-    sender: 'user', 
-    text: userInput, // Mantém o texto original (geralmente vazio)
-    files: file ? [file] : [], 
-    transcription: transcription, // Adiciona o novo campo
-    timestamp: new Date() 
+      sender: 'user', 
+      text: effectiveInput, 
+      file: file, 
+      timestamp: new Date() 
   });
 
   if (session.handledBy === 'human') {
-      return res.status(200).json({ replies: [] }); // Message is logged, attendant will see it.
+      return res.status(200).json({ replies: [] }); // Apenas loga a mensagem para o atendente.
   }
   
-  // INÍCIO: LÓGICA EXCLUSIVA PARA O ASSISTENTE VIRTUAL DE IA
+  // Lógica para o Assistente Virtual de IA
   if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
       const replies = [];
       const currentStep = conversationFlow.get(session.currentState);
-      const choice = parseInt(processedInput.trim(), 10);
+      const choice = parseInt(effectiveInput.trim(), 10);
       const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
 
-      // Se o usuário selecionou uma opção do menu (ex: "Falar com atendente"), processa normalmente
       if (selectedOption) {
-          await processMessage(session, processedInput, replies);
+          await processMessage(session, effectiveInput, replies);
       } else {
-          // Caso contrário, é uma pergunta para a IA
           if (!ai) {
               const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
               replies.push(errorMsg);
               session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
           } else {
               try {
-                  // Adiciona a pergunta do usuário ao histórico da IA para dar contexto
-                  session.aiHistory.push({ role: 'user', parts: [{ text: processedInput }] });
+                  session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
                   
-                  // @google/genai-ts FIX: Use generateContent directly.
                   const response = await ai.models.generateContent({
                       model: 'gemini-2.5-flash',
                       contents: session.aiHistory,
@@ -345,11 +322,9 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
                       }
                   });
 
-                  // @google/genai-ts FIX: Use .text property for direct text output.
                   const aiResponseText = response.text;
                   replies.push(aiResponseText);
                   
-                  // Atualiza os logs da sessão com a resposta da IA
                   session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
                   session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
 
@@ -361,14 +336,13 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
               }
           }
       }
-      // Retorna a resposta (da IA ou do fluxo normal)
       return res.status(200).json({ replies });
   }
-  // FIM: LÓGICA EXCLUSIVA PARA O ASSISTENTE VIRTUAL DE IA
 
+  // Lógica do fluxo normal do bot
   const replies = [];
   try {
-    const lowerInput = processedInput.trim().toLowerCase();
+    const lowerInput = effectiveInput.trim().toLowerCase();
     if (['voltar', 'inicio', 'início', 'menu'].includes(lowerInput)) {
         session.currentState = ChatState.GREETING;
         session.context = { history: {} };
@@ -377,10 +351,9 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
         replies.push(formattedReply);
         session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
     } else if (['sair', 'encerrar', 'finalizar'].includes(lowerInput)) {
-        // Este bloco agora é tratado pela lógica principal do processMessage que arquiva a sessão.
-        await processMessage(session, '2', replies); // Simula a escolha da opção "Encerrar"
+        await processMessage(session, '4', replies); // Simula a escolha da opção "Encerrar"
     } else {
-        await processMessage(session, processedInput, replies);
+        await processMessage(session, effectiveInput, replies);
     }
     res.status(200).json({ replies });
   } catch (error) {
@@ -389,47 +362,6 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   }
 });
 
-apiRouter.post('/chat', async (req, res) => {
-    if (!ai) return res.status(503).send("Funcionalidade de IA indisponível (API Key não configurada).");
-    const { message, file, session } = req.body;
-    if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) return res.status(400).send("Endpoint /api/chat é exclusivo para o assistente de IA.");
-    
-    try {
-        const systemInstruction = departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo.";
-        
-        const contentParts = [];
-        if (file) {
-            contentParts.push({ inlineData: { mimeType: file.type, data: file.data } });
-        }
-        if (message) {
-            contentParts.push({ text: message });
-        }
-
-        const contents = [
-            ...(session.aiHistory || []),
-            { role: 'user', parts: contentParts }
-        ];
-
-        const responseStream = await ai.models.generateContentStream({
-            model: 'gemini-2.5-flash',
-            contents: contents,
-            config: {
-                systemInstruction: systemInstruction,
-            }
-        });
-        
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        for await (const chunk of responseStream) {
-            if (chunk && chunk.text) {
-              res.write(chunk.text);
-            }
-        }
-        res.end();
-    } catch (error) {
-        console.error("Erro na API do Gemini:", error);
-        res.status(500).send("Falha ao se comunicar com o assistente de IA.");
-    }
-});
 
 // --- ROTAS DO PAINEL DE ATENDIMENTO ---
 apiRouter.get('/attendants', (req, res) => res.status(200).json(ATTENDANTS));
@@ -460,7 +392,6 @@ apiRouter.get('/chats/active', (req, res) => {
     res.status(200).json(chats);
 });
 
-// ROTA ATUALIZADA: Retorna chats da IA com a última mensagem para notificações
 apiRouter.get('/chats/ai-active', (req, res) => {
     const aiActiveChats = [];
     for (const session of userSessions.values()) {
@@ -512,8 +443,6 @@ apiRouter.get('/chats/history', (req, res) => {
 
 apiRouter.get('/chats/history/:userId', (req, res) => {
     const { userId } = req.params;
-    // CORREÇÃO: Buscar primeiro em sessões ativas e arquivadas. O uso de `getSession`
-    // criava uma nova sessão vazia, sobrescrevendo o histórico ao ser visualizado.
     const session = userSessions.get(userId) || archivedChats.get(userId);
     
     if (session) {
@@ -538,14 +467,12 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
     const session = getSession(userId);
     if (!session) return res.status(404).send('Sessão do usuário não encontrada.');
 
-    // Remove da fila de espera, se estiver lá.
     const queueIndex = requestQueue.findIndex(r => r.userId === userId);
     if (queueIndex > -1) {
         requestQueue.splice(queueIndex, 1);
         console.log(`[Takeover] Removido ${userId} da fila de espera.`);
     }
 
-    // Se já estiver em um chat ativo, loga a reatribuição.
     if (activeChats.has(userId)) {
         console.log(`[Takeover] Reatribuindo chat ativo ${userId} para ${attendant.name}.`);
     }
@@ -566,7 +493,8 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
 });
 
 apiRouter.post('/chats/attendant-reply', (req, res) => {
-    const { userId, text, attendantId, files } = req.body;
+    // ATUALIZAÇÃO: Aceita `files` (array) em vez de `file` (objeto)
+    const { userId, text, attendantId, files } = req.body; 
     if (!userId || (!text && (!files || files.length === 0))) {
         return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
@@ -576,11 +504,21 @@ apiRouter.post('/chats/attendant-reply', (req, res) => {
         return res.status(403).send('Permissão negada para responder a este chat.');
     }
     
-    outboundGatewayQueue.push({ userId, text, files });
+    // Enfileira o texto (se houver) e cada arquivo separadamente para envio
+    if (text) {
+        outboundGatewayQueue.push({ userId, text });
+    }
+    if (files && files.length > 0) {
+        files.forEach(file => {
+             outboundGatewayQueue.push({ userId, file, text: file.name }); // Envia nome do arquivo como legenda
+        });
+    }
     
-    session.messageLog.push({ sender: 'attendant', text, files: files || [], timestamp: new Date() });
+    // Loga uma única mensagem com o texto e todos os arquivos
+    const fileLogs = files ? files.map(f => ({ ...f })) : [];
+    session.messageLog.push({ sender: 'attendant', text, files: fileLogs, timestamp: new Date() });
     
-    res.status(200).send('Mensagem enfileirada para envio.');
+    res.status(200).send('Mensagem(ns) enfileirada(s) para envio.');
 });
 
 apiRouter.post('/chats/transfer/:userId', (req, res) => {
@@ -620,8 +558,6 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
         return res.status(404).send('Nenhum atendimento ativo encontrado para este usuário.');
     }
     
-    // Se o chat for humano, apenas o atendente responsável pode fechar.
-    // Se for do bot, qualquer atendente pode fechar.
     if (session.handledBy === 'human' && session.attendantId !== attendantId) {
         return res.status(403).send('Apenas o atendente responsável pode resolver o chat.');
     }
@@ -629,12 +565,12 @@ apiRouter.post('/chats/resolve/:userId', (req, res) => {
     const closingMessage = `Seu atendimento foi concluído por *${attendant.name}*. Se precisar de mais alguma coisa, é só chamar! A JZF Contabilidade agradece o seu contato.`;
     outboundGatewayQueue.push({ userId, text: closingMessage });
     
-    session.resolvedBy = attendant.name; // Salva o nome para exibição
+    session.resolvedBy = attendant.name;
     session.resolvedAt = new Date().toISOString();
     archiveSession(session);
     
     userSessions.delete(userId); 
-    activeChats.delete(userId); // Garante a remoção da lista de ativos se estiver lá
+    activeChats.delete(userId);
 
     console.log(`[Resolve] Atendimento para ${userId} resolvido por ${attendant.name}.`);
     res.status(200).send('Atendimento resolvido.');
@@ -663,7 +599,6 @@ apiRouter.post('/chats/initiate', (req, res) => {
     const activeChatInfo = { userId, userName: session.userName, attendantId, timestamp: new Date().toISOString() };
     activeChats.set(userId, activeChatInfo);
 
-    // FORMATA A MENSAGEM PARA O WHATSAPP COM NOME EM NEGRITO
     const messageForWhatsapp = `*${attendant.name}*: ${message}`;
     outboundGatewayQueue.push({ userId, text: messageForWhatsapp });
 
@@ -701,12 +636,12 @@ apiRouter.post('/internal-chats', (req, res) => {
     const { senderId, recipientId, text, files } = req.body;
 
     if (!senderId || !recipientId || ((!text || !text.trim()) && (!files || files.length === 0))) {
-        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text or files are required.' });
+        return res.status(400).json({ error: 'senderId, recipientId e texto ou arquivos são obrigatórios.' });
     }
 
     const sender = ATTENDANTS.find(a => String(a.id) === String(senderId));
     if (!sender) {
-        return res.status(404).json({ error: 'Sender not found.' });
+        return res.status(404).json({ error: 'Remetente não encontrado.' });
     }
     
     const chatId = getInternalChatId(senderId, recipientId);
@@ -718,12 +653,12 @@ apiRouter.post('/internal-chats', (req, res) => {
         senderId,
         senderName: sender.name,
         text,
-        files: files || [],
+        files,
         timestamp: new Date().toISOString()
     };
     
     internalChats.get(chatId).push(message);
-    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}. Files: ${files ? files.length : '0'}`);
+    console.log(`[Internal Chat] Mensagem de ${sender.name} para ${recipientId}. Arquivos: ${files ? files.length : '0'}`);
     res.status(201).json(message);
 });
 
@@ -732,10 +667,10 @@ apiRouter.post('/internal-chats', (req, res) => {
 apiRouter.get('/gateway/poll-outbound', (req, res) => {
     if (outboundGatewayQueue.length > 0) {
         const messagesToSend = [...outboundGatewayQueue];
-        outboundGatewayQueue.length = 0; // Limpa a fila
+        outboundGatewayQueue.length = 0;
         res.status(200).json(messagesToSend);
     } else {
-        res.status(204).send(); // No Content
+        res.status(204).send();
     }
 });
 
@@ -759,7 +694,7 @@ app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
 
-// --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLLTIMA) ---
+// --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA) ---
 app.get('*', (req, res) => {
     console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
     res.sendFile(path.resolve(__dirname, 'index.html'));
@@ -771,42 +706,40 @@ app.use((err, req, res, next) => {
   res.status(500).send('Algo deu errado no servidor!');
 });
 
-console.log('[Server Setup] Configuration complete. Attempting to start listener...');
-
-// --- LÓGICA DE TIMEOUT DA FILA DE ATENDIMENTO ---
-const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
-setInterval(() => {
+// --- VERIFICADOR DE TIMEOUT DA FILA DE ATENDIMENTO ---
+const checkRequestQueueTimeout = () => {
     const now = new Date();
-    const timedOutRequests = [];
+    const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 
     for (let i = requestQueue.length - 1; i >= 0; i--) {
         const request = requestQueue[i];
-        const requestTime = new Date(request.timestamp);
-        if (now - requestTime > FIFTEEN_MINUTES_MS) {
-            console.log(`[Queue Timeout] Request ID ${request.id} for user ${request.userId} has timed out.`);
-            timedOutRequests.push(request);
-            requestQueue.splice(i, 1); // Remove da fila
-        }
-    }
+        const requestAge = now - new Date(request.timestamp);
 
-    for (const request of timedOutRequests) {
-        const session = userSessions.get(request.userId);
-        if (session && session.handledBy === 'bot') { // Apenas interfere se o bot ainda estiver no controle
-            session.currentState = ChatState.GREETING;
-            session.context = { history: {} };
+        if (requestAge > TIMEOUT_MS) {
+            console.log(`[Timeout] A solicitação de ${request.userName} (${request.userId}) expirou.`);
             
-            const timeoutMessage = "Desculpe pela demora. Parece que todos os nossos atendentes estão ocupados no momento. Vamos tentar novamente. Como posso te ajudar?";
-            const greetingStep = conversationFlow.get(ChatState.GREETING);
-            const menuMessage = formatFlowStepForWhatsapp(greetingStep, {});
+            requestQueue.splice(i, 1); // Remove da fila
 
-            outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
-            outboundGatewayQueue.push({ userId: request.userId, text: menuMessage });
-
-            session.messageLog.push({ sender: 'system', text: 'Atendimento automático reiniciado por inatividade na fila.', timestamp: new Date() });
-            console.log(`[Queue Timeout] Sessão do usuário ${request.userId} foi reiniciada e o menu reenviado.`);
+            const session = userSessions.get(request.userId);
+            if (session) {
+                // Notifica o usuário e reseta o estado dele
+                const timeoutMessage = "Nossos atendentes parecem estar ocupados no momento. Enquanto você aguarda, você pode tentar falar com nosso assistente virtual ou escolher uma das opções abaixo novamente.";
+                outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
+                
+                // Reseta a sessão e envia o menu de boas-vindas
+                session.currentState = ChatState.GREETING;
+                session.context = { history: {} };
+                const greetingStep = conversationFlow.get(ChatState.GREETING);
+                const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
+                outboundGatewayQueue.push({ userId: request.userId, text: formattedReply });
+            }
         }
     }
-}, 60 * 1000); // Verifica a cada minuto
+};
+
+// Inicia o verificador de timeout
+setInterval(checkRequestQueueTimeout, 30 * 1000); // Roda a cada 30 segundos
+console.log('[Server Setup] Verificador de timeout da fila de atendimento iniciado.');
 
 app.listen(port, () => {
     console.log(`[JZF Chatbot Server] Servidor escutando na porta ${port}.`);
