@@ -317,40 +317,39 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   
   const replies = [];
   try {
-    const isFirstUserMessage = session.messageLog.filter(m => m.sender === 'user').length === 1;
-
-    // LÓGICA DE INTELIGÊNCIA DE ÁUDIO
-    // Caso 1: Se for a PRIMEIRA mensagem do usuário E for um áudio, apenas mostre o menu de boas-vindas.
-    if (isFirstUserMessage && isAudio) {
-        console.log(`[Flow] Primeira mensagem de ${userId} é um áudio. Exibindo menu principal.`);
-        await processMessage(session, '', replies); // Input vazio no estado GREETING apenas reenvia o menu.
-        return res.status(200).json({ replies });
-    }
-
-    // Caso 2: Se o usuário já está no modo de assistente de IA.
+    // Se o usuário está no estado de chat com a IA, processa a mensagem com a IA.
     if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
         const currentStep = conversationFlow.get(session.currentState);
         const choice = parseInt(effectiveInput.trim(), 10);
         const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
 
+        // Se a entrada do usuário corresponde a uma opção de menu (ex: "Falar com atendente"),
+        // a lógica do `processMessage` será acionada para mudar de estado.
         if (selectedOption) {
             await processMessage(session, effectiveInput, replies);
         } else {
-             if (!ai) {
+            // Se não for uma opção, é uma mensagem de texto livre para a IA.
+            if (!ai) {
                 const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
                 replies.push(errorMsg);
                 session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
             } else {
                 try {
+                    // Adiciona a mensagem do usuário ao histórico da IA
                     session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
+                    
+                    // Gera a resposta da IA
                     const response = await ai.models.generateContent({
                         model: 'gemini-2.5-flash',
                         contents: session.aiHistory,
                         config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." }
                     });
                     const aiResponseText = response.text;
+                    
                     replies.push(aiResponseText);
                     session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+                    
+                    // Adiciona a resposta da IA ao histórico
                     session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
                 } catch (error) {
                     console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
@@ -360,36 +359,9 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
                 }
             }
         }
-    // Caso 3: Lógica de redirecionamento inteligente para IA (se não for a primeira mensagem)
-    } else if (session.currentState === ChatState.GREETING && (isAudio || effectiveInput.trim().split(' ').length > 3)) {
-        console.log(`[Flow] Pergunta direta/áudio de ${userId} detectado no menu. Redirecionando para IA.`);
-        const redirectMsg = "Entendi que você tem uma pergunta. Estou te conectando ao nosso assistente virtual...";
-        replies.push(redirectMsg);
-        session.messageLog.push({ sender: 'bot', text: redirectMsg, timestamp: new Date() });
-
-        // Transiciona o estado e define um departamento padrão
-        session.currentState = ChatState.AI_ASSISTANT_CHATTING;
-        session.context.department = "Contábil"; 
-        session.aiHistory = []; // Limpa o histórico para a nova pergunta
-
-        // Envia a pergunta inicial para a IA
-        try {
-            session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: session.aiHistory,
-                config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] }
-            });
-            const aiResponseText = response.text;
-            replies.push(aiResponseText);
-            session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
-            session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
-        } catch (error) {
-            console.error(`[AI Redirect] Erro CRÍTICO ao processar AI para ${userId}:`, error);
-            replies.push(translations.pt.error);
-        }
     } else {
-        // Caso 4: Processamento normal do fluxo do bot para menus e textos curtos.
+        // Para TODOS os outros estados, incluindo GREETING, a lógica de menu padrão é usada.
+        // Isso garante que o bot não tome ações proativas de IA e sempre siga o fluxo definido.
         await processMessage(session, effectiveInput, replies);
     }
     res.status(200).json({ replies });
