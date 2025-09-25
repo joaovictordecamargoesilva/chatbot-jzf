@@ -592,12 +592,38 @@ function App() {
       setAttendants(attendantsData);
       setAiActiveChats(aiChatsData);
       setInternalChatsSummary(internalSummaryData);
+
+      // INÍCIO DA CORREÇÃO: Atualiza o chat aberto em tempo real
+      if (selectedChat) {
+          const allCurrentChats = [...activeData, ...aiChatsData];
+          const updatedChatInList = allCurrentChats.find(c => c.userId === selectedChat.userId);
+          
+          const localLastMessage = selectedChat.messageLog.length > 0
+              ? selectedChat.messageLog[selectedChat.messageLog.length - 1]
+              : null;
+
+          if (updatedChatInList && updatedChatInList.lastMessage &&
+              (!localLastMessage || new Date(updatedChatInList.lastMessage.timestamp) > new Date(localLastMessage.timestamp))) {
+              
+              console.log(`[Real-Time] Nova mensagem detectada para ${selectedChat.userId}. Buscando atualização...`);
+              const res = await fetch(`/api/chats/history/${selectedChat.userId}`);
+              
+              if (res.ok) {
+                  const fullChatData = await res.json();
+                  setSelectedChat(prevChat => ({
+                      ...prevChat,
+                      messageLog: fullChatData.messageLog,
+                  }));
+              }
+          }
+      }
+      // FIM DA CORREÇÃO
       
     } catch (err) {
       setError(err.message);
       console.error(err);
     }
-  }, [attendant]);
+  }, [attendant, selectedChat]); // Adicionado selectedChat às dependências
 
   useEffect(() => {
     fetch('/api/attendants').then(res => res.json()).then(setAttendants);
