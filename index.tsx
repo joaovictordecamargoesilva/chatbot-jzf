@@ -142,8 +142,8 @@ const ChatPanel = ({
      setSelectedFiles([]);
   }, [selectedChat?.userId]);
   
-  // FIX: Added type for event and checked for event.target.files to handle file selection correctly and safely.
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // FIX: Removida anotação de tipo do evento para compatibilidade com Babel no navegador.
+  const handleFileSelect = (event) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
     if (files.length > 0) {
         const filePromises = files.map(file => {
@@ -491,8 +491,8 @@ const Sidebar = ({
                 {activeTab === 'active' && (
                      <ul>
                         {activeChats
-                          // FIX: Added types for sort arguments and used .getTime() for date comparison to fix type errors.
-                          .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                          // FIX: Removidas anotações de tipo dos argumentos do sort.
+                          .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
                           .map(chat => {
                             const currentAttendant = attendants.find(at => at.id === chat.attendantId);
                             const isMyChat = attendant && chat.attendantId === attendant.id;
@@ -514,8 +514,8 @@ const Sidebar = ({
                 {activeTab === 'ai' && (
                     <ul>
                         {aiChats
-                            // FIX: Added types for sort arguments and used .getTime() for date comparison to fix type errors.
-                            .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                            // FIX: Removidas anotações de tipo dos argumentos do sort.
+                            .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
                             .map(chat => (
                             <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'bot')}
                                 className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
@@ -533,9 +533,9 @@ const Sidebar = ({
                 {activeTab === 'internal' && (
                     <ul>
                         {Object.entries(internalChatSummary)
-                         // FIX: Added types for sort/map arguments and used .getTime() for date comparison to fix type errors.
-                         .sort(([, a]: [string, any], [, b]: [string, any]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                         .map(([partnerId, summary]: [string, any]) => {
+                         // FIX: Removidas anotações de tipo dos argumentos do sort e map.
+                         .sort(([, a], [, b]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                         .map(([partnerId, summary]) => {
                             const partner = attendants.find(a => a.id === partnerId);
                             return (
                                 <li key={partnerId} onClick={() => onSelectInternalChat(partnerId)}
@@ -594,8 +594,8 @@ const InternalChatPanel = ({
         setSelectedFiles([]);
     }, [partner?.id]);
     
-    // FIX: Added type for event and checked for event.target.files to handle file selection correctly and safely.
-    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    // FIX: Removida anotação de tipo do evento para compatibilidade com Babel no navegador.
+    const handleFileSelect = (event) => {
         const files = event.target.files ? Array.from(event.target.files) : [];
         if (files.length > 0) {
             const filePromises = files.map(file => {
@@ -1046,9 +1046,11 @@ const App = () => {
                         />
                         <button
                            onClick={() => {
-                                // FIX: Cast element to HTMLInputElement to safely access its value.
-                                const input = document.getElementById('new-attendant-name') as HTMLInputElement | null;
-                                if (input && input.value) handleCreateAttendant(input.value);
+                                // Correção: Acessa o valor do input de forma segura em JavaScript puro.
+                                const input = document.getElementById('new-attendant-name');
+                                if (input instanceof HTMLInputElement && input.value) {
+                                  handleCreateAttendant(input.value);
+                                }
                            }}
                            className="w-full bg-green-600 text-white p-2 rounded-md hover:bg-green-700"
                         >
