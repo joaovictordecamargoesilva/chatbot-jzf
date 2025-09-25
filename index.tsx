@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -143,8 +142,7 @@ const ChatPanel = ({
      setSelectedFiles([]);
   }, [selectedChat?.userId]);
   
-  // FIX: Adicionada anotação de tipo ao evento para corrigir erros de tipo com arquivos.
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (event) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
     if (files.length > 0) {
         const filePromises = files.map(file => {
@@ -492,9 +490,8 @@ const Sidebar = ({
                 {activeTab === 'active' && (
                      <ul>
                         {activeChats
-                          // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
-                          .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                          .map((chat: any) => {
+                          .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                          .map((chat) => {
                             const currentAttendant = attendants.find(at => at.id === chat.attendantId);
                             const isMyChat = attendant && chat.attendantId === attendant.id;
                             return (
@@ -515,9 +512,8 @@ const Sidebar = ({
                 {activeTab === 'ai' && (
                     <ul>
                         {aiChats
-                            // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
-                            .sort((a: any, b: any) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                            .map((chat: any) => (
+                            .sort((a, b) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                            .map((chat) => (
                             <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'bot')}
                                 className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-red-50' : ''}`}
                             >
@@ -534,9 +530,8 @@ const Sidebar = ({
                 {activeTab === 'internal' && (
                     <ul>
                         {Object.entries(internalChatSummary)
-                         // FIX: Adicionadas anotações de tipo explícitas para corrigir erros de 'unknown' type.
-                         .sort(([, a]: [string, any], [, b]: [string, any]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
-                         .map(([partnerId, summary]: [string, any]) => {
+                         .sort(([, a], [, b]) => new Date(b.lastMessage?.timestamp || 0).getTime() - new Date(a.lastMessage?.timestamp || 0).getTime())
+                         .map(([partnerId, summary]) => {
                             const partner = attendants.find(a => a.id === partnerId);
                             return (
                                 <li key={partnerId} onClick={() => onSelectInternalChat(partnerId)}
@@ -595,8 +590,7 @@ const InternalChatPanel = ({
         setSelectedFiles([]);
     }, [partner?.id]);
     
-    // FIX: Adicionada anotação de tipo ao evento para corrigir erros de tipo com arquivos.
-    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileSelect = (event) => {
         const files = event.target.files ? Array.from(event.target.files) : [];
         if (files.length > 0) {
             const filePromises = files.map(file => {
@@ -729,12 +723,11 @@ const App = () => {
     const [attendant, setAttendant] = useState(null);
     const [isLoadingAttendant, setIsLoadingAttendant] = useState(true);
     
-    // FIX: Typed useState hooks to prevent errors on untyped data.
-    const [chats, setChats] = useState<any[]>([]); // Fila de espera
-    const [activeChats, setActiveChats] = useState<any[]>([]); // Atendimentos ativos (humanos)
-    const [aiChats, setAiChats] = useState<any[]>([]); // Atendimentos ativos (IA)
-    const [history, setHistory] = useState<any[]>([]);
-    const [clients, setClients] = useState<any[]>([]);
+    const [chats, setChats] = useState([]); // Fila de espera
+    const [activeChats, setActiveChats] = useState([]); // Atendimentos ativos (humanos)
+    const [aiChats, setAiChats] = useState([]); // Atendimentos ativos (IA)
+    const [history, setHistory] = useState([]);
+    const [clients, setClients] = useState([]);
     
     const [selectedChat, setSelectedChat] = useState(null);
     const [isLoadingChat, setIsLoadingChat] = useState(false);
@@ -742,8 +735,7 @@ const App = () => {
     const [activeTab, setActiveTab] = useState('queue'); // 'queue', 'active', 'ai', 'internal', 'history'
     
     // State para chat interno
-    // FIX: Typed useState hook to prevent errors on untyped data.
-    const [internalChatSummary, setInternalChatSummary] = useState<any>({});
+    const [internalChatSummary, setInternalChatSummary] = useState({});
     const [selectedInternalPartner, setSelectedInternalPartner] = useState(null);
     const [internalChatHistory, setInternalChatHistory] = useState([]);
     const isInternalChatSelected = activeTab === 'internal' && selectedInternalPartner;
