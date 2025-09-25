@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "10.0.0_NOTIFICATIONS";
+const SERVER_VERSION = "12.0.0_AUDIO_TRANSCRIPTION";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -240,11 +240,63 @@ function formatFlowStepForWhatsapp(step, context) {
 const apiRouter = express.Router();
 
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
-  const { userId, userName, userInput } = req.body;
-  if (!userId || userInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
-  
+  const { userId, userName, userInput, file } = req.body;
+  if (!userId || (userInput === undefined && !file)) {
+      return res.status(400).json({ error: 'userId e (userInput ou file) são obrigatórios.' });
+  }
+
+  let processedInput = userInput;
+  let transcription = null;
+
+  // --- INÍCIO: LÓGICA DE TRANSCRIÇÃO DE ÁUDIO ---
+  if (ai && file && file.type && file.type.startsWith('audio/')) {
+      try {
+          console.log(`[Transcription] Iniciando transcrição de áudio para ${userId}...`);
+          
+          // @google/genai-ts FIX: Use generateContent with multiple parts for transcription.
+          const audioPart = {
+              inlineData: {
+                  mimeType: file.type,
+                  data: file.data,
+              },
+          };
+          const textPart = {
+              text: "Transcreva este áudio de forma literal e precisa.",
+          };
+          
+          const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: { parts: [audioPart, textPart] },
+          });
+          
+          // @google/genai-ts FIX: Use .text property for direct text output.
+          const transcribedText = response.text.trim();
+          
+          if (transcribedText) {
+              transcription = `Transcrição do áudio:\n"${transcribedText}"`;
+              processedInput = transcribedText; // Usa a transcrição como input principal para o bot
+              console.log(`[Transcription] Sucesso. Texto: "${transcribedText}"`);
+          } else {
+              console.warn(`[Transcription] A transcrição retornou um texto vazio para ${userId}.`);
+              transcription = `Transcrição do áudio:\n[Não foi possível transcrever o conteúdo.]`;
+          }
+
+      } catch (error) {
+          console.error(`[Transcription] Erro CRÍTICO ao transcrever áudio para ${userId}:`, error);
+          transcription = `Transcrição do áudio:\n[Erro ao processar o áudio.]`;
+      }
+  }
+  // --- FIM: LÓGICA DE TRANSCRIÇÃO DE ÁUDIO ---
+
   const session = getSession(userId, userName);
-  session.messageLog.push({ sender: 'user', text: userInput, timestamp: new Date() });
+  // Atualiza o log com a transcrição, se houver
+  session.messageLog.push({ 
+    sender: 'user', 
+    text: userInput, // Mantém o texto original (geralmente vazio)
+    files: file ? [file] : [], 
+    transcription: transcription, // Adiciona o novo campo
+    timestamp: new Date() 
+  });
 
   if (session.handledBy === 'human') {
       return res.status(200).json({ replies: [] }); // Message is logged, attendant will see it.
@@ -254,12 +306,12 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
   if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
       const replies = [];
       const currentStep = conversationFlow.get(session.currentState);
-      const choice = parseInt(userInput.trim(), 10);
+      const choice = parseInt(processedInput.trim(), 10);
       const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
 
       // Se o usuário selecionou uma opção do menu (ex: "Falar com atendente"), processa normalmente
       if (selectedOption) {
-          await processMessage(session, userInput, replies);
+          await processMessage(session, processedInput, replies);
       } else {
           // Caso contrário, é uma pergunta para a IA
           if (!ai) {
@@ -269,7 +321,7 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
           } else {
               try {
                   // Adiciona a pergunta do usuário ao histórico da IA para dar contexto
-                  session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+                  session.aiHistory.push({ role: 'user', parts: [{ text: processedInput }] });
                   
                   // @google/genai-ts FIX: Use generateContent directly.
                   const response = await ai.models.generateContent({
@@ -303,7 +355,7 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
 
   const replies = [];
   try {
-    const lowerInput = userInput.trim().toLowerCase();
+    const lowerInput = processedInput.trim().toLowerCase();
     if (['voltar', 'inicio', 'início', 'menu'].includes(lowerInput)) {
         session.currentState = ChatState.GREETING;
         session.context = { history: {} };
@@ -315,7 +367,7 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
         // Este bloco agora é tratado pela lógica principal do processMessage que arquiva a sessão.
         await processMessage(session, '2', replies); // Simula a escolha da opção "Encerrar"
     } else {
-        await processMessage(session, userInput, replies);
+        await processMessage(session, processedInput, replies);
     }
     res.status(200).json({ replies });
   } catch (error) {
@@ -501,9 +553,9 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
 });
 
 apiRouter.post('/chats/attendant-reply', (req, res) => {
-    const { userId, text, attendantId, file } = req.body;
-    if (!userId || (!text && !file)) {
-        return res.status(400).send('userId e um texto ou arquivo são obrigatórios.');
+    const { userId, text, attendantId, files } = req.body;
+    if (!userId || (!text && (!files || files.length === 0))) {
+        return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
 
     const session = getSession(userId);
@@ -511,11 +563,9 @@ apiRouter.post('/chats/attendant-reply', (req, res) => {
         return res.status(403).send('Permissão negada para responder a este chat.');
     }
     
-    // O texto servirá como legenda se um arquivo for enviado
-    outboundGatewayQueue.push({ userId, text, file });
+    outboundGatewayQueue.push({ userId, text, files });
     
-    const fileLog = file ? { name: file.name, type: file.type } : null;
-    session.messageLog.push({ sender: 'attendant', text, file: fileLog, timestamp: new Date() });
+    session.messageLog.push({ sender: 'attendant', text, files: files || [], timestamp: new Date() });
     
     res.status(200).send('Mensagem enfileirada para envio.');
 });
@@ -635,10 +685,10 @@ apiRouter.get('/internal-chats/:attendantId/:partnerId', (req, res) => {
 });
 
 apiRouter.post('/internal-chats', (req, res) => {
-    const { senderId, recipientId, text, file } = req.body;
+    const { senderId, recipientId, text, files } = req.body;
 
-    if (!senderId || !recipientId || ((!text || !text.trim()) && !file)) {
-        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text or a file are required.' });
+    if (!senderId || !recipientId || ((!text || !text.trim()) && (!files || files.length === 0))) {
+        return res.status(400).json({ error: 'senderId, recipientId, and non-empty text or files are required.' });
     }
 
     const sender = ATTENDANTS.find(a => String(a.id) === String(senderId));
@@ -655,12 +705,12 @@ apiRouter.post('/internal-chats', (req, res) => {
         senderId,
         senderName: sender.name,
         text,
-        file,
+        files: files || [],
         timestamp: new Date().toISOString()
     };
     
     internalChats.get(chatId).push(message);
-    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}. File: ${file ? file.name : 'No'}`);
+    console.log(`[Internal Chat] Message from ${sender.name} to ${recipientId} in chat ${chatId}. Files: ${files ? files.length : '0'}`);
     res.status(201).json(message);
 });
 
@@ -696,7 +746,7 @@ app.use(express.static(path.resolve(__dirname)));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${path.resolve(__dirname)}`);
 
 
-// --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLTIMA) ---
+// --- ROTA "CATCH-ALL" PARA SPA (DEVE SER A ÚLLTIMA) ---
 app.get('*', (req, res) => {
     console.log(`[Catch-all] Rota não correspondida. Servindo index.html como fallback para: ${req.path}`);
     res.sendFile(path.resolve(__dirname, 'index.html'));
@@ -709,6 +759,41 @@ app.use((err, req, res, next) => {
 });
 
 console.log('[Server Setup] Configuration complete. Attempting to start listener...');
+
+// --- LÓGICA DE TIMEOUT DA FILA DE ATENDIMENTO ---
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+setInterval(() => {
+    const now = new Date();
+    const timedOutRequests = [];
+
+    for (let i = requestQueue.length - 1; i >= 0; i--) {
+        const request = requestQueue[i];
+        const requestTime = new Date(request.timestamp);
+        if (now - requestTime > FIFTEEN_MINUTES_MS) {
+            console.log(`[Queue Timeout] Request ID ${request.id} for user ${request.userId} has timed out.`);
+            timedOutRequests.push(request);
+            requestQueue.splice(i, 1); // Remove da fila
+        }
+    }
+
+    for (const request of timedOutRequests) {
+        const session = userSessions.get(request.userId);
+        if (session && session.handledBy === 'bot') { // Apenas interfere se o bot ainda estiver no controle
+            session.currentState = ChatState.GREETING;
+            session.context = { history: {} };
+            
+            const timeoutMessage = "Desculpe pela demora. Parece que todos os nossos atendentes estão ocupados no momento. Vamos tentar novamente. Como posso te ajudar?";
+            const greetingStep = conversationFlow.get(ChatState.GREETING);
+            const menuMessage = formatFlowStepForWhatsapp(greetingStep, {});
+
+            outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
+            outboundGatewayQueue.push({ userId: request.userId, text: menuMessage });
+
+            session.messageLog.push({ sender: 'system', text: 'Atendimento automático reiniciado por inatividade na fila.', timestamp: new Date() });
+            console.log(`[Queue Timeout] Sessão do usuário ${request.userId} foi reiniciada e o menu reenviado.`);
+        }
+    }
+}, 60 * 1000); // Verifica a cada minuto
 
 app.listen(port, () => {
     console.log(`[JZF Chatbot Server] Servidor escutando na porta ${port}.`);
