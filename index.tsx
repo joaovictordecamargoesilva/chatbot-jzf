@@ -1,5 +1,3 @@
-
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -51,22 +49,54 @@ const MessageBubble = ({ message }) => {
     : 'bg-[#dcf8c6] text-gray-800 self-end';
 
   const justifyClass = isBot ? 'justify-start' : 'justify-end';
+  
+  const renderFile = (file, index) => {
+    // Renderiza mídia com base64
+    if (file.data && file.type) {
+        const src = `data:${file.type};base64,${file.data}`;
+        if (file.type.startsWith('image/')) {
+            return <img key={index} src={src} alt={file.name} className="mt-2 max-w-xs rounded-lg shadow-md cursor-pointer" onClick={() => window.open(src, '_blank')} />;
+        }
+        if (file.type.startsWith('audio/')) {
+            return <audio key={index} controls src={src} className="mt-2 w-full max-w-xs" />;
+        }
+        if (file.type.startsWith('video/')) {
+            return <video key={index} controls src={src} className="mt-2 max-w-xs rounded-lg shadow-md" />;
+        }
+    }
+    // Fallback para arquivos sem preview (ou formato antigo)
+    return (
+        <div key={index} className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                <path d="M8 8.5a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" />
+            </svg>
+            <span className="text-xs text-gray-700 truncate">{file.name}</span>
+        </div>
+    );
+  };
+
 
   return (
     <div className={`flex w-full ${justifyClass}`}>
       <div
         className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses}`}
       >
-        <div className="text-sm whitespace-pre-wrap">{message.text}</div>
-        {message.file && (
-            <div className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
-                    <path d="M8 8.5a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" />
-                </svg>
-                <span className="text-xs text-gray-700 truncate">{message.file.name}</span>
+        {/* NOVO: Bloco de Transcrição de Áudio */}
+        {message.transcription && (
+            <div className="text-sm italic text-gray-700 border-l-4 border-gray-400 bg-gray-50 rounded-r-md pl-3 py-2 mb-2 whitespace-pre-wrap">
+                {message.transcription}
             </div>
         )}
+        
+        {message.text && <div className="text-sm whitespace-pre-wrap">{message.text}</div>}
+        
+        <div className="flex flex-col items-start">
+             {/* Suporte ao novo formato `files` (array) e ao antigo `file` (objeto) */}
+            {message.files && message.files.map(renderFile)}
+            {message.file && !message.files && renderFile(message.file, 0)}
+        </div>
+        
         <div className="text-xs text-gray-400 self-end mt-1">
           {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </div>
@@ -89,7 +119,7 @@ const ChatPanel = ({
   attendants,
 }) => {
   const [message, setMessage] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [isTransferModalOpen, setTransferModalOpen] = useState(false);
   const [transferToAttendantId, setTransferToAttendantId] = useState('');
   const messagesEndRef = useRef(null);
@@ -108,40 +138,44 @@ const ChatPanel = ({
   
   useEffect(() => {
      setMessage(''); // Limpa o campo de mensagem ao trocar de chat
-     setSelectedFile(null);
+     setSelectedFiles([]);
   }, [selectedChat?.userId]);
   
   const handleFileSelect = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-        if (file.size > 15 * 1024 * 1024) { // Limite de 15MB
-            alert("O arquivo é muito grande. O limite é de 15MB.");
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            // FIX: Add a type check to ensure `e.target.result` is a string.
-            // The result of FileReader can be an ArrayBuffer, which doesn't have a .split() method.
-            if (e.target && typeof e.target.result === 'string') {
-                const base64Data = e.target.result.split(',')[1];
-                setSelectedFile({
-                    name: file.name,
-                    type: file.type,
-                    data: base64Data
-                });
-            }
-        };
-        reader.readAsDataURL(file);
+    const files = Array.from(event.target.files);
+    if (files.length > 0) {
+        const filePromises = files.map(file => {
+            return new Promise((resolve, reject) => {
+                if (file.size > 15 * 1024 * 1024) { // Limite de 15MB por arquivo
+                    return reject(new Error(`O arquivo ${file.name} é muito grande. O limite é 15MB.`));
+                }
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    if (e.target && typeof e.target.result === 'string') {
+                        const base64Data = e.target.result.split(',')[1];
+                        resolve({ name: file.name, type: file.type, data: base64Data });
+                    } else {
+                        reject(new Error(`Falha ao ler o arquivo ${file.name}.`));
+                    }
+                };
+                reader.onerror = (error) => reject(error);
+                reader.readAsDataURL(file);
+            });
+        });
+
+        Promise.all(filePromises)
+            .then(newFiles => setSelectedFiles(prev => [...prev, ...newFiles]))
+            .catch(error => alert(error.message));
     }
-    event.target.value = null; // Reseta para poder selecionar o mesmo arquivo novamente
+    event.target.value = null; // Reseta para poder selecionar os mesmos arquivos novamente
   };
 
 
   const handleSend = () => {
-    if ((message.trim() || selectedFile) && selectedChat && attendant) {
-      onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFile);
+    if ((message.trim() || selectedFiles.length > 0) && selectedChat && attendant) {
+      onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFiles);
       setMessage('');
-      setSelectedFile(null);
+      setSelectedFiles([]);
     }
   };
 
@@ -221,20 +255,24 @@ const ChatPanel = ({
       {/* Rodapé do Chat (Input) */}
       {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
           <footer className="bg-gray-200 p-3">
-             {/* Preview do arquivo selecionado */}
-            {selectedFile && (
-                <div className="p-2 mb-2 bg-blue-100 rounded-lg flex items-center justify-between text-sm shadow-sm border border-blue-200">
-                    <div className="flex items-center space-x-2 truncate">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                           <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
-                        </svg>
-                        <span className="text-gray-700 truncate">{selectedFile.name}</span>
-                    </div>
-                    <button onClick={() => setSelectedFile(null)} className="text-red-500 hover:text-red-700 font-bold text-lg leading-none" aria-label="Remover arquivo">&times;</button>
+             {/* Preview dos arquivos selecionados */}
+            {selectedFiles.length > 0 && (
+                <div className="p-2 mb-2 bg-blue-100 rounded-lg text-sm shadow-sm border border-blue-200 max-h-32 overflow-y-auto">
+                    {selectedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between py-1">
+                            <div className="flex items-center space-x-2 truncate">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                   <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                                </svg>
+                                <span className="text-gray-700 truncate">{file.name}</span>
+                            </div>
+                            <button onClick={() => setSelectedFiles(files => files.filter((_, i) => i !== index))} className="text-red-500 hover:text-red-700 font-bold text-lg leading-none" aria-label="Remover arquivo">&times;</button>
+                        </div>
+                    ))}
                 </div>
             )}
             <div className="flex items-center bg-white rounded-full shadow-sm px-2">
-              <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+              <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
               <button 
                 onClick={() => fileInputRef.current.click()}
                 className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
@@ -255,7 +293,7 @@ const ChatPanel = ({
               />
               <button
                 onClick={handleSend}
-                disabled={!message.trim() && !selectedFile}
+                disabled={!message.trim() && selectedFiles.length === 0}
                 className="p-2 text-blue-600 hover:text-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:text-gray-400"
                 aria-label="Enviar mensagem"
               >
@@ -281,12 +319,15 @@ const ChatPanel = ({
               <option value="" disabled>Selecione...</option>
               {attendants
                 .filter(a => a.id !== attendant.id)
-                .map(a => <option key={a.id} value={a.id}>{a.name}</option>)
-              }
+                .map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
             <div className="flex justify-end space-x-2">
-              <button onClick={() => setTransferModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Cancelar</button>
-              <button onClick={handleTransfer} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">Confirmar</button>
+              <button onClick={() => setTransferModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
+                Cancelar
+              </button>
+              <button onClick={handleTransfer} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                Transferir
+              </button>
             </div>
           </div>
         </div>
@@ -297,860 +338,768 @@ const ChatPanel = ({
 // --- END: Merged from components/ChatPanel.tsx ---
 
 
-// --- START: Merged from components/Login.tsx ---
-const Login = ({ attendants, onLogin, onRegister }) => {
-  const [selectedAttendant, setSelectedAttendant] = useState('');
-  const [newAttendantName, setNewAttendantName] = useState('');
+// --- START: Merged from components/Sidebar.tsx ---
+const Sidebar = ({ 
+    chats, 
+    activeChats, 
+    aiChats,
+    history, 
+    onSelectChat, 
+    selectedChatId, 
+    activeTab, 
+    setActiveTab,
+    attendant,
+    attendants,
+    onInitiateChat,
+    internalChatSummary,
+    onSelectInternalChat,
+    selectedInternalChatId
+ }) => {
+    const [isModalOpen, setModalOpen] = useState(false);
+    const [recipientNumber, setRecipientNumber] = useState('');
+    const [initialMessage, setInitialMessage] = useState('');
 
-  const handleRegister = () => {
-    if (newAttendantName.trim()) {
-      onRegister(newAttendantName.trim());
-      setNewAttendantName('');
-    }
-  };
-
-  return (
-    <div className="flex items-center justify-center w-full h-full bg-gray-100">
-      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg">
-        <h2 className="text-3xl font-bold text-center text-gray-800">Painel de Atendimento</h2>
-        
-        {/* Seção de Login */}
-        <div className="space-y-4">
-          <h3 className="text-xl font-semibold text-gray-700">Entrar como atendente</h3>
-          <select
-            value={selectedAttendant}
-            onChange={(e) => setSelectedAttendant(e.target.value)}
-            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value="" disabled>Selecione seu nome</option>
-            {attendants.map(a => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-          <button
-            onClick={() => onLogin(selectedAttendant)}
-            disabled={!selectedAttendant}
-            className="w-full px-4 py-2 font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:bg-blue-300"
-          >
-            Entrar
-          </button>
-        </div>
-
-        <div className="border-t border-gray-200"></div>
-
-        {/* Seção de Registro */}
-        <div className="space-y-4">
-          <h3 className="text-xl font-semibold text-gray-700">Novo atendente?</h3>
-           <input
-            type="text"
-            value={newAttendantName}
-            onChange={(e) => setNewAttendantName(e.target.value)}
-            placeholder="Digite seu nome completo"
-            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-          />
-          <button
-            onClick={handleRegister}
-            disabled={!newAttendantName.trim()}
-            className="w-full px-4 py-2 font-bold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 disabled:bg-green-300"
-          >
-            Registrar-se
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-// --- END: Merged from components/Login.tsx ---
-
-// --- START: Merged from App.tsx ---
-function App() {
-  const [attendant, setAttendant] = useState(null);
-  const [attendants, setAttendants] = useState([]);
-  const [activeView, setActiveView] = useState('queue'); // 'queue', 'active', 'history', 'internal_chat', 'ai_active'
-  
-  const [requestQueue, setRequestQueue] = useState([]);
-  const [activeChats, setActiveChats] = useState([]);
-  const [aiActiveChats, setAiActiveChats] = useState([]); // Novo estado para chats com IA
-  const [chatHistory, setChatHistory] = useState([]);
-  
-  const [selectedChat, setSelectedChat] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const [internalChatPartner, setInternalChatPartner] = useState(null);
-  const [internalChatMessages, setInternalChatMessages] = useState([]);
-  const internalMessagesEndRef = useRef(null);
-  const [internalMessage, setInternalMessage] = useState('');
-  const [internalSelectedFile, setInternalSelectedFile] = useState(null);
-  const internalFileInputRef = useRef(null);
-  
-  const sidebarRef = useRef(null); // Ref para a barra lateral rolável
-
-  // Estados para o modal de iniciar chat
-  const [isInitiateModalOpen, setInitiateModalOpen] = useState(false);
-  const [clients, setClients] = useState([]);
-  const [initiateStep, setInitiateStep] = useState('select'); // 'select' | 'message'
-  const [selectedClient, setSelectedClient] = useState(null);
-  const [initiateMessage, setInitiateMessage] = useState('');
-  const [clientSearchTerm, setClientSearchTerm] = useState('');
-
-  // --- NOVOS ESTADOS PARA NOTIFICAÇÕES ---
-  const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), ai_active: new Set(), internal: new Set() });
-  const [internalChatsSummary, setInternalChatsSummary] = useState({});
-  const prevData = useRef(null);
-
-  // --- LÓGICA DE NOTIFICAÇÕES ---
-  const showBrowserNotification = useCallback((title, options) => {
-    if (document.hidden && Notification.permission === 'granted') {
-      const notification = new Notification(title, options);
-      const audio = new Audio('https://cdn.jsdelivr.net/gh/google/ai-prototyping-sdk/templates/demos/chat-panel/src/notification.mp3');
-      audio.play().catch(e => console.error("Erro ao tocar áudio:", e));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!prevData.current) { // Inicializa na primeira renderização
-        prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
-        return;
-    }
-  
-    const newNotifications = { ...notifications };
-    let changed = false;
-
-    // 1. Fila de Requisições
-    if (requestQueue.length > prevData.current.requestQueue.length) {
-        const newRequest = requestQueue[0];
-        showBrowserNotification("Nova solicitação na fila", { body: `Cliente: ${newRequest.userName}\nMotivo: ${newRequest.message}` });
-        newNotifications.queue = requestQueue.length;
-        changed = true;
-    } else if (requestQueue.length < prevData.current.requestQueue.length) {
-        newNotifications.queue = requestQueue.length;
-        changed = true;
-    }
-
-    // 2. Chats Ativos (Humanos)
-    const activeNotifications = new Set(notifications.active);
-    activeChats.forEach(chat => {
-      const prevChat = prevData.current.activeChats.find(c => c.userId === chat.userId);
-      if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
-        if (selectedChat?.userId !== chat.userId) {
-          activeNotifications.add(chat.userId);
-          showBrowserNotification(`Nova mensagem de ${chat.userName}`, { body: chat.lastMessage.text });
-        }
-      }
-    });
-    if (activeNotifications.size !== notifications.active.size) {
-        newNotifications.active = activeNotifications;
-        changed = true;
-    }
-
-    // 3. Chats Virtuais (IA)
-    const aiNotifications = new Set(notifications.ai_active);
-    aiActiveChats.forEach(chat => {
-      const prevChat = prevData.current.aiActiveChats.find(c => c.userId === chat.userId);
-      if ( chat.lastMessage?.sender === 'user' && (!prevChat?.lastMessage || new Date(chat.lastMessage.timestamp) > new Date(prevChat.lastMessage.timestamp))) {
-         if (selectedChat?.userId !== chat.userId) {
-            aiNotifications.add(chat.userId);
-            showBrowserNotification(`Cliente interagiu com IA: ${chat.userName}`, { body: chat.lastMessage.text });
-         }
-      }
-    });
-    if (aiNotifications.size !== notifications.ai_active.size) {
-        newNotifications.ai_active = aiNotifications;
-        changed = true;
-    }
-    
-    // 4. Chat Interno
-    const internalNotifications = new Set(notifications.internal);
-    Object.keys(internalChatsSummary).forEach(partnerId => {
-      const current = internalChatsSummary[partnerId];
-      const prev = prevData.current.internalChatsSummary[partnerId];
-      if ( current?.lastMessage && current.lastMessage.senderId !== attendant.id && (!prev?.lastMessage || new Date(current.lastMessage.timestamp) > new Date(prev.lastMessage.timestamp))) {
-         if (internalChatPartner?.id !== partnerId) {
-            internalNotifications.add(partnerId);
-            const senderName = attendants.find(a => a.id === current.lastMessage.senderId)?.name || 'Colega';
-            showBrowserNotification(`Mensagem interna de ${senderName}`, { body: current.lastMessage.text });
-         }
-      }
-    });
-    if (internalNotifications.size !== notifications.internal.size) {
-        newNotifications.internal = internalNotifications;
-        changed = true;
-    }
-
-    if (changed) {
-        setNotifications(newNotifications);
-    }
-
-    const totalNotifications = newNotifications.queue + newNotifications.active.size + newNotifications.ai_active.size + newNotifications.internal.size;
-    document.title = totalNotifications > 0 ? `(${totalNotifications}) JZF Atendimento` : 'JZF Atendimento';
-
-    prevData.current = { requestQueue, activeChats, aiActiveChats, internalChatsSummary };
-
-  }, [requestQueue, activeChats, aiActiveChats, internalChatsSummary, selectedChat, internalChatPartner, attendant, attendants, showBrowserNotification]);
-
-
-  const fetchData = useCallback(async () => {
-    if (!attendant) return;
-    try {
-      const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes, internalSummaryRes] = await Promise.all([
-        fetch('/api/requests'),
-        fetch('/api/chats/active'),
-        fetch('/api/chats/history'),
-        fetch('/api/attendants'),
-        fetch('/api/chats/ai-active'),
-        fetch(`/api/internal-chats/summary/${attendant.id}`)
-      ]);
-      if (!reqRes.ok || !activeRes.ok || !historyRes.ok || !attendantsRes.ok || !aiChatsRes.ok || !internalSummaryRes.ok) {
-        throw new Error('Falha ao buscar dados do servidor.');
-      }
-      const reqData = await reqRes.json();
-      const activeData = await activeRes.json();
-      const historyData = await historyRes.json();
-      const attendantsData = await attendantsRes.json();
-      const aiChatsData = await aiChatsRes.json();
-      const internalSummaryData = await internalSummaryRes.json();
-
-      setRequestQueue(reqData);
-      setActiveChats(activeData);
-      setChatHistory(historyData);
-      setAttendants(attendantsData);
-      setAiActiveChats(aiChatsData);
-      setInternalChatsSummary(internalSummaryData);
-      
-    } catch (err) {
-      setError(err.message);
-      console.error(err);
-    }
-  }, [attendant]);
-
-  useEffect(() => {
-    fetch('/api/attendants').then(res => res.json()).then(setAttendants);
-  }, []);
-
-  useEffect(() => {
-    if (attendant) {
-      fetchData();
-      const interval = setInterval(fetchData, 5000); // Atualiza a cada 5 segundos
-      return () => clearInterval(interval);
-    }
-  }, [attendant, fetchData]);
-  
-  // Efeito para buscar contatos do cliente
-  useEffect(() => {
-    const fetchClients = async () => {
-        try {
-            const res = await fetch('/api/clients');
-            if (res.ok) {
-                const data = await res.json();
-                setClients(data);
-            }
-        } catch (err) {
-            console.error("Falha ao buscar clientes:", err);
+    const handleInitiate = () => {
+        if (recipientNumber && initialMessage && attendant) {
+            onInitiateChat(recipientNumber, initialMessage, attendant.id);
+            setModalOpen(false);
+            setRecipientNumber('');
+            setInitialMessage('');
+        } else {
+            alert('Por favor, preencha todos os campos.');
         }
     };
-    if (attendant) {
-        fetchClients();
-    }
-  }, [attendant]);
-
-  // Efeito para buscar histórico de chat interno
-  useEffect(() => {
-    if (internalChatPartner && attendant) {
-      const fetchInternalHistory = async () => {
-        try {
-          const res = await fetch(`/api/internal-chats/${attendant.id}/${internalChatPartner.id}`);
-          if (res.ok) {
-            const data = await res.json();
-            setInternalChatMessages(data);
-          }
-        } catch (err) {
-          console.error("Falha ao buscar chat interno:", err);
-        }
-      };
-      fetchInternalHistory();
-      const interval = setInterval(fetchInternalHistory, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [internalChatPartner, attendant]);
-
-  useEffect(() => {
-    internalMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [internalChatMessages]);
-
-
-  const handleLogin = (attendantId) => {
-    const selected = attendants.find(a => a.id === attendantId);
-    if (selected) {
-      setAttendant(selected);
-      localStorage.setItem('attendantId', selected.id);
-      if (Notification.permission !== "granted") {
-        Notification.requestPermission();
-      }
-    }
-  };
-
-  const handleRegister = async (name) => {
-    try {
-        const res = await fetch('/api/attendants', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-        });
-        if (res.ok) {
-            const newAttendant = await res.json();
-            setAttendants([...attendants, newAttendant]);
-            alert(`Bem-vindo, ${name}! Agora você pode entrar usando seu nome.`);
-        } else {
-            const errData = await res.json();
-            throw new Error(errData.error || 'Falha ao registrar.');
-        }
-    } catch (err) {
-        alert(err.message);
-    }
-  };
-
-  const handleLogout = () => {
-    setAttendant(null);
-    localStorage.removeItem('attendantId');
-  };
-
-  const handleSelectChatItem = async (item) => {
-    setIsLoading(true);
-    setSelectedChat(null);
-    try {
-        const res = await fetch(`/api/chats/history/${item.userId}`);
-        if(res.ok){
-            const data = await res.json();
-            // Adiciona o campo 'handledBy' com base na view ativa, se não vier da API
-            const handledBy = activeView === 'ai_active' ? 'bot' : (activeView === 'active' || activeView === 'history' ? 'human' : null);
-            setSelectedChat({ ...item, ...data, handledBy: data.handledBy || handledBy });
-
-            // Limpa a notificação ao selecionar o chat
-            const notificationSet = notifications[activeView];
-
-            // CORREÇÃO: Verifica se a notificação é um Set e se o item existe antes de tentar deletar.
-            // Isso previne o erro ".has is not a function" em abas como 'Fila' ou 'Histórico'.
-            if (notificationSet instanceof Set && notificationSet.has(item.userId)) {
-                // Cria um NOVO Set para garantir a imutabilidade do estado
-                const updatedSet = new Set(notificationSet);
-                updatedSet.delete(item.userId);
-                
-                // Atualiza o estado com o novo objeto e o novo Set
-                setNotifications(prev => ({
-                    ...prev,
-                    [activeView]: updatedSet
-                }));
-            }
-        } else {
-            throw new Error('Falha ao buscar histórico do chat.');
-        }
-    } catch (err) {
-        alert(err.message);
-    } finally {
-        setIsLoading(false);
-    }
-  };
-  
-  const handleTakeoverChat = async (userId) => {
-    if (!attendant) return;
-    try {
-      const res = await fetch(`/api/chats/takeover/${userId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendantId: attendant.id }),
-      });
-      if (res.ok) {
-        alert('Atendimento assumido com sucesso!');
-        await fetchData();
-        // Muda para a aba de ativos e seleciona o chat
-        const takeoverData = await res.json();
-        setActiveView('active');
-        handleSelectChatItem(takeoverData);
-      } else {
-        throw new Error('Falha ao assumir o atendimento.');
-      }
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const handleSendMessage = async (userId, text, attendantId, file) => {
-      // Slash command para finalizar
-      if (text === '/finalizar') {
-          handleResolveChat(userId);
-          return;
-      }
-      
-      const tempMessage = {
-          sender: Sender.ATTENDANT,
-          text: text,
-          file: file ? { name: file.name } : null, // Para UI otimista
-          timestamp: new Date().toISOString()
-      };
-      // Atualiza a UI imediatamente para feedback rápido
-      setSelectedChat(prev => ({ ...prev, messageLog: [...prev.messageLog, tempMessage] }));
-
-      try {
-          await fetch('/api/chats/attendant-reply', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, text, attendantId, file }),
-          });
-          // O fetch periódico vai confirmar a mensagem, então não precisamos refetch aqui.
-      } catch (err) {
-          alert('Falha ao enviar mensagem.');
-          // Poderia implementar lógica para remover a mensagem otimista
-      }
-  };
-
-  const handleResolveChat = async (userId) => {
-    if (!attendant) return;
-    const sidebarScrollPosition = sidebarRef.current?.scrollTop;
-    try {
-      const res = await fetch(`/api/chats/resolve/${userId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendantId: attendant.id }),
-      });
-      if (res.ok) {
-        alert('Atendimento resolvido com sucesso!');
-        setSelectedChat(null);
-        setActiveView('queue'); // Volta para a fila
-        await fetchData(); // Atualiza os dados
-        requestAnimationFrame(() => {
-            if (sidebarRef.current) sidebarRef.current.scrollTop = sidebarScrollPosition;
-        });
-      } else {
-        throw new Error('Falha ao resolver o atendimento.');
-      }
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-  
-  const handleTransferChat = async (userId, newAttendantId) => {
-    if (!attendant) return;
-    const sidebarScrollPosition = sidebarRef.current?.scrollTop;
-    try {
-      const res = await fetch(`/api/chats/transfer/${userId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          newAttendantId,
-          transferringAttendantId: attendant.id,
-        }),
-      });
-      if (res.ok) {
-        const targetAttendant = attendants.find(a => a.id === newAttendantId);
-        alert(`Atendimento transferido com sucesso para ${targetAttendant?.name || 'outro atendente'}!`);
-        setSelectedChat(null);
-        setActiveView('queue'); // Volta para a fila
-        await fetchData(); // Atualiza os dados
-        requestAnimationFrame(() => {
-            if (sidebarRef.current) sidebarRef.current.scrollTop = sidebarScrollPosition;
-        });
-      } else {
-        const errorText = await res.text();
-        throw new Error(errorText || 'Falha ao transferir o atendimento.');
-      }
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-  
-  const handleInternalFileSelect = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-        if (file.size > 15 * 1024 * 1024) { // Limite de 15MB
-            alert("O arquivo é muito grande. O limite é de 15MB.");
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            if (e.target && typeof e.target.result === 'string') {
-                const base64Data = e.target.result.split(',')[1];
-                setInternalSelectedFile({
-                    name: file.name,
-                    type: file.type,
-                    data: base64Data
-                });
-            }
-        };
-        reader.readAsDataURL(file);
-    }
-    event.target.value = null; // Reseta para poder selecionar o mesmo arquivo novamente
-  };
-
-  const handleSendInternalMessage = async () => {
-    if ((!internalMessage.trim() && !internalSelectedFile) || !attendant || !internalChatPartner) return;
     
-    const text = internalMessage.trim();
-    const file = internalSelectedFile;
+    const renderLastMessage = (message) => {
+        if (!message) return <span className="italic text-gray-400">Nenhuma mensagem ainda.</span>;
 
-    setInternalMessage('');
-    setInternalSelectedFile(null);
-    
-    const tempMessage = {
-      senderId: attendant.id,
-      senderName: attendant.name,
-      text,
-      file: file ? { name: file.name } : null,
-      timestamp: new Date().toISOString()
-    };
-    setInternalChatMessages(prev => [...prev, tempMessage]);
-
-    // Omite o dado base64 para não sobrecarregar o servidor com arquivos no chat interno
-    const fileForServer = file ? { name: file.name, type: file.type } : null;
-
-    try {
-      await fetch('/api/internal-chats', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          senderId: attendant.id,
-          recipientId: internalChatPartner.id,
-          text,
-          file: fileForServer,
-        }),
-      });
-    } catch (err) {
-      console.error("Falha ao enviar mensagem interna:", err);
-      // Poderia adicionar lógica de retry ou remoção da UI
-    }
-  };
-
-  const handleInitiateChat = async () => {
-    if (!initiateMessage.trim() || !attendant || !selectedClient) return;
-    try {
-        const res = await fetch('/api/chats/initiate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                recipientNumber: selectedClient.userId,
-                message: initiateMessage.trim(),
-                attendantId: attendant.id
-            })
-        });
-        if (res.ok) {
-            const newChat = await res.json();
-            handleCloseInitiateModal();
-            await fetchData(); // Atualiza todas as listas
-            setActiveView('active');
-            // Espera um pouco para o React atualizar o DOM antes de selecionar
-            setTimeout(() => {
-                handleSelectChatItem(newChat);
-            }, 100);
-        } else {
-            const errorText = await res.text();
-            throw new Error(errorText || "Falha ao iniciar conversa.");
+        let content = message.text || '';
+        
+        if (message.transcription) {
+            // Remove a primeira linha da transcrição para um preview mais curto
+            const shortTranscription = message.transcription.split('\n')[1] || '[Áudio]';
+            content = `🎤 ${shortTranscription}`;
+        } else if (message.files && message.files.length > 0) {
+            content = `📄 [${message.files.length} anexo(s)] ${content}`;
+        } else if (!content) {
+            content = "Enviou um anexo."
         }
-    } catch (err) {
-        alert(err.message);
-    }
-  };
-
-  const handleCloseInitiateModal = () => {
-      setInitiateModalOpen(false);
-      setInitiateStep('select');
-      setSelectedClient(null);
-      setInitiateMessage('');
-      setClientSearchTerm('');
-  };
-
-  const clearNotificationsForView = (view) => {
-    if (view === 'queue' && notifications.queue > 0) {
-      setNotifications(prev => ({...prev, queue: 0}));
-    } else if (notifications[view] instanceof Set && notifications[view].size > 0) {
-      setNotifications(prev => ({...prev, [view]: new Set()}));
-    }
-  };
-
-
-  useEffect(() => {
-    const savedAttendantId = localStorage.getItem('attendantId');
-    if (savedAttendantId && attendants.length > 0) {
-      handleLogin(savedAttendantId);
-    }
-  }, [attendants]);
-
-
-  if (!attendant) {
-    return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} />;
-  }
-
-  const filteredClients = clients.filter(c =>
-    c.userName.toLowerCase().includes(clientSearchTerm.toLowerCase()) ||
-    c.userId.includes(clientSearchTerm)
-  );
-
-  // Componente para item da lista lateral
-  // FIX: Add default props for isSelected and children to fix usage errors.
-  const ListItem = ({ item, onClick, isSelected = false, children = null }) => (
-    <li
-      onClick={onClick}
-      className={`p-3 cursor-pointer border-b border-gray-200 hover:bg-gray-200 transition-colors ${isSelected ? 'bg-blue-100' : 'bg-white'}`}
-    >
-      <p className="font-semibold text-gray-800 truncate">{item.userName || item.name || item.id}</p>
-      {children}
-    </li>
-  );
-
-  // FIX: Add a default value for the 'children' prop to make it optional, fixing usage errors.
-  const NavButton = ({ view, label, count, children = null }) => (
-    <button onClick={() => { setActiveView(view); setSelectedChat(null); setInternalChatPartner(null); clearNotificationsForView(view); }} className={`relative flex-1 p-2 text-sm font-semibold rounded-md ${activeView === view ? 'bg-white shadow' : 'text-gray-600'}`}>
-        {label || children} {count > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">{count}</span>}
-    </button>
-  );
-
-  return (
-    <div className="flex h-screen font-sans bg-gray-100 text-gray-800">
-      {/* Sidebar */}
-      <aside className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-lg">
-        <div className="p-4 border-b border-gray-200">
-          <h1 className="text-xl font-bold text-gray-800">JZF Atendimento</h1>
-          <div className="mt-2 text-sm text-gray-600">
-             <div className="flex items-center justify-between">
-                <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
-                <div>
-                  <button onClick={() => setInitiateModalOpen(true)} className="text-xs font-semibold text-blue-600 hover:underline mr-3">Novo Chat</button>
-                  <button onClick={handleLogout} className="text-xs text-red-500 hover:underline">Sair</button>
-                </div>
-            </div>
-          </div>
-        </div>
         
-        {/* Abas de Navegação */}
-        <nav className="flex p-1 bg-gray-100">
-            <NavButton view="queue" label="Fila" count={notifications.queue} />
-            <NavButton view="active" label="Ativos" count={notifications.active.size} />
-            <NavButton view="ai_active" label="Virtual" count={notifications.ai_active.size} />
-            <NavButton view="history" label="Histórico" count={0} />
-            <NavButton view="internal_chat" label="Chat Interno" count={notifications.internal.size} />
-        </nav>
-
-        <div ref={sidebarRef} className="flex-1 overflow-y-auto">
-          <ul>
-            {activeView === 'queue' && requestQueue.map(req => (
-              <ListItem key={req.id} item={req} onClick={() => handleTakeoverChat(req.userId)}>
-                <p className="text-xs text-gray-500">{req.department} - {new Date(req.timestamp).toLocaleTimeString()}</p>
-                <p className="text-xs text-gray-600 mt-1 truncate italic">"{req.message}"</p>
-              </ListItem>
-            ))}
-            
-            {activeView === 'active' && activeChats.map(chat => (
-              <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
-                  <div className="flex justify-between items-center">
-                    <p className="text-xs text-gray-500">Atendido por: {attendants.find(a => a.id === chat.attendantId)?.name || '...'}</p>
-                    {notifications.active.has(chat.userId) && <span className="h-2 w-2 bg-blue-500 rounded-full"></span>}
-                  </div>
-              </ListItem>
-            ))}
-
-            {activeView === 'ai_active' && aiActiveChats.map(chat => (
-                <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
-                    <div className="flex justify-between items-center">
-                        <p className="text-xs text-gray-500">Departamento: {chat.department}</p>
-                        {notifications.ai_active.has(chat.userId) && <span className="h-2 w-2 bg-blue-500 rounded-full"></span>}
-                    </div>
-                </ListItem>
-            ))}
-            
-            {activeView === 'history' && chatHistory.map(chat => (
-              <ListItem key={chat.userId} item={chat} onClick={() => handleSelectChatItem(chat)} isSelected={selectedChat?.userId === chat.userId}>
-                  <p className="text-xs text-gray-500">Resolvido por: {chat.resolvedBy} em {new Date(chat.resolvedAt).toLocaleString()}</p>
-              </ListItem>
-            ))}
-
-            {activeView === 'internal_chat' && attendants.filter(a => a.id !== attendant.id).map(a => {
-                const summary = internalChatsSummary[a.id];
-                const lastMessage = summary?.lastMessage;
-                const hasUnread = notifications.internal.has(a.id);
-                return (
-                   <ListItem key={a.id} item={a} onClick={() => {
-                        setInternalChatPartner(a);
-                        if (hasUnread) {
-                            const newInternal = new Set(notifications.internal);
-                            newInternal.delete(a.id);
-                            setNotifications(p => ({ ...p, internal: newInternal }));
-                        }
-                   }} isSelected={internalChatPartner?.id === a.id}>
-                       {lastMessage && (
-                           <p className={`text-xs truncate mt-1 ${hasUnread ? 'text-gray-800 font-bold' : 'text-gray-500'}`}>
-                               {lastMessage.senderId === attendant.id && 'Você: '}{lastMessage.text || (lastMessage.file ? `Arquivo: ${lastMessage.file.name}`: '...')}
-                           </p>
-                       )}
-                   </ListItem>
-                );
-            })}
-          </ul>
-        </div>
-      </aside>
-
-      {/* Painel Principal */}
-      <main className="flex-1 flex flex-col">
-        {activeView !== 'internal_chat' && (
-          <ChatPanel
-            selectedChat={selectedChat}
-            attendant={attendant}
-            onSendMessage={handleSendMessage}
-            onResolveChat={handleResolveChat}
-            onTransferChat={handleTransferChat}
-            onTakeoverChat={handleTakeoverChat} // Passa a nova função
-            isLoading={isLoading}
-            attendants={attendants}
-          />
-        )}
+        const senderPrefix = message.sender === 'user' ? '' : 'Você: ';
         
-        {activeView === 'internal_chat' && (
-           <div className="flex-1 flex flex-col bg-gray-100">
-            {!internalChatPartner ? (
-                <div className="flex-1 flex items-center justify-center text-gray-500">
-                    <span>Selecione um atendente para iniciar uma conversa.</span>
-                </div>
-            ) : (
-                <>
-                    <header className="bg-white p-3 border-b border-gray-200">
-                        <h2 className="font-semibold">{internalChatPartner.name}</h2>
-                    </header>
-                    <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
-                        {internalChatMessages.map((msg, index) => {
-                            const isMe = String(msg.senderId) === String(attendant.id);
-                            return (
-                                <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-md p-2 rounded-lg shadow-sm mb-1 flex flex-col ${isMe ? 'bg-blue-100' : 'bg-white'}`}>
-                                        {!isMe && <p className="text-xs font-semibold text-purple-600">{msg.senderName}</p>}
-                                        <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
-                                        {msg.file && (
-                                            <div className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
-                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                                                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
-                                                    <path d="M8 8.5a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" />
-                                                </svg>
-                                                <span className="text-xs text-gray-700 truncate">{msg.file.name}</span>
-                                            </div>
-                                        )}
-                                        <div className="text-xs text-gray-400 self-end mt-1">
-                                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                        <div ref={internalMessagesEndRef} />
-                    </div>
-                    <footer className="bg-gray-200 p-3">
-                        {internalSelectedFile && (
-                            <div className="p-2 mb-2 bg-blue-100 rounded-lg flex items-center justify-between text-sm shadow-sm border border-blue-200">
-                                <div className="flex items-center space-x-2 truncate">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                                       <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
-                                    </svg>
-                                    <span className="text-gray-700 truncate">{internalSelectedFile.name}</span>
-                                </div>
-                                <button onClick={() => setInternalSelectedFile(null)} className="text-red-500 hover:text-red-700 font-bold text-lg leading-none" aria-label="Remover arquivo">&times;</button>
-                            </div>
-                        )}
-                        <div className="flex items-center bg-white rounded-full shadow-sm px-2">
-                             <input type="file" ref={internalFileInputRef} onChange={handleInternalFileSelect} className="hidden" />
-                              <button 
-                                onClick={() => internalFileInputRef.current.click()}
-                                className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                aria-label="Anexar arquivo"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                                </svg>
-                              </button>
-                            <input
-                                type="text"
-                                value={internalMessage}
-                                onChange={e => setInternalMessage(e.target.value)}
-                                onKeyPress={e => e.key === 'Enter' && handleSendInternalMessage()}
-                                placeholder={`Mensagem para ${internalChatPartner.name}...`}
-                                className="w-full p-2 bg-transparent focus:outline-none"
-                            />
-                            <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim() && !internalSelectedFile} className="p-2 text-blue-600 rounded-full disabled:text-gray-400">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+        return `${senderPrefix}${content}`;
+    }
+    
+    const renderInternalLastMessage = (message) => {
+         if (!message) return <span className="italic text-gray-400">Nenhuma mensagem ainda.</span>;
+         let content = message.text || '';
+         if (message.files && message.files.length > 0) {
+            content = `📄 [${message.files.length} anexo(s)] ${content}`;
+         }
+         const senderPrefix = message.senderId === attendant.id ? 'Você: ' : '';
+         return `${senderPrefix}${content}`;
+    }
+
+    const tabs = [
+        { id: 'queue', label: 'Na Fila', count: chats.length },
+        { id: 'active', label: 'Ativos', count: activeChats.length },
+        { id: 'ai', label: 'IA Ativos', count: aiChats.length },
+        { id: 'internal', label: 'Interno', count: Object.keys(internalChatSummary).length},
+        { id: 'history', label: 'Histórico', count: history.length }
+    ];
+
+    return (
+        <aside className="w-full md:w-1/3 lg:w-1/4 xl:w-1/5 bg-white border-r border-gray-200 flex flex-col h-full">
+            <header className="p-4 border-b border-gray-200 flex justify-between items-center">
+                <h1 className="text-xl font-bold text-gray-800">Atendimentos</h1>
+                <button 
+                  onClick={() => setModalOpen(true)}
+                  className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 shadow-sm"
+                  aria-label="Iniciar nova conversa"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                    </svg>
+                </button>
+            </header>
+            
+             {isModalOpen && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+                        <h3 className="text-lg font-semibold mb-4">Iniciar Nova Conversa</h3>
+                        <input
+                            type="text"
+                            placeholder="Número do WhatsApp (ex: 55119...)"
+                            value={recipientNumber}
+                            onChange={(e) => setRecipientNumber(e.target.value)}
+                            className="w-full p-2 border border-gray-300 rounded-md mb-3"
+                        />
+                        <textarea
+                            placeholder="Sua primeira mensagem..."
+                            value={initialMessage}
+                            onChange={(e) => setInitialMessage(e.target.value)}
+                            rows="4"
+                            className="w-full p-2 border border-gray-300 rounded-md mb-4"
+                        ></textarea>
+                        <div className="flex justify-end space-x-2">
+                            <button onClick={() => setModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                                Cancelar
+                            </button>
+                            <button onClick={handleInitiate} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
+                                Enviar
                             </button>
                         </div>
-                    </footer>
-                </>
+                    </div>
+                </div>
             )}
-           </div>
-        )}
-      </main>
 
-      {/* Modal para Iniciar Chat */}
-      {isInitiateModalOpen && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-lg flex flex-col" style={{height: '80vh'}}>
-                  {initiateStep === 'select' && (
-                      <>
-                          <h3 className="text-lg font-semibold mb-4">Iniciar Nova Conversa</h3>
-                          <p className="text-sm text-gray-600 mb-4">Selecione um contato para enviar uma mensagem.</p>
-                          <input
-                              type="text"
-                              placeholder="Buscar por nome ou número..."
-                              value={clientSearchTerm}
-                              onChange={e => setClientSearchTerm(e.target.value)}
-                              className="w-full p-2 border border-gray-300 rounded-md mb-4"
-                          />
-                          <div className="flex-1 overflow-y-auto border rounded-md">
-                              <ul>
-                                  {filteredClients.length > 0 ? filteredClients.map(client => (
-                                      <li
-                                          key={client.userId}
-                                          onClick={() => {
-                                              setSelectedClient(client);
-                                              setInitiateStep('message');
-                                          }}
-                                          className="p-3 cursor-pointer hover:bg-gray-100 border-b"
-                                      >
-                                          <p className="font-semibold">{client.userName}</p>
-                                          <p className="text-xs text-gray-500">{client.userId.split('@')[0]}</p>
-                                      </li>
-                                  )) : <li className="p-4 text-center text-gray-500">Nenhum contato encontrado.</li>}
-                              </ul>
-                          </div>
-                          <div className="flex justify-end mt-4">
-                              <button onClick={handleCloseInitiateModal} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Cancelar</button>
-                          </div>
-                      </>
-                  )}
-                  {initiateStep === 'message' && (
-                      <>
-                          <h3 className="text-lg font-semibold mb-4">Enviar Mensagem</h3>
-                          <p className="text-sm text-gray-600 mb-4">
-                              Para: <span className="font-semibold">{selectedClient?.userName} ({selectedClient?.userId.split('@')[0]})</span>
-                          </p>
-                          <textarea
-                              value={initiateMessage}
-                              onChange={e => setInitiateMessage(e.target.value)}
-                              placeholder="Digite sua primeira mensagem..."
-                              className="w-full flex-1 p-2 border border-gray-300 rounded-md mb-4 resize-none"
-                          ></textarea>
-                          <div className="flex justify-between">
-                              <button onClick={() => setInitiateStep('select')} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">Voltar</button>
-                              <div>
-                                  <button onClick={handleCloseInitiateModal} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 mr-2">Cancelar</button>
-                                  <button onClick={handleInitiateChat} disabled={!initiateMessage.trim()} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-blue-300">Enviar e Iniciar</button>
-                              </div>
-                          </div>
-                      </>
-                  )}
-              </div>
+
+            <div className="border-b border-gray-200">
+                <nav className="flex space-x-1 p-1 bg-gray-100" aria-label="Tabs">
+                    {tabs.map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`
+                                ${activeTab === tab.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}
+                                rounded-md px-2 py-1 text-xs font-medium flex-1 text-center whitespace-nowrap
+                            `}
+                        >
+                            {tab.label} {tab.count > 0 && `(${tab.count})`}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+                {activeTab === 'queue' && (
+                    <ul>
+                        {chats.map(chat => (
+                            <li key={chat.id} onClick={() => onSelectChat(chat.userId, 'bot')}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                            >
+                                <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
+                                <div className="text-sm text-gray-600 truncate">{chat.department ? `Setor: ${chat.department}` : 'Aguardando'}</div>
+                                <div className="text-xs text-gray-400 mt-1">{new Date(chat.timestamp).toLocaleString()}</div>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                
+                {activeTab === 'active' && (
+                     <ul>
+                        {activeChats
+                          .sort((a,b) => new Date(b.lastMessage?.timestamp || 0) - new Date(a.lastMessage?.timestamp || 0))
+                          .map(chat => {
+                            const currentAttendant = attendants.find(at => at.id === chat.attendantId);
+                            const isMyChat = attendant && chat.attendantId === attendant.id;
+                            return (
+                                <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'human')}
+                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                                >
+                                    <div className={`font-semibold ${isMyChat ? 'text-green-700' : 'text-gray-800'}`}>{chat.userName || chat.userId}</div>
+                                    <div className="text-sm text-gray-600 truncate">{renderLastMessage(chat.lastMessage)}</div>
+                                    <div className="text-xs text-gray-400 mt-1">
+                                        Atendido por: {currentAttendant?.name || 'Desconhecido'}
+                                    </div>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+                
+                {activeTab === 'ai' && (
+                    <ul>
+                        {aiChats
+                            .sort((a,b) => new Date(b.lastMessage?.timestamp || 0) - new Date(a.lastMessage?.timestamp || 0))
+                            .map(chat => (
+                            <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'bot')}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                            >
+                                <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
+                                <div className="text-sm text-gray-600 truncate">{renderLastMessage(chat.lastMessage)}</div>
+                                 <div className="text-xs text-blue-500 mt-1">
+                                    Setor IA: {chat.department || 'N/A'}
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                
+                {activeTab === 'internal' && (
+                    <ul>
+                        {Object.entries(internalChatSummary)
+                         .sort(([, a], [, b]) => new Date(b.lastMessage?.timestamp || 0) - new Date(a.lastMessage?.timestamp || 0))
+                         .map(([partnerId, summary]) => {
+                            const partner = attendants.find(a => a.id === partnerId);
+                            return (
+                                <li key={partnerId} onClick={() => onSelectInternalChat(partnerId)}
+                                    className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedInternalChatId === partnerId ? 'bg-blue-50' : ''}`}
+                                >
+                                    <div className="font-semibold text-gray-800">{partner?.name || 'Desconhecido'}</div>
+                                    <div className="text-sm text-gray-600 truncate">{renderInternalLastMessage(summary.lastMessage)}</div>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+
+                {activeTab === 'history' && (
+                    <ul>
+                        {history.map(chat => (
+                            <li key={chat.userId} onClick={() => onSelectChat(chat.userId, 'history')}
+                                className={`p-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${selectedChatId === chat.userId ? 'bg-blue-50' : ''}`}
+                            >
+                                <div className="font-semibold text-gray-800">{chat.userName || chat.userId}</div>
+                                <div className="text-sm text-gray-500">Resolvido por: {chat.resolvedBy}</div>
+                                <div className="text-xs text-gray-400 mt-1">{new Date(chat.resolvedAt).toLocaleString()}</div>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+        </aside>
+    );
+};
+// --- END: Merged from components/Sidebar.tsx ---
+
+
+// --- START: Merged from components/InternalChatPanel.tsx ---
+const InternalChatPanel = ({ 
+    partner, 
+    chatHistory, 
+    attendant, 
+    onSendMessage 
+}) => {
+    const [message, setMessage] = useState('');
+    const [selectedFiles, setSelectedFiles] = useState([]);
+    const messagesEndRef = useRef(null);
+    const fileInputRef = useRef(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [chatHistory]);
+
+    useEffect(() => {
+        setMessage('');
+        setSelectedFiles([]);
+    }, [partner?.id]);
+    
+    const handleFileSelect = (event) => {
+        const files = Array.from(event.target.files);
+        if (files.length > 0) {
+            const filePromises = files.map(file => {
+                return new Promise((resolve, reject) => {
+                    if (file.size > 15 * 1024 * 1024) {
+                        return reject(new Error(`O arquivo ${file.name} é muito grande (limite de 15MB).`));
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        if (e.target && typeof e.target.result === 'string') {
+                            const base64Data = e.target.result.split(',')[1];
+                            resolve({ name: file.name, type: file.type, data: base64Data });
+                        } else {
+                            reject(new Error(`Falha ao ler o arquivo ${file.name}.`));
+                        }
+                    };
+                    reader.onerror = error => reject(error);
+                    reader.readAsDataURL(file);
+                });
+            });
+            Promise.all(filePromises)
+                .then(newFiles => setSelectedFiles(prev => [...prev, ...newFiles]))
+                .catch(error => alert(error.message));
+        }
+        event.target.value = null;
+    };
+
+
+    const handleSend = () => {
+        if ((message.trim() || selectedFiles.length > 0) && partner && attendant) {
+            onSendMessage(attendant.id, partner.id, message.trim(), selectedFiles);
+            setMessage('');
+            setSelectedFiles([]);
+        }
+    };
+    
+    if (!partner) {
+        return (
+            <div className="flex-1 flex flex-col items-center justify-center bg-gray-100 text-gray-500">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mb-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
+                    <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h1a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+                </svg>
+                <span>Selecione um colega na aba "Interno" para conversar.</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex-1 flex flex-col bg-gray-100">
+            <header className="bg-white p-3 border-b border-gray-200 flex justify-between items-center shadow-sm">
+                <h2 className="font-semibold text-gray-800">Conversa com {partner.name}</h2>
+            </header>
+
+            <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
+                {chatHistory.map((msg, index) => {
+                    const isMe = msg.senderId === attendant.id;
+                    const bubbleClasses = isMe ? 'bg-[#dcf8c6] self-end' : 'bg-white self-start';
+                    const justifyClass = isMe ? 'justify-end' : 'justify-start';
+
+                    return (
+                        <div key={index} className={`flex w-full ${justifyClass}`}>
+                            <div className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses}`}>
+                                {!isMe && <div className="font-bold text-xs text-purple-600 mb-1">{msg.senderName}</div>}
+                                {msg.text && <div className="text-sm whitespace-pre-wrap">{msg.text}</div>}
+                                
+                                {msg.files && msg.files.map((file, i) => (
+                                    <div key={i} className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 0v12h8V4H6z" clipRule="evenodd" />
+                                        </svg>
+                                        <span className="text-xs text-gray-700 truncate">{file.name}</span>
+                                    </div>
+                                ))}
+
+                                <div className="text-xs text-gray-400 self-end mt-1">
+                                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
+                <div ref={messagesEndRef} />
+            </div>
+
+            <footer className="bg-gray-200 p-3">
+                 {selectedFiles.length > 0 && (
+                    <div className="p-2 mb-2 bg-blue-100 rounded-lg text-sm shadow-sm border border-blue-200 max-h-32 overflow-y-auto">
+                        {selectedFiles.map((file, index) => (
+                            <div key={index} className="flex items-center justify-between py-1">
+                                <span className="text-gray-700 truncate">{file.name}</span>
+                                <button onClick={() => setSelectedFiles(files => files.filter((_, i) => i !== index))} className="text-red-500 hover:text-red-700 font-bold text-lg">&times;</button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                <div className="flex items-center bg-white rounded-full shadow-sm px-2">
+                    <button 
+                        onClick={() => fileInputRef.current.click()}
+                        className="p-2 text-gray-500 hover:text-blue-600 rounded-full"
+                    >
+                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                           <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                         </svg>
+                    </button>
+                    <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple />
+                    <input
+                        type="text"
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                        placeholder="Mensagem interna..."
+                        className="w-full p-2 bg-transparent focus:outline-none"
+                    />
+                    <button onClick={handleSend} className="p-2 text-blue-600 hover:text-blue-800 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                           <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                        </svg>
+                    </button>
+                </div>
+            </footer>
+        </div>
+    );
+};
+// --- END: Merged from components/InternalChatPanel.tsx ---
+
+// --- Main App Component ---
+const App = () => {
+    const [attendants, setAttendants] = useState([]);
+    const [attendant, setAttendant] = useState(null);
+    const [isLoadingAttendant, setIsLoadingAttendant] = useState(true);
+    
+    const [chats, setChats] = useState([]); // Fila de espera
+    const [activeChats, setActiveChats] = useState([]); // Atendimentos ativos (humanos)
+    const [aiChats, setAiChats] = useState([]); // Atendimentos ativos (IA)
+    const [history, setHistory] = useState([]);
+    const [clients, setClients] = useState([]);
+    
+    const [selectedChat, setSelectedChat] = useState(null);
+    const [isLoadingChat, setIsLoadingChat] = useState(false);
+    
+    const [activeTab, setActiveTab] = useState('queue'); // 'queue', 'active', 'ai', 'internal', 'history'
+    
+    // State para chat interno
+    const [internalChatSummary, setInternalChatSummary] = useState({});
+    const [selectedInternalPartner, setSelectedInternalPartner] = useState(null);
+    const [internalChatHistory, setInternalChatHistory] = useState([]);
+    const isInternalChatSelected = activeTab === 'internal' && selectedInternalPartner;
+
+    const POLLING_INTERVAL = 2000; // 2 segundos para atualizações rápidas
+
+    // Função de fetch de dados centralizada
+    const fetchData = useCallback(async (currentAttendant) => {
+        try {
+            const endpoints = [
+                '/api/requests', 
+                '/api/chats/active', 
+                '/api/chats/ai-active', 
+                '/api/chats/history', 
+                '/api/clients'
+            ];
+             if (currentAttendant) {
+                endpoints.push(`/api/internal-chats/summary/${currentAttendant.id}`);
+            }
+
+            const responses = await Promise.all(endpoints.map(url => fetch(url)));
+            const data = await Promise.all(responses.map(res => res.json()));
+
+            setChats(data[0]);
+            setActiveChats(data[1]);
+            setAiChats(data[2]);
+            setHistory(data[3]);
+            setClients(data[4]);
+            if (currentAttendant) {
+                setInternalChatSummary(data[5] || {});
+            }
+            
+        } catch (error) {
+            console.error("Falha ao buscar dados:", error);
+        }
+    }, []);
+
+    // Efeito para login e fetch inicial
+    useEffect(() => {
+        const fetchAndSetAttendant = async () => {
+            try {
+                const res = await fetch('/api/attendants');
+                const existingAttendants = await res.json();
+                setAttendants(existingAttendants);
+
+                const storedId = localStorage.getItem('attendantId');
+                if (storedId) {
+                    const found = existingAttendants.find(a => a.id === storedId);
+                    if (found) {
+                        setAttendant(found);
+                        fetchData(found); // Fetch inicial com o atendente logado
+                    } else {
+                         localStorage.removeItem('attendantId'); // Limpa ID inválido
+                    }
+                }
+            } catch (error) {
+                console.error("Falha ao buscar atendentes:", error);
+            } finally {
+                setIsLoadingAttendant(false);
+            }
+        };
+        fetchAndSetAttendant();
+    }, [fetchData]);
+
+    // Efeito para polling contínuo
+    useEffect(() => {
+        if (attendant) {
+            const intervalId = setInterval(() => fetchData(attendant), POLLING_INTERVAL);
+            return () => clearInterval(intervalId);
+        }
+    }, [attendant, fetchData]);
+
+    // Efeito para buscar histórico do chat interno ao selecionar parceiro
+    useEffect(() => {
+        const fetchInternalHistory = async () => {
+            if (isInternalChatSelected) {
+                try {
+                    const res = await fetch(`/api/internal-chats/${attendant.id}/${selectedInternalPartner.id}`);
+                    const history = await res.json();
+                    setInternalChatHistory(history);
+                } catch (error) {
+                    console.error("Falha ao buscar histórico do chat interno:", error);
+                }
+            }
+        };
+        fetchInternalHistory();
+        
+        // Polling para o chat interno específico
+        if (isInternalChatSelected) {
+            const intervalId = setInterval(fetchInternalHistory, POLLING_INTERVAL);
+            return () => clearInterval(intervalId);
+        }
+    }, [isInternalChatSelected, attendant?.id, selectedInternalPartner?.id]);
+
+
+    // Atualiza o chat selecionado quando os dados mudam
+    useEffect(() => {
+        if (selectedChat) {
+            handleSelectChat(selectedChat.userId, selectedChat.type);
+        }
+    }, [chats, activeChats, aiChats, history]);
+    
+    const handleLogin = (id) => {
+        const selected = attendants.find(a => a.id === id);
+        if (selected) {
+            setAttendant(selected);
+            localStorage.setItem('attendantId', id);
+        }
+    };
+
+    const handleCreateAttendant = async (name) => {
+        try {
+            const res = await fetch('/api/attendants', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+            if (res.ok) {
+                const newAttendant = await res.json();
+                setAttendants(prev => [...prev, newAttendant]);
+                handleLogin(newAttendant.id);
+            } else {
+                const error = await res.json();
+                alert(`Erro: ${error.error}`);
+            }
+        } catch (error) {
+            console.error("Falha ao criar atendente:", error);
+            alert("Falha na comunicação com o servidor.");
+        }
+    };
+    
+    const handleLogout = () => {
+        setAttendant(null);
+        localStorage.removeItem('attendantId');
+        setSelectedChat(null);
+        setSelectedInternalPartner(null);
+    };
+
+    const handleSelectChat = async (userId, type) => {
+        setSelectedInternalPartner(null); // Desseleciona chat interno
+        if (selectedChat?.userId === userId) return;
+        setIsLoadingChat(true);
+        try {
+            const res = await fetch(`/api/chats/history/${userId}`);
+            if (res.ok) {
+                const chatData = await res.json();
+                setSelectedChat({ ...chatData, type });
+            } else {
+                console.error("Chat não encontrado:", userId);
+                setSelectedChat(null);
+            }
+        } catch (error) {
+            console.error("Falha ao buscar chat:", error);
+        } finally {
+            setIsLoadingChat(false);
+        }
+    };
+    
+    const handleSelectInternalChat = (partnerId) => {
+        const partner = attendants.find(a => a.id === partnerId);
+        if(partner) {
+            setSelectedChat(null); // Desseleciona chat de cliente
+            setSelectedInternalPartner(partner);
+        }
+    };
+    
+    const handleSendMessage = async (userId, text, attendantId, files) => {
+        try {
+            const res = await fetch('/api/chats/attendant-reply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, text, attendantId, files }),
+            });
+            if (res.ok) {
+                // Adiciona a mensagem localmente para uma UI mais responsiva
+                 setSelectedChat(prev => {
+                    if (!prev || prev.userId !== userId) return prev;
+                    const newMessage = { sender: 'attendant', text, files, timestamp: new Date().toISOString() };
+                    return { ...prev, messageLog: [...prev.messageLog, newMessage] };
+                 });
+            }
+        } catch (error) {
+            console.error("Falha ao enviar mensagem:", error);
+        }
+    };
+    
+    const handleSendInternalMessage = async (senderId, recipientId, text, files) => {
+         try {
+            const res = await fetch('/api/internal-chats', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ senderId, recipientId, text, files }),
+            });
+            if (res.ok) {
+                const newMessage = await res.json();
+                setInternalChatHistory(prev => [...prev, newMessage]);
+            }
+        } catch (error) {
+            console.error("Falha ao enviar mensagem interna:", error);
+        }
+    };
+    
+     const handleTakeoverChat = async (userId) => {
+        if (!attendant) return;
+        try {
+            const res = await fetch(`/api/chats/takeover/${userId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ attendantId: attendant.id }),
+            });
+            if (res.ok) {
+                await fetchData(attendant); // Atualiza as listas
+                setActiveTab('active'); // Muda para a aba de ativos
+                handleSelectChat(userId, 'human'); // Seleciona o chat
+            }
+        } catch (error) {
+            console.error("Falha ao assumir atendimento:", error);
+        }
+    };
+
+    const handleResolveChat = async (userId) => {
+        if (!attendant) return;
+        try {
+            const res = await fetch(`/api/chats/resolve/${userId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ attendantId: attendant.id }),
+            });
+            if (res.ok) {
+                setSelectedChat(null);
+                await fetchData(attendant);
+                setActiveTab('history');
+            }
+        } catch (error) {
+            console.error("Falha ao resolver atendimento:", error);
+        }
+    };
+
+    const handleTransferChat = async (userId, newAttendantId) => {
+        if (!attendant) return;
+        try {
+            const res = await fetch(`/api/chats/transfer/${userId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ newAttendantId, transferringAttendantId: attendant.id }),
+            });
+            if (res.ok) {
+                setSelectedChat(null); // Fecha o chat da sua visão
+                await fetchData(attendant);
+                setActiveTab('active');
+            }
+        } catch (error) {
+            console.error("Falha ao transferir atendimento:", error);
+        }
+    };
+    
+    const handleInitiateChat = async (recipientNumber, message, attendantId) => {
+        try {
+            const res = await fetch('/api/chats/initiate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ recipientNumber, message, attendantId }),
+            });
+             if (res.ok) {
+                const newChat = await res.json();
+                await fetchData(attendant);
+                setActiveTab('active');
+                handleSelectChat(newChat.userId, 'human');
+            } else {
+                const errorText = await res.text();
+                alert(`Erro ao iniciar conversa: ${errorText}`);
+            }
+        } catch(e) {
+            console.error("Falha ao iniciar chat", e);
+            alert("Erro de comunicação ao iniciar chat.");
+        }
+    };
+
+    if (isLoadingAttendant) {
+        return <div className="flex items-center justify-center h-screen">Carregando...</div>;
+    }
+
+    if (!attendant) {
+        return (
+            <div className="flex items-center justify-center h-screen bg-gray-100">
+                <div className="w-full max-w-sm p-8 bg-white rounded-lg shadow-md">
+                    <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Login de Atendente</h2>
+                    <select
+                        onChange={(e) => handleLogin(e.target.value)}
+                        defaultValue=""
+                        className="w-full p-2 mb-4 border border-gray-300 rounded-md"
+                    >
+                        <option value="" disabled>Selecione seu nome</option>
+                        {attendants.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                    <p className="text-center my-4 text-gray-500">ou</p>
+                    <div className="flex flex-col">
+                         <input
+                            type="text"
+                            placeholder="Digite seu nome para criar"
+                            id="new-attendant-name"
+                            className="w-full p-2 mb-4 border border-gray-300 rounded-md"
+                        />
+                        <button
+                           onClick={() => {
+                                const input = document.getElementById('new-attendant-name');
+                                if (input && input.value) handleCreateAttendant(input.value);
+                           }}
+                           className="w-full bg-green-600 text-white p-2 rounded-md hover:bg-green-700"
+                        >
+                            Criar Novo Atendente
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+    
+    // --- Renderização Principal ---
+    return (
+      <div className="flex h-screen font-sans antialiased text-gray-900 bg-gray-50">
+          <div className="fixed top-0 left-0 w-full bg-blue-800 text-white p-2 text-center text-xs z-10 shadow-md">
+            <span>Você está logado como: <strong>{attendant.name}</strong></span>
+            <button onClick={handleLogout} className="ml-4 text-blue-200 hover:text-white font-bold text-xs">[Sair]</button>
           </div>
-      )}
-
-    </div>
-  );
-}
-// --- END: Merged from App.tsx ---
+          <div className="flex w-full pt-8"> {/* pt-8 para compensar o header fixo */}
+             <Sidebar
+                  chats={chats}
+                  activeChats={activeChats}
+                  aiChats={aiChats}
+                  history={history}
+                  onSelectChat={handleSelectChat}
+                  selectedChatId={selectedChat?.userId}
+                  activeTab={activeTab}
+                  setActiveTab={setActiveTab}
+                  attendant={attendant}
+                  attendants={attendants}
+                  onInitiateChat={handleInitiateChat}
+                  internalChatSummary={internalChatSummary}
+                  onSelectInternalChat={handleSelectInternalChat}
+                  selectedInternalChatId={selectedInternalPartner?.id}
+              />
+              {isInternalChatSelected ? (
+                 <InternalChatPanel 
+                    partner={selectedInternalPartner}
+                    chatHistory={internalChatHistory}
+                    attendant={attendant}
+                    onSendMessage={handleSendInternalMessage}
+                 />
+              ) : (
+                 <ChatPanel
+                      selectedChat={selectedChat}
+                      attendant={attendant}
+                      attendants={attendants}
+                      onSendMessage={handleSendMessage}
+                      onResolveChat={handleResolveChat}
+                      onTransferChat={handleTransferChat}
+                      onTakeoverChat={handleTakeoverChat}
+                      isLoading={isLoadingChat}
+                  />
+              )}
+          </div>
+      </div>
+    );
+};
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+root.render(<App />);
