@@ -148,6 +148,16 @@ function addRequestToQueue(session, department, message) {
 async function processMessage(session, userInput, replies) {
     const { userId } = session;
     let currentStep = conversationFlow.get(session.currentState);
+    
+    // CORREÇÃO CRÍTICA (REDE DE SEGURANÇA): Se o estado da sessão for inválido (nulo ou não existe no
+    // `conversationFlow`), o acesso a `currentStep.options` causaria um crash no servidor (Erro 502).
+    // Esta verificação reseta a sessão para o início de forma segura, garantindo a estabilidade.
+    if (!currentStep) {
+        console.error(`[Flow Safety Net] Estado inválido ou nulo encontrado para a sessão ${userId}: '${session.currentState}'. Resetando para GREETING.`);
+        session.currentState = ChatState.GREETING;
+        currentStep = conversationFlow.get(ChatState.GREETING);
+    }
+    
     let nextState, payload;
 
     const choice = parseInt(userInput.trim(), 10);
@@ -272,7 +282,8 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
           });
           
           // @google/genai-ts FIX: Use .text property for direct text output.
-          const transcribedText = response.text.trim();
+          // Adicionada verificação `(response.text || '')` para maior robustez.
+          const transcribedText = (response.text || '').trim();
           
           if (transcribedText) {
               transcription = `Transcrição do áudio:\n"${transcribedText}"`;
