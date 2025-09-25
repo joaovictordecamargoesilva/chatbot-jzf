@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "11.0.0_MEDIA_TRANSCRIPTION_TIMEOUT";
+const SERVER_VERSION = "12.0.0_REALTIME_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -107,9 +107,18 @@ async function transcribeAudio(file) {
                 ]
             },
         });
-        const transcription = response.text.trim();
-        console.log(`[Transcribe] Transcrição concluída: "${transcription}"`);
-        return transcription;
+
+        // MODIFICAÇÃO: Tratamento robusto da resposta da IA
+        const transcription = response?.text?.trim();
+        
+        if (transcription) {
+            console.log(`[Transcribe] Transcrição concluída: "${transcription}"`);
+            return transcription;
+        } else {
+            console.warn(`[Transcribe] A transcrição da IA retornou um texto vazio para o arquivo: ${file.name || 'desconhecido'}`);
+            return "[Transcrição falhou ou o áudio estava em silêncio.]";
+        }
+
     } catch (error) {
         console.error("[Transcribe] Erro CRÍTICO durante a chamada da API Gemini para transcrição:", error);
         return `[Não foi possível transcrever o áudio]`;
