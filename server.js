@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "12.0.0_REALTIME_FIX";
+const SERVER_VERSION = "13.0.0_SMART_AUDIO";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -204,6 +204,8 @@ async function processMessage(session, userInput, replies) {
         nextState = currentStep.nextState;
         session.context.history[session.currentState] = userInput;
     } else {
+        // LÓGICA ATUALIZADA: No estado de GREETING, qualquer texto que não seja uma opção válida
+        // simplesmente reenvia a mensagem de saudação, evitando o "opção inválida".
         if (session.currentState === ChatState.GREETING) {
             nextState = session.currentState;
             payload = null;
@@ -281,18 +283,26 @@ function formatFlowStepForWhatsapp(step, context) {
 const apiRouter = express.Router();
 
 apiRouter.post('/whatsapp-webhook', async (req, res) => {
-  const { userId, userName, userInput: originalInput, file } = req.body;
+  const { userId, userName, userInput: originalInput, file, gatewayError } = req.body;
   if (!userId || originalInput === undefined) return res.status(400).json({ error: 'userId e userInput são obrigatórios.' });
 
   let effectiveInput = originalInput;
+  const session = getSession(userId, userName);
+  const isAudio = file && file.type && (file.type.startsWith('audio/') || file.type === 'application/ogg');
+
+  // NOVO: Tratamento de erro do Gateway. Se a mídia falhar, apenas loga e não responde.
+  if (gatewayError) {
+      console.warn(`[Webhook] Erro de mídia do Gateway para ${userId}. Mensagem: "${originalInput}"`);
+      session.messageLog.push({ sender: 'user', text: originalInput, file: null, timestamp: new Date() });
+      return res.status(200).json({ replies: [] });
+  }
   
   // Transcrição de áudio, se houver
-  if (file && file.type && (file.type.startsWith('audio/') || file.type === 'application/ogg')) {
+  if (isAudio) {
       const transcription = await transcribeAudio(file);
       effectiveInput = transcription;
   }
   
-  const session = getSession(userId, userName);
   // Log da mensagem do usuário com texto (transcrito ou original) e arquivo (com base64)
   session.messageLog.push({ 
       sender: 'user', 
@@ -305,63 +315,81 @@ apiRouter.post('/whatsapp-webhook', async (req, res) => {
       return res.status(200).json({ replies: [] }); // Apenas loga a mensagem para o atendente.
   }
   
-  // Lógica para o Assistente Virtual de IA
-  if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
-      const replies = [];
-      const currentStep = conversationFlow.get(session.currentState);
-      const choice = parseInt(effectiveInput.trim(), 10);
-      const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
-
-      if (selectedOption) {
-          await processMessage(session, effectiveInput, replies);
-      } else {
-          if (!ai) {
-              const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
-              replies.push(errorMsg);
-              session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
-          } else {
-              try {
-                  session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
-                  
-                  const response = await ai.models.generateContent({
-                      model: 'gemini-2.5-flash',
-                      contents: session.aiHistory,
-                      config: {
-                          systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo.",
-                      }
-                  });
-
-                  const aiResponseText = response.text;
-                  replies.push(aiResponseText);
-                  
-                  session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
-                  session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
-
-              } catch (error) {
-                  console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
-                  const errorMsg = translations.pt.error;
-                  replies.push(errorMsg);
-                  session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
-              }
-          }
-      }
-      return res.status(200).json({ replies });
-  }
-
-  // Lógica do fluxo normal do bot
   const replies = [];
   try {
-    const lowerInput = effectiveInput.trim().toLowerCase();
-    if (['voltar', 'inicio', 'início', 'menu'].includes(lowerInput)) {
-        session.currentState = ChatState.GREETING;
-        session.context = { history: {} };
-        const greetingStep = conversationFlow.get(ChatState.GREETING);
-        const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
-        replies.push(formattedReply);
-        session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
-    } else if (['sair', 'encerrar', 'finalizar'].includes(lowerInput)) {
-        await processMessage(session, '4', replies); // Simula a escolha da opção "Encerrar"
+    const isFirstUserMessage = session.messageLog.filter(m => m.sender === 'user').length === 1;
+
+    // LÓGICA DE INTELIGÊNCIA DE ÁUDIO
+    // Caso 1: Se for a PRIMEIRA mensagem do usuário E for um áudio, apenas mostre o menu de boas-vindas.
+    if (isFirstUserMessage && isAudio) {
+        console.log(`[Flow] Primeira mensagem de ${userId} é um áudio. Exibindo menu principal.`);
+        await processMessage(session, '', replies); // Input vazio no estado GREETING apenas reenvia o menu.
+        return res.status(200).json({ replies });
+    }
+
+    // Caso 2: Se o usuário já está no modo de assistente de IA.
+    if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+        const currentStep = conversationFlow.get(session.currentState);
+        const choice = parseInt(effectiveInput.trim(), 10);
+        const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+        if (selectedOption) {
+            await processMessage(session, effectiveInput, replies);
+        } else {
+             if (!ai) {
+                const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
+                replies.push(errorMsg);
+                session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+            } else {
+                try {
+                    session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: session.aiHistory,
+                        config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." }
+                    });
+                    const aiResponseText = response.text;
+                    replies.push(aiResponseText);
+                    session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+                    session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
+                } catch (error) {
+                    console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
+                    const errorMsg = translations.pt.error;
+                    replies.push(errorMsg);
+                    session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+                }
+            }
+        }
+    // Caso 3: Lógica de redirecionamento inteligente para IA (se não for a primeira mensagem)
+    } else if (session.currentState === ChatState.GREETING && (isAudio || effectiveInput.trim().split(' ').length > 3)) {
+        console.log(`[Flow] Pergunta direta/áudio de ${userId} detectado no menu. Redirecionando para IA.`);
+        const redirectMsg = "Entendi que você tem uma pergunta. Estou te conectando ao nosso assistente virtual...";
+        replies.push(redirectMsg);
+        session.messageLog.push({ sender: 'bot', text: redirectMsg, timestamp: new Date() });
+
+        // Transiciona o estado e define um departamento padrão
+        session.currentState = ChatState.AI_ASSISTANT_CHATTING;
+        session.context.department = "Contábil"; 
+        session.aiHistory = []; // Limpa o histórico para a nova pergunta
+
+        // Envia a pergunta inicial para a IA
+        try {
+            session.aiHistory.push({ role: 'user', parts: [{ text: effectiveInput }] });
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: session.aiHistory,
+                config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] }
+            });
+            const aiResponseText = response.text;
+            replies.push(aiResponseText);
+            session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+            session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
+        } catch (error) {
+            console.error(`[AI Redirect] Erro CRÍTICO ao processar AI para ${userId}:`, error);
+            replies.push(translations.pt.error);
+        }
     } else {
+        // Caso 4: Processamento normal do fluxo do bot para menus e textos curtos.
         await processMessage(session, effectiveInput, replies);
     }
     res.status(200).json({ replies });
