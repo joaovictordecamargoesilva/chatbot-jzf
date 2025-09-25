@@ -128,8 +128,10 @@ const flowSteps = [
   [
     ChatState.ATTENDANT_TRANSFER,
     {
-      textKey: "attendantTransfer",
-      nextState: ChatState.GREETING,
+      // A chave do texto foi alterada para refletir a nova mensagem de espera.
+      textKey: "attendantTransferWait", 
+      // IMPORTANTE: O nextState foi removido. Isso faz com que o bot pare aqui
+      // e aguarde a intervenção de um atendente, em vez de voltar ao menu principal.
     },
   ],
   [
@@ -180,6 +182,8 @@ export const translations = {
 
         attendantSelect: "Entendido. Para qual departamento você precisa de atendimento humano?",
         attendantTransfer: (context) => `Ok, estou te transferindo para um atendente do setor *${context.department}*. Por favor, aguarde um momento.`,
+        // Nova mensagem de espera, conforme solicitado.
+        attendantTransferWait: "Aguarde, em alguns instantes um de nossos atendentes irá te atender.",
 
         sessionEnded: "Obrigado por utilizar nossos serviços. A JZF Contabilidade está sempre à disposição!",
         error: "Desculpe, ocorreu um erro inesperado. Por favor, tente novamente mais tarde.",
