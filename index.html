@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Assistente Virtual | JZF Contabilidade</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- CSS para o Editor de Imagens -->
+  <link rel="stylesheet" href="https://uicdn.toast.com/tui-image-editor/latest/tui-image-editor.css" />
+  <style>
+    /* Estilo para simular o fundo do WhatsApp */
+    .whatsapp-bg {
+      background-color: #E5DDD5;
+      background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
+    }
+    body {
+        overscroll-behavior-y: contain;
+    }
+    /* Z-index alto para o editor de imagens */
+    .tui-image-editor-container {
+        z-index: 101; /* Garante que o editor fique sobre o modal */
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "os": "https://aistudiocdn.com/os@^0.1.2",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.21.0",
+    "@wppconnect-team/wppconnect": "https://aistudiocdn.com/@wppconnect-team/wppconnect@^1.37.5",
+    "node-fetch": "https://aistudiocdn.com/node-fetch@^3.3.2",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "express": "https://aistudiocdn.com/express@^5.1.0",
+    "url": "https://aistudiocdn.com/url@^0.11.4",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "vite": "https://aistudiocdn.com/vite@^7.1.9",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.0.4",
+    "tui-image-editor": "https://aistudiocdn.com/tui-image-editor@^3.15.3",
+    "tui-image-editor/": "https://aistudiocdn.com/tui-image-editor@^3.15.3/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-gray-200 flex items-center justify-center min-h-screen">
+  <div id="root" class="w-full h-full sm:h-screen"></div>
+
+  <!-- 
+    O script do aplicativo é carregado como um módulo.
+    As dependências (React, TUI Image Editor, etc.) são agora importadas
+    diretamente no index.tsx e serão gerenciadas por um empacotador (bundler)
+    como Vite ou Webpack no processo de build.
+  -->
+  <script type="module" src="/index.tsx"></script>
+
+</body>
+</html>
