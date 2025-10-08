@@ -321,6 +321,7 @@ const ChatPanel = ({
   const [editingMessage, setEditingMessage] = useState(null);
   const [editedText, setEditedText] = useState("");
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
   const messageInputRef = useRef(null);
   
   const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
@@ -504,15 +505,16 @@ const ChatPanel = ({
                     </div>
                 )}
                 <div className="flex items-center bg-white rounded-full shadow-sm px-2">
-                  <label 
-                    className="relative flex-shrink-0 p-2 text-gray-500 hover:text-blue-600 rounded-full cursor-pointer focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-400"
+                  <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" multiple />
+                  <button 
+                    onClick={() => fileInputRef.current.click()}
+                    className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
                     aria-label="Anexar arquivo"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                     </svg>
-                    <input type="file" onChange={onFileSelect} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" multiple />
-                  </label>
+                  </button>
                   <input
                     ref={messageInputRef}
                     type="text"
@@ -654,6 +656,7 @@ function App() {
   const internalMessagesEndRef = useRef(null);
   const [internalMessage, setInternalMessage] = useState('');
   const [internalSelectedFiles, setInternalSelectedFiles] = useState([]);
+  const internalFileInputRef = useRef(null);
   const internalMessageInputRef = useRef(null);
   
   // Estados para Responder e Editar no Chat Interno
@@ -1397,10 +1400,8 @@ function App() {
                                 </div>
                             )}
                             <div className="flex items-center bg-white rounded-full shadow-sm px-2">
-                                  <label className="relative flex-shrink-0 p-2 text-gray-500 hover:text-blue-600 rounded-full cursor-pointer" aria-label="Anexar arquivo">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
-                                    <input type="file" onChange={handleInternalFileSelect} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" multiple />
-                                  </label>
+                                 <input type="file" ref={internalFileInputRef} onChange={handleInternalFileSelect} className="hidden" multiple />
+                                  <button onClick={() => internalFileInputRef.current.click()} className="p-2 text-gray-500 hover:text-blue-600 rounded-full" aria-label="Anexar arquivo"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg></button>
                                 <input ref={internalMessageInputRef} type="text" value={internalMessage} onChange={e => setInternalMessage(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleSendInternalMessage()} placeholder={`Mensagem para ${internalChatPartner.name}...`} className="w-full p-2 bg-transparent focus:outline-none" />
                                 <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim() && internalSelectedFiles.length === 0} className="p-2 text-blue-600 rounded-full disabled:text-gray-400"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg></button>
                             </div>
