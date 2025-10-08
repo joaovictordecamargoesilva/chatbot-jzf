@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "18.3.0_DEPLOY_FIX";
+const SERVER_VERSION = "18.0.0_USER_LOGIC_MERGE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -63,8 +63,6 @@ const outboundGatewayQueue = [];
 const internalChats = new Map();
 let syncedContacts = [];
 let nextRequestId = 1;
-const pendingEdits = new Map(); // NOVO: Armazena edições que aguardam confirmação de envio
-const updateListeners = new Map(); // Para long-polling
 
 
 // --- MIDDLEWARE DE LOG GLOBAL ---
@@ -130,256 +128,687 @@ async function transcribeAudio(file) {
 
 
 // --- FUNÇÕES DE GERENCIAMENTO DE SESSÃO E DADOS ---
-function notifyUpdates(attendantId = null) {
-  // Notifica um atendente específico ou todos
-  const attendantIdsToNotify = attendantId ? [attendantId] : Array.from(updateListeners.keys());
-
-  for (const id of attendantIdsToNotify) {
-      const listeners = updateListeners.get(id) || [];
-      const data = {
-          activeChats: Array.from(activeChats.values()),
-          archivedChats: Array.from(archivedChats.values()),
-          internalChats: Array.from(internalChats.values()),
-          timestamp: Date.now()
-      };
-      while (listeners.length > 0) {
-          const res = listeners.pop();
-          res.json(data);
-      }
-      updateListeners.set(id, []);
-  }
-}
-
-function addMessageToLog(userId, message) {
-    if (activeChats.has(userId)) {
-        const chat = activeChats.get(userId);
-        chat.messageLog.push(message);
-        chat.lastUpdate = Date.now();
-        notifyUpdates(chat.attendantId);
+function archiveSession(session) {
+    if (!session || !session.userId) {
+        console.error('[archiveSession] Tentativa de arquivar sessão inválida.');
+        return;
+    }
+    archivedChats.delete(session.userId);
+    archivedChats.set(session.userId, { ...session });
+    
+    if (archivedChats.size > MAX_ARCHIVED_CHATS) {
+        const oldestKey = archivedChats.keys().next().value;
+        archivedChats.delete(oldestKey);
+        console.log(`[Memory] Limite de arquivos atingido. Chat arquivado mais antigo (${oldestKey}) removido.`);
     }
 }
 
-// --- ROTAS DE API PARA O FRONTEND ---
+function getSession(userId, userName = null) {
+    // MODIFICAÇÃO CHAVE: Busca primeiro nos chats ativos, depois nas sessões do bot.
+    // Isso previne que uma nova sessão de bot seja criada para um chat já em atendimento.
+    let session = activeChats.get(userId) || userSessions.get(userId);
 
-// Endpoint de long-polling para atualizações em tempo real
-app.get('/api/chats/updates', (req, res) => {
-    const { attendantId } = req.query;
-    if (!attendantId) {
-        return res.status(400).json({ error: 'attendantId é obrigatório' });
-    }
-
-    if (!updateListeners.has(attendantId)) {
-        updateListeners.set(attendantId, []);
-    }
-    updateListeners.get(attendantId).push(res);
-
-    // Timeout para fechar a conexão se nada acontecer
-    res.on('close', () => {
-        const listeners = updateListeners.get(attendantId) || [];
-        const index = listeners.indexOf(res);
-        if (index !== -1) {
-            listeners.splice(index, 1);
+    if (!session) {
+        // CONTROLE DE MEMÓRIA: Remove a sessão mais antiga se o limite for atingido.
+        if (userSessions.size >= MAX_SESSIONS) {
+            const oldestKey = userSessions.keys().next().value;
+            userSessions.delete(oldestKey);
+            console.warn(`[Memory] Limite de ${MAX_SESSIONS} sessões atingido. Sessão mais antiga (${oldestKey}) removida.`);
         }
-    });
-});
-
-app.get('/api/attendants', (req, res) => {
-    res.json(ATTENDANTS);
-});
-
-app.get('/api/chats', (req, res) => {
-    res.json(Array.from(activeChats.values()));
-});
-
-app.get('/api/archived-chats', (req, res) => {
-    res.json(Array.from(archivedChats.values()));
-});
-
-app.post('/api/chats/attendant-login', (req, res) => {
-    const { name } = req.body;
-    if (!name) {
-        return res.status(400).json({ error: 'Nome do atendente é obrigatório.' });
+        session = {
+            userId: userId,
+            userName: userName,
+            currentState: ChatState.GREETING,
+            context: { history: {} },
+            aiHistory: [],
+            messageLog: [],
+            handledBy: 'bot', // 'bot' | 'human' | 'bot_queued'
+            attendantId: null,
+            createdAt: new Date().toISOString(),
+        };
+        userSessions.set(userId, session);
+    } else {
+        // Se a sessão já existe, apenas atualiza o nome se necessário.
+        if (userName && session.userName !== userName) {
+            session.userName = userName;
+        }
     }
-    let attendant = ATTENDANTS.find(a => a.name.toLowerCase() === name.toLowerCase());
-    if (!attendant) {
-        attendant = { id: String(nextAttendantId++), name };
-        ATTENDANTS.push(attendant);
+    return session;
+}
+
+function addRequestToQueue(session, department, message) {
+    const { userId, userName } = session;
+    if (requestQueue.some(r => r.userId === userId) || activeChats.has(userId)) {
+        console.log(`[Queue] Bloqueada adição de ${userId} à fila pois já existe uma solicitação.`);
+        return;
     }
-    res.status(200).json(attendant);
-});
-
-app.post('/api/chats/attendant-reply', (req, res) => {
-    const { userId, text, attendantId, files, replyTo } = req.body;
-    if (!userId || !attendantId) return res.status(400).json({ error: 'Faltam dados essenciais.' });
-
-    const tempId = `temp_${Date.now()}_${Math.random()}`;
-    const message = {
-        sender: 'attendant',
-        text: text,
-        timestamp: Date.now(),
-        files: files || [],
-        replyTo: replyTo || null,
-        tempId: tempId
+    const request = {
+        id: nextRequestId++,
+        userId,
+        userName,
+        department,
+        message,
+        timestamp: new Date().toISOString(),
     };
+    requestQueue.unshift(request);
+    console.log(`[Queue] Nova solicitação adicionada: ID ${request.id} (${userName}) para o setor ${department}`);
+}
 
-    addMessageToLog(userId, message);
+// --- PROCESSAMENTO PRINCIPAL DO CHATBOT (Lógica do WhatsApp) ---
 
-    // Correção de bug: Certifica-se de que `files` é um array antes de mapear.
-    const filesToSend = Array.isArray(files) ? files.map(f => ({ name: f.name, type: f.type, data: f.data })) : [];
+function formatFlowStepForWhatsapp(step, context) {
+    let messageText = '';
+    const textTemplate = translations.pt[step.textKey];
+    if (textTemplate) { messageText = typeof textTemplate === 'function' ? textTemplate(context) : textTemplate; }
+    if (step.options && step.options.length > 0) {
+        const optionsText = step.options.map((opt, index) => `*${index + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n');
+        messageText += `\n\n${optionsText}`;
+    }
+    return messageText;
+}
 
-    outboundGatewayQueue.push({
-        type: 'send',
-        userId,
-        text,
-        file: filesToSend[0], // Gateway atual suporta um arquivo por vez
-        tempId
-    });
-
-    res.status(200).json({ success: true });
-});
-
-app.post('/api/chats/edit-message', async (req, res) => {
-    const { userId, messageTimestamp, newText } = req.body;
-    if (!userId || !messageTimestamp || !newText) return res.status(400).send();
-
-    const chat = activeChats.get(userId);
-    if (!chat) return res.status(404).send();
-
-    const messageIndex = chat.messageLog.findIndex(m => m.timestamp === messageTimestamp);
-    if (messageIndex === -1) return res.status(404).send();
+async function processMessage(session, userInput, file) { // file is part of signature but unused in this logic
+    const { userId } = session;
     
-    const message = chat.messageLog[messageIndex];
-    if (message.sender !== 'attendant' || !message.id) {
-        return res.status(403).json({ error: "Só é possível editar mensagens enviadas por você que já foram confirmadas pelo WhatsApp." });
+    // SAFEGUARD: Se o estado for inválido, reseta para o início.
+    if (!conversationFlow.has(session.currentState)) {
+        console.error(`[Flow] Estado inválido ou desconhecido: "${session.currentState}" para o usuário ${userId}. Reiniciando a sessão.`);
+        session.currentState = ChatState.GREETING;
+    }
+    
+    let currentStep = conversationFlow.get(session.currentState);
+    let nextState, payload;
+
+    const choice = parseInt(userInput.trim(), 10);
+    const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+    if (selectedOption) {
+        nextState = selectedOption.nextState;
+        payload = selectedOption.payload;
+    } else if (currentStep.requiresTextInput) {
+        // Lógica para chat com IA foi movida para cá para centralização
+        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+            if (!ai) {
+                const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
+                outboundGatewayQueue.push({ userId, text: errorMsg });
+                session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+            } else {
+                try {
+                    session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: session.aiHistory,
+                        config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." }
+                    });
+                    const aiResponseText = response.text;
+                    
+                    outboundGatewayQueue.push({ userId, text: aiResponseText });
+                    session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+                    session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
+                } catch (error) {
+                    console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
+                    const errorMsg = translations.pt.error;
+                    outboundGatewayQueue.push({ userId, text: errorMsg });
+                    session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+                }
+            }
+            return; // Permanece no modo de chat com IA
+        }
+        // Para outros inputs de texto (ex: agendamento)
+        nextState = currentStep.nextState;
+        session.context.history[session.currentState] = userInput;
+    } else {
+        // LÓGICA ATUALIZADA: No estado GREETING, qualquer texto inválido reenvia a saudação.
+        if (session.currentState === ChatState.GREETING) {
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            outboundGatewayQueue.push({ userId, text: stepFormatted });
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+            return;
+        } else {
+            const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
+            outboundGatewayQueue.push({ userId, text: invalidOptionMsg });
+            session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            outboundGatewayQueue.push({ userId, text: stepFormatted });
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+            return;
+        }
+    }
+    
+    if (payload) {
+        session.context = { ...session.context, ...payload };
+    }
+    
+    if (nextState === ChatState.END_SESSION) {
+        const endMsg = translations.pt.sessionEnded;
+        outboundGatewayQueue.push({ userId, text: endMsg });
+        session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
+        session.resolvedBy = "Cliente";
+        session.resolvedAt = new Date().toISOString();
+        archiveSession(session);
+        userSessions.delete(userId);
+        console.log(`[Flow] Sessão para ${userId} finalizada pelo cliente e arquivada.`);
+        return;
+    }
+    
+    let currentState = nextState;
+    while(currentState) {
+        session.currentState = currentState;
+        const step = conversationFlow.get(currentState);
+        if (!step) {
+            console.error(`[Flow] Estado inválido no loop: ${currentState}. Reiniciando sessão para ${userId}.`);
+            currentState = ChatState.GREETING;
+            continue;
+        }
+
+        if (currentState === ChatState.ATTENDANT_TRANSFER || currentState === ChatState.SCHEDULING_CONFIRMED) {
+            const department = currentState === ChatState.SCHEDULING_CONFIRMED ? 'Agendamento' : session.context.department;
+            const details = session.context.history[ChatState.SCHEDULING_NEW_CLIENT_DETAILS] || session.context.history[ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS];
+            const reason = currentState === ChatState.SCHEDULING_CONFIRMED
+                ? `Solicitação de agendamento.\n- Tipo: ${session.context.clientType}\n- Detalhes: ${details}`
+                : `Cliente pediu para falar com o setor ${department}.`;
+            addRequestToQueue(session, department, reason);
+            session.handledBy = 'bot_queued';
+        }
+        const formattedReply = formatFlowStepForWhatsapp(step, session.context);
+        outboundGatewayQueue.push({ userId, text: formattedReply });
+        session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
+        
+        if (step.nextState && !step.requiresTextInput && (!step.options || step.options.length === 0)) {
+            currentState = step.nextState;
+            await new Promise(r => setTimeout(r, 500));
+        } else {
+            currentState = null; // Interrompe o loop
+        }
+    }
+}
+
+
+// --- PROCESSADOR DE MENSAGENS EM SEGUNDO PLANO ---
+async function processIncomingMessage(body) {
+    const { userId, userName, userInput, file, gatewayError } = body;
+    
+    // Validação essencial
+    if (!userId) {
+        console.error('[Background Processor] Ignorando mensagem sem userId.');
+        return;
     }
 
-    chat.messageLog[messageIndex].text = newText;
-    chat.messageLog[messageIndex].edited = true;
-    chat.lastUpdate = Date.now();
+    const session = getSession(userId, userName);
+    let effectiveInput = userInput;
 
-    outboundGatewayQueue.push({
-        type: 'edit',
-        userId,
-        messageId: message.id,
-        newText
-    });
+    if (gatewayError) {
+        session.messageLog.push({ sender: 'system', text: `Erro no gateway: ${userInput}`, timestamp: new Date().toISOString() });
+        return; // Não processa mais se houve erro no gateway
+    }
+
+    // Log da mensagem do usuário
+    if (file) {
+        session.messageLog.push({ sender: 'user', text: userInput, file: { ...file }, timestamp: new Date().toISOString() });
+        if (file.type && file.type.startsWith('audio/')) {
+            const transcription = await transcribeAudio(file);
+            effectiveInput = transcription; // Usa a transcrição como a entrada do usuário
+            session.messageLog.push({ sender: 'system', text: `Transcrição do áudio: "${transcription}"`, timestamp: new Date().toISOString() });
+        }
+    } else {
+        session.messageLog.push({ sender: 'user', text: userInput, timestamp: new Date().toISOString() });
+    }
+
+    // Se o chat já está com um atendente humano ou na fila, não faz nada.
+    if (session.handledBy === 'human' || session.handledBy === 'bot_queued') {
+        console.log(`[Background Processor] Mensagem de ${userId} recebida para chat já em atendimento humano/fila. Apenas registrando.`);
+        return;
+    }
     
-    notifyUpdates(chat.attendantId);
-    res.status(200).json({ success: true });
+    // Se a sessão está com o bot, processa a mensagem
+    if (session.handledBy === 'bot') {
+       await processMessage(session, effectiveInput, file);
+    }
+}
+
+
+// --- ROTAS DA API ---
+const apiRouter = express.Router();
+
+// Helper para envolver rotas async e capturar erros
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+
+// --- ROTAS DO PAINEL DE ATENDIMENTO ---
+
+// Rota de Health Check - essencial para plataformas de deploy
+apiRouter.get('/health', (req, res) => {
+  res.status(200).send('OK');
 });
 
-app.post('/api/chats/resolve', (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).send();
+apiRouter.get('/attendants', asyncHandler(async (req, res) => {
+    res.status(200).json(ATTENDANTS);
+}));
+
+apiRouter.post('/attendants', asyncHandler(async (req, res) => {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+        return res.status(400).send('Nome do atendente é inválido.');
+    }
+    const normalizedName = name.trim();
+    if (ATTENDANTS.some(a => a.name.toLowerCase() === normalizedName.toLowerCase())) {
+        return res.status(409).send('Um atendente com este nome já existe.');
+    }
+    const newAttendant = {
+        id: `attendant_${nextAttendantId++}`,
+        name: normalizedName
+    };
+    ATTENDANTS.push(newAttendant);
+    console.log(`[Auth] Novo atendente registrado: ${normalizedName} (ID: ${newAttendant.id})`);
+    res.status(201).json(newAttendant);
+}));
+
+apiRouter.get('/requests', asyncHandler(async (req, res) => {
+    res.status(200).json(requestQueue);
+}));
+
+apiRouter.get('/chats/active', asyncHandler(async (req, res) => {
+    const chats = Array.from(activeChats.values()).map(session => ({
+        userId: session.userId,
+        userName: session.userName,
+        attendantId: session.attendantId,
+        lastMessage: session.messageLog[session.messageLog.length - 1] || null
+    }));
+    res.status(200).json(chats);
+}));
+
+apiRouter.get('/chats/ai-active', asyncHandler(async (req, res) => {
+    const aiChats = Array.from(userSessions.values())
+        .filter(s => s.handledBy === 'bot' && !requestQueue.some(r => r.userId === s.userId) && s.currentState !== ChatState.GREETING)
+        .map(session => ({
+            userId: session.userId,
+            userName: session.userName,
+            department: session.context?.department,
+            lastMessage: session.messageLog[session.messageLog.length - 1] || null
+        }));
+    res.status(200).json(aiChats);
+}));
+
+apiRouter.get('/clients', asyncHandler(async (req, res) => {
+    res.status(200).json(syncedContacts);
+}));
+
+apiRouter.get('/chats/history', asyncHandler(async (req, res) => {
+    const history = Array.from(archivedChats.values()).map(session => ({
+        userId: session.userId,
+        userName: session.userName,
+        attendantId: session.attendantId,
+        lastMessage: session.messageLog[session.messageLog.length - 1] || null,
+        resolvedAt: session.resolvedAt,
+        resolvedBy: session.resolvedBy
+    })).sort((a, b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
+    res.status(200).json(history);
+}));
+
+apiRouter.get('/chats/history/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const session = activeChats.get(userId) || userSessions.get(userId) || archivedChats.get(userId);
+    if (session) {
+        res.status(200).json(session);
+    } else {
+        res.status(404).send('Chat não encontrado.');
+    }
+}));
+
+apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { attendantId } = req.body;
+
+    const attendant = ATTENDANTS.find(a => a.id === attendantId);
+    if (!attendant) return res.status(404).send('Atendente não encontrado.');
+
+    let session;
+    let requestIndex = requestQueue.findIndex(r => r.userId === userId);
+
+    if (requestIndex !== -1) {
+        const request = requestQueue.splice(requestIndex, 1)[0];
+        session = getSession(userId, request.userName);
+    } else {
+        session = getSession(userId);
+    }
+    
+    if (!session) return res.status(404).send('Sessão do usuário não encontrada.');
+
     if (activeChats.has(userId)) {
-        const chat = activeChats.get(userId);
-        archivedChats.set(userId, chat);
-        activeChats.delete(userId);
-        userSessions.delete(userId); // Limpa a sessão do bot
-        notifyUpdates(chat.attendantId);
+        return res.status(409).send('Este chat já foi assumido por outro atendente.');
     }
-    res.status(200).json({ success: true });
-});
 
-// ... outras rotas como transfer, takeover ...
+    session.handledBy = 'human';
+    session.attendantId = attendantId;
+    activeChats.set(userId, session);
+    userSessions.delete(userId); // Move de sessões de bot para ativas
 
-// --- ROTAS PARA O GATEWAY ---
+    // ADAPTADO: Adiciona a mensagem de boas-vindas da lógica do usuário.
+    const takeoverMessage = `Olá! Meu nome é *${attendant.name}* e vou continuar seu atendimento.`;
+    outboundGatewayQueue.push({ userId, text: takeoverMessage });
+    session.messageLog.push({ sender: 'system', text: `Atendimento assumido por ${attendant.name}.`, timestamp: new Date().toISOString() });
+    session.messageLog.push({ sender: 'attendant', text: takeoverMessage.replace(/\*/g, ''), timestamp: new Date().toISOString() });
 
-app.post('/api/gateway/sync-contacts', (req, res) => {
+    console.log(`[Takeover] Atendente ${attendant.name} assumiu o chat com ${userId}.`);
+    res.status(200).json({ 
+        userId: session.userId, 
+        userName: session.userName, 
+        attendantId: session.attendantId 
+    });
+}));
+
+apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
+    const { userId, text, attendantId, files, replyTo } = req.body;
+    if (!userId || (!text && (!files || files.length === 0))) {
+        return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
+    }
+
+    const session = activeChats.get(userId);
+    if (!session || session.handledBy !== 'human' || session.attendantId !== attendantId) {
+        return res.status(403).send('Permissão negada para responder a este chat.');
+    }
+    
+    if (text) {
+        outboundGatewayQueue.push({ userId, text });
+    }
+    if (files && files.length > 0) {
+        files.forEach(file => {
+             outboundGatewayQueue.push({ userId, file, text: file.name });
+        });
+    }
+    
+    const fileLogs = files ? files.map(f => ({ ...f })) : [];
+    session.messageLog.push({ 
+        sender: 'attendant', 
+        text, 
+        files: fileLogs, 
+        timestamp: new Date().toISOString(),
+        replyTo
+    });
+    
+    res.status(200).send('Mensagem(ns) enfileirada(s) para envio.');
+}));
+
+apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
+    const { userId, attendantId, messageTimestamp, newText } = req.body;
+
+    if (!userId || !attendantId || !messageTimestamp || newText === undefined) {
+        return res.status(400).send('Dados insuficientes para editar a mensagem.');
+    }
+
+    const session = activeChats.get(userId);
+    if (!session) {
+        return res.status(404).send('Sessão do usuário não encontrada em chats ativos.');
+    }
+    if (session.handledBy !== 'human' || session.attendantId !== attendantId) {
+        return res.status(403).send('Permissão negada para editar mensagens neste chat.');
+    }
+
+    const messageIndex = session.messageLog.findIndex(
+        msg => msg.timestamp === messageTimestamp && msg.sender === 'attendant'
+    );
+
+    if (messageIndex > -1) {
+        session.messageLog[messageIndex].text = newText;
+        session.messageLog[messageIndex].edited = true;
+        console.log(`[Edit] Mensagem de ${attendantId} para ${userId} (timestamp: ${messageTimestamp}) foi editada.`);
+        res.status(200).send('Mensagem editada com sucesso.');
+    } else {
+        console.warn(`[Edit] Tentativa de editar mensagem não encontrada para ${userId}. Timestamp: ${messageTimestamp}`);
+        res.status(404).send('Mensagem original não encontrada para edição.');
+    }
+}));
+
+
+apiRouter.post('/chats/transfer/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { newAttendantId, transferringAttendantId } = req.body;
+
+    const session = activeChats.get(userId);
+    if (!session || session.attendantId !== transferringAttendantId) {
+        return res.status(403).send('Permissão negada para transferir este chat.');
+    }
+    const newAttendant = ATTENDANTS.find(a => a.id === newAttendantId);
+    if (!newAttendant) return res.status(404).send('Novo atendente não encontrado.');
+    
+    const oldAttendantName = ATTENDANTS.find(a => a.id === transferringAttendantId)?.name || 'Atendente anterior';
+
+    session.attendantId = newAttendantId;
+    const transferMessage = `Atendimento transferido de ${oldAttendantName} para ${newAttendant.name}.`;
+    session.messageLog.push({ sender: 'system', text: transferMessage, timestamp: new Date().toISOString() });
+    
+    outboundGatewayQueue.push({ userId, text: `Você foi transferido para o atendente ${newAttendant.name}.` });
+    
+    res.status(200).json(session);
+}));
+
+apiRouter.post('/chats/resolve/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { attendantId } = req.body;
+    const session = activeChats.get(userId) || userSessions.get(userId);
+    if (!session) return res.status(404).send('Chat não encontrado.');
+
+    const attendant = ATTENDANTS.find(a => a.id === attendantId);
+
+    session.resolvedAt = new Date().toISOString();
+    session.resolvedBy = attendant ? attendant.name : 'Sistema';
+    archiveSession(session);
+    activeChats.delete(userId);
+    userSessions.delete(userId);
+    
+    // Remove da fila, se estiver lá
+    const queueIndex = requestQueue.findIndex(r => r.userId === userId);
+    if (queueIndex > -1) requestQueue.splice(queueIndex, 1);
+    
+    outboundGatewayQueue.push({ userId, text: translations.pt.sessionEnded });
+    console.log(`[Resolve] Chat com ${userId} foi resolvido e arquivado.`);
+    res.status(200).send('Chat resolvido.');
+}));
+
+apiRouter.post('/chats/initiate', asyncHandler(async (req, res) => {
+    const { recipientNumber, attendantId, message } = req.body;
+    if (!recipientNumber || !attendantId || !message) {
+        return res.status(400).send('Dados insuficientes para iniciar o chat.');
+    }
+    // O cliente pode não estar na lista de contatos, então usamos o número diretamente.
+    const client = syncedContacts.find(c => c.userId === recipientNumber) || { userId: recipientNumber, userName: recipientNumber.split('@')[0] };
+
+    const session = getSession(client.userId, client.userName);
+    session.handledBy = 'human';
+    session.attendantId = attendantId;
+    
+    const attendantName = ATTENDANTS.find(a => a.id === attendantId)?.name || 'Atendente';
+
+    session.messageLog.push({ sender: 'system', text: `Conversa iniciada por ${attendantName}.`, timestamp: new Date().toISOString() });
+    session.messageLog.push({ sender: 'attendant', text: message, timestamp: new Date().toISOString() });
+    
+    activeChats.set(client.userId, session);
+    
+    outboundGatewayQueue.push({ userId: client.userId, text: message });
+    res.status(201).json({
+        userId: session.userId,
+        userName: session.userName,
+        attendantId: session.attendantId,
+    });
+}));
+
+// --- ROTAS DO CHAT INTERNO ---
+apiRouter.get('/internal-chats/summary/:attendantId', asyncHandler(async (req, res) => {
+    const { attendantId } = req.params;
+    const summary = {};
+    for (const [key, chat] of internalChats.entries()) {
+        const participants = key.split('--');
+        if (participants.includes(attendantId)) {
+            const partnerId = participants.find(p => p !== attendantId);
+            if (chat.length > 0) {
+                summary[partnerId] = {
+                    lastMessage: chat[chat.length - 1]
+                };
+            }
+        }
+    }
+    res.status(200).json(summary);
+}));
+
+apiRouter.get('/internal-chats/:attendant1Id/:attendant2Id', asyncHandler(async (req, res) => {
+    const { attendant1Id, attendant2Id } = req.params;
+    const key = [attendant1Id, attendant2Id].sort().join('--');
+    const chat = internalChats.get(key) || [];
+    res.status(200).json(chat);
+}));
+
+apiRouter.post('/internal-chats', asyncHandler(async (req, res) => {
+    const { senderId, recipientId, text, files, replyTo } = req.body;
+    if (!senderId || !recipientId || (!text && (!files || files.length === 0))) {
+        return res.status(400).send('Dados insuficientes para enviar mensagem interna.');
+    }
+    const key = [senderId, recipientId].sort().join('--');
+    if (!internalChats.has(key)) {
+        internalChats.set(key, []);
+    }
+    const sender = ATTENDANTS.find(a => a.id === senderId);
+    const newMessage = {
+        senderId,
+        senderName: sender?.name || 'Desconhecido',
+        text,
+        files,
+        replyTo,
+        timestamp: new Date().toISOString()
+    };
+    internalChats.get(key).push(newMessage);
+    res.status(201).send('Mensagem interna enviada.');
+}));
+
+apiRouter.post('/internal-chats/edit-message', asyncHandler(async (req, res) => {
+    const { senderId, recipientId, messageTimestamp, newText } = req.body;
+    if (!senderId || !recipientId || !messageTimestamp || newText === undefined) {
+        return res.status(400).send('Dados insuficientes para editar a mensagem.');
+    }
+    const key = [senderId, recipientId].sort().join('--');
+    const chat = internalChats.get(key);
+    if (!chat) {
+        return res.status(404).send('Chat interno não encontrado.');
+    }
+    const messageIndex = chat.findIndex(m => m.timestamp === messageTimestamp && m.senderId === senderId);
+    if (messageIndex > -1) {
+        chat[messageIndex].text = newText;
+        chat[messageIndex].edited = true;
+        res.status(200).send('Mensagem interna editada.');
+    } else {
+        res.status(404).send('Mensagem interna para editar não encontrada.');
+    }
+}));
+
+
+// --- ROTAS DO GATEWAY ---
+apiRouter.post('/gateway/sync-contacts', asyncHandler(async (req, res) => {
     const { contacts } = req.body;
     if (Array.isArray(contacts)) {
         syncedContacts = contacts;
-        console.log(`[Server] Contatos sincronizados: ${contacts.length} contatos recebidos.`);
-        res.status(200).json({ success: true, count: contacts.length });
+        console.log(`[Gateway] Contatos sincronizados: ${contacts.length} recebidos.`);
+        res.status(200).send('Contatos sincronizados.');
     } else {
-        res.status(400).json({ error: 'Formato de contatos inválido.' });
+        res.status(400).send('Formato de contatos inválido.');
     }
-});
+}));
 
-app.get('/api/gateway/poll-outbound', (req, res) => {
+apiRouter.get('/gateway/poll-outbound', asyncHandler(async (req, res) => {
     if (outboundGatewayQueue.length > 0) {
-        const messages = [...outboundGatewayQueue];
-        outboundGatewayQueue.length = 0; // Esvazia a fila
-        res.status(200).json(messages);
+        const messagesToSend = [...outboundGatewayQueue];
+        outboundGatewayQueue.length = 0; // Limpa a fila
+        res.status(200).json(messagesToSend);
     } else {
         res.status(204).send(); // No content
     }
+}));
+
+// --- ROTA DE WEBHOOK ---
+apiRouter.post('/whatsapp-webhook', (req, res) => {
+    res.status(200).json({ replies: [] });
+    processIncomingMessage(req.body).catch(err => {
+        console.error(`[FATAL] Erro não capturado no processamento de fundo do webhook para o usuário ${req.body?.userId}:`, err);
+    });
 });
 
-app.post('/api/gateway/ack-message', (req, res) => {
-    const { tempId, messageId, userId } = req.body;
-    if (activeChats.has(userId)) {
-        const chat = activeChats.get(userId);
-        const message = chat.messageLog.find(m => m.tempId === tempId);
-        if (message) {
-            delete message.tempId;
-            message.id = messageId;
-            notifyUpdates(chat.attendantId);
+
+app.use('/api', apiRouter);
+console.log('[Server Setup] Rotas da API registradas em /api');
+
+// --- VERIFICAÇÃO DE BUILD E SERVIR ARQUIVOS ESTÁTICOS ---
+const staticFilesPath = path.resolve(__dirname, 'dist');
+const indexPath = path.join(staticFilesPath, 'index.html');
+
+if (!fs.existsSync(indexPath)) {
+  console.error('[FATAL STARTUP ERROR] O arquivo principal do frontend (dist/index.html) não foi encontrado.');
+  console.error('Isso geralmente significa que o comando `npm run build` (ou `vite build`) falhou.');
+  console.error('Verifique os logs de build para encontrar o erro e corrija-o antes de tentar o deploy novamente.');
+  process.exit(1); // Encerra o processo com um código de erro.
+}
+
+app.use(express.static(staticFilesPath));
+console.log(`[Server Setup] Servindo arquivos estáticos de: ${staticFilesPath}`);
+
+// --- ROTA "CATCH-ALL" PARA SPA (Single Page Application) ---
+app.get('*', (req, res) => {
+    if (!req.originalUrl.startsWith('/api')) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(404).send('Rota de API não encontrada.');
+    }
+});
+
+
+// --- ERROR HANDLING E INICIALIZAÇÃO DO SERVIDOR ---
+app.use((err, req, res, next) => {
+  console.error("[FATAL ERROR HANDLER] Erro não tratado na rota:", {
+      path: req.path,
+      method: req.method,
+      error: err.message,
+      stack: err.stack,
+  });
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ error: 'Algo deu terrivelmente errado no servidor!' });
+});
+
+// --- VERIFICADOR DE TIMEOUT DA FILA DE ATENDIMENTO ---
+const checkRequestQueueTimeout = () => {
+    const now = new Date();
+    const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
+
+    for (let i = requestQueue.length - 1; i >= 0; i--) {
+        const request = requestQueue[i];
+        const requestAge = now - new Date(request.timestamp);
+
+        if (requestAge > TIMEOUT_MS) {
+            console.log(`[Timeout] A solicitação de ${request.userName} (${request.userId}) expirou.`);
+            
+            requestQueue.splice(i, 1); // Remove da fila
+
+            const session = userSessions.get(request.userId);
+            if (session) {
+                // Notifica o usuário e reseta o estado dele
+                const timeoutMessage = "Nossos atendentes parecem estar ocupados no momento. Enquanto você aguarda, você pode tentar falar com nosso assistente virtual ou escolher uma das opções abaixo novamente.";
+                outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
+                
+                // Reseta a sessão e envia o menu de boas-vindas
+                session.currentState = ChatState.GREETING;
+                session.context = { history: {} };
+                const greetingStep = conversationFlow.get(ChatState.GREETING);
+                const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
+                outboundGatewayQueue.push({ userId: request.userId, text: formattedReply });
+            }
         }
     }
-    res.status(200).send();
-});
+};
 
+// Inicia o verificador de timeout
+setInterval(checkRequestQueueTimeout, 30 * 1000); 
+console.log('[Server Setup] Verificador de timeout da fila de atendimento iniciado.');
 
-// --- WEBHOOK PRINCIPAL DO WHATSAPP ---
-app.post('/api/whatsapp-webhook', async (req, res) => {
-    // A lógica de processamento de mensagens do webhook vai aqui...
-    // Esta é uma implementação simplificada para garantir que a rota exista.
-    const { userId, userName, userInput, file } = req.body;
-
-    console.log(`[Webhook] Mensagem recebida de ${userName} (${userId})`);
-
-    if (!activeChats.has(userId)) {
-        activeChats.set(userId, {
-            userId,
-            userName,
-            messageLog: [],
-            lastUpdate: Date.now(),
-            handledBy: 'bot', // Começa com o bot
-            attendantId: null,
-        });
-    }
-
-    const message = {
-        sender: 'user',
-        text: userInput,
-        timestamp: Date.now(),
-        files: file ? [file] : [],
-    };
-    addMessageToLog(userId, message);
-
-    // Simula uma resposta do bot para teste
-    const botReply = {
-        sender: 'bot',
-        text: `Recebi sua mensagem: "${userInput}". O bot está em desenvolvimento.`,
-        timestamp: Date.now(),
-        files: [],
-    };
-    addMessageToLog(userId, botReply);
-
-    res.status(200).json({ replies: [] }); // Responde sem enviar nada de volta pelo webhook
-});
-
-
-// --- SERVIR ARQUIVOS ESTÁTICOS DO FRONTEND (VITE BUILD) ---
-// Essencial para o deploy em produção.
-
-// 1. Define o caminho para a pasta 'dist' onde os arquivos do build estão.
-const staticFilesPath = path.join(__dirname, 'dist');
-
-// 2. Usa o middleware do Express para servir os arquivos estáticos (JS, CSS, imagens).
-app.use(express.static(staticFilesPath));
-
-// 3. Rota "catch-all" para Single Page Applications (SPA).
-// Qualquer requisição que não corresponda a uma API ou a um arquivo estático,
-// serve o 'index.html' principal. Isso permite que o roteamento do React funcione.
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
-
-
-// --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(port, () => {
-  console.log(`[JZF Chatbot Server] Servidor rodando na porta ${port}`);
-  console.log(`[JZF Chatbot Server] Aponte o Gateway para: http://localhost:${port}`);
+    console.log(`[JZF Chatbot Server] Servidor escutando na porta ${port}.`);
+    console.log('[JZF Chatbot Server] Servidor ONLINE e pronto para receber requisições.');
 });
