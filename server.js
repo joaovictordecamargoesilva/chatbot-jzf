@@ -5,6 +5,7 @@ import express from 'express';
 // @google/genai-ts FIX: Use the correct class name as per the new SDK guidelines.
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import {
   ChatState,
@@ -35,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "17.0.0_EDIT_FIX";
+const SERVER_VERSION = "17.0.1_STABILITY_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -336,6 +337,12 @@ const asyncHandler = (fn) => (req, res, next) =>
 
 
 // --- ROTAS DO PAINEL DE ATENDIMENTO ---
+
+// Rota de Health Check - essencial para plataformas de deploy
+apiRouter.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
 apiRouter.get('/attendants', asyncHandler(async (req, res) => {
     res.status(200).json(ATTENDANTS);
 }));
@@ -679,16 +686,24 @@ apiRouter.post('/whatsapp-webhook', (req, res) => {
 app.use('/api', apiRouter);
 console.log('[Server Setup] Rotas da API registradas em /api');
 
-// --- SERVINDO ARQUIVOS ESTÁTICOS DA BUILD DE PRODUÇÃO ---
+// --- VERIFICAÇÃO DE BUILD E SERVIR ARQUIVOS ESTÁTICOS ---
 const staticFilesPath = path.resolve(__dirname, 'dist');
+const indexPath = path.join(staticFilesPath, 'index.html');
+
+if (!fs.existsSync(indexPath)) {
+  console.error('[FATAL STARTUP ERROR] O arquivo principal do frontend (dist/index.html) não foi encontrado.');
+  console.error('Isso geralmente significa que o comando `npm run build` (ou `vite build`) falhou.');
+  console.error('Verifique os logs de build para encontrar o erro e corrija-o antes de tentar o deploy novamente.');
+  process.exit(1); // Encerra o processo com um código de erro.
+}
+
 app.use(express.static(staticFilesPath));
 console.log(`[Server Setup] Servindo arquivos estáticos de: ${staticFilesPath}`);
 
 // --- ROTA "CATCH-ALL" PARA SPA (Single Page Application) ---
 app.get('*', (req, res) => {
     if (!req.originalUrl.startsWith('/api')) {
-        console.log(`[Catch-all] Rota não correspondida para ${req.path}. Servindo SPA fallback.`);
-        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+        res.sendFile(indexPath);
     } else {
         res.status(404).send('Rota de API não encontrada.');
     }
