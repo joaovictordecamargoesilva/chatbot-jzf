@@ -10,6 +10,7 @@
     "dev:backend": "node server.js",
     "dev:ui": "vite",
     "gateway": "node whatsapp-gateway.js",
+    "gateway:prod": "node whatsapp-gateway.js",
     "dev": "concurrently \"npm:dev:*\" \"npm:gateway\"",
     "postinstall": "npm run build"
   },
