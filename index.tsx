@@ -42,6 +42,7 @@ const ImageEditorModal = ({ file, onSave, onCancel }) => {
         
         const imageUrl = `data:${file.type};base64,${file.data}`;
 
+        // FIX: Moved the 'locale' object to be a top-level property of the ImageEditor options, as it does not belong inside 'includeUI'.
         editorInstance.current = new ImageEditor(editorRef.current, {
             includeUI: {
                 loadImage: {
@@ -55,20 +56,20 @@ const ImageEditorModal = ({ file, onSave, onCancel }) => {
                     height: '100%',
                 },
                 menuBarPosition: 'bottom',
-                locale: {
-                    'Crop': 'Recortar',
-                    'Draw': 'Desenhar',
-                    'Text': 'Texto',
-                    'Apply': 'Aplicar',
-                    'Cancel': 'Cancelar',
-                    'Rectangle': 'Retângulo',
-                    'Triangle': 'Triângulo',
-                    'Circle': 'Círculo',
-                    'Free': 'Livre',
-                    'Straight': 'Reta',
-                    'Color': 'Cor',
-                    'Range': 'Tamanho',
-                }
+            },
+            locale: {
+                'Crop': 'Recortar',
+                'Draw': 'Desenhar',
+                'Text': 'Texto',
+                'Apply': 'Aplicar',
+                'Cancel': 'Cancelar',
+                'Rectangle': 'Retângulo',
+                'Triangle': 'Triângulo',
+                'Circle': 'Círculo',
+                'Free': 'Livre',
+                'Straight': 'Reta',
+                'Color': 'Cor',
+                'Range': 'Tamanho',
             },
             cssMaxWidth: document.documentElement.clientWidth * 0.9,
             cssMaxHeight: document.documentElement.clientHeight * 0.8,
@@ -508,7 +509,7 @@ const ChatPanel = ({
                   <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" multiple />
                   <button 
                     onClick={() => fileInputRef.current.click()}
-                    className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="p-2 text-gray-500 hover:text-blue-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 flex-shrink-0"
                     aria-label="Anexar arquivo"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -1020,7 +1021,8 @@ function App() {
   };
   
     // --- LÓGICA DE SELEÇÃO DE ARQUIVO ROBUSTA ---
-    const readFileAsBase64 = (file) => {
+    // FIX: Added type annotation for the 'file' parameter and return type for improved type safety.
+    const readFileAsBase64 = (file: File): Promise<{name: string, type: string, data: string}> => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = e => {
@@ -1036,7 +1038,8 @@ function App() {
         });
     };
 
-    const handleFileSelect = async (event) => {
+    // FIX: Add type annotation for the 'event' parameter to resolve errors where TypeScript could not infer the type of 'file' and its properties like 'size' and 'name'.
+    const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (!files || files.length === 0) return;
 
@@ -1068,7 +1071,8 @@ function App() {
         }
     };
     
-    const handleInternalFileSelect = async (event) => {
+    // FIX: Add type annotation for the 'event' parameter to resolve errors where TypeScript could not infer the type of 'file' and its properties like 'size' and 'name'.
+    const handleInternalFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (!files || files.length === 0) return;
         
@@ -1401,7 +1405,7 @@ function App() {
                             )}
                             <div className="flex items-center bg-white rounded-full shadow-sm px-2">
                                  <input type="file" ref={internalFileInputRef} onChange={handleInternalFileSelect} className="hidden" multiple />
-                                  <button onClick={() => internalFileInputRef.current.click()} className="p-2 text-gray-500 hover:text-blue-600 rounded-full" aria-label="Anexar arquivo"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg></button>
+                                  <button onClick={() => internalFileInputRef.current.click()} className="p-2 text-gray-500 hover:text-blue-600 rounded-full flex-shrink-0" aria-label="Anexar arquivo"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg></button>
                                 <input ref={internalMessageInputRef} type="text" value={internalMessage} onChange={e => setInternalMessage(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleSendInternalMessage()} placeholder={`Mensagem para ${internalChatPartner.name}...`} className="w-full p-2 bg-transparent focus:outline-none" />
                                 <button onClick={handleSendInternalMessage} disabled={!internalMessage.trim() && internalSelectedFiles.length === 0} className="p-2 text-blue-600 rounded-full disabled:text-gray-400"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg></button>
                             </div>
