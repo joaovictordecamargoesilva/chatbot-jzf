@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "18.0.0_USER_LOGIC_MERGE";
+const SERVER_VERSION = "18.1.0_MESSAGE_EDIT";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -508,25 +508,45 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     if (!session || session.handledBy !== 'human' || session.attendantId !== attendantId) {
         return res.status(403).send('Permissão negada para responder a este chat.');
     }
-    
+
+    const timestamp = new Date().toISOString();
+    const fileLogs = files ? files.map(f => ({ ...f })) : [];
+
+    const newMessage = {
+        sender: 'attendant',
+        text,
+        files: fileLogs,
+        timestamp,
+        replyTo,
+        tempId: null, // Será definido se for uma mensagem de texto editável
+    };
+
+    // Lógica: Se houver texto, ele é enviado como uma mensagem separada e rastreável.
     if (text) {
-        outboundGatewayQueue.push({ userId, text });
-    }
-    if (files && files.length > 0) {
-        files.forEach(file => {
-             outboundGatewayQueue.push({ userId, file, text: file.name });
+        const tempId = `temp_${timestamp}`;
+        newMessage.tempId = tempId; // Associa tempId à mensagem registrada
+        outboundGatewayQueue.push({
+            type: 'send',
+            tempId,
+            userId,
+            text,
         });
     }
-    
-    const fileLogs = files ? files.map(f => ({ ...f })) : [];
-    session.messageLog.push({ 
-        sender: 'attendant', 
-        text, 
-        files: fileLogs, 
-        timestamp: new Date().toISOString(),
-        replyTo
-    });
-    
+
+    if (files && files.length > 0) {
+        files.forEach(file => {
+            outboundGatewayQueue.push({
+                type: 'send',
+                tempId: null, // Arquivos não são rastreados para edição por enquanto
+                userId,
+                file,
+                text: file.name
+            });
+        });
+    }
+
+    session.messageLog.push(newMessage);
+
     res.status(200).send('Mensagem(ns) enfileirada(s) para envio.');
 }));
 
@@ -550,10 +570,26 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     );
 
     if (messageIndex > -1) {
-        session.messageLog[messageIndex].text = newText;
-        session.messageLog[messageIndex].edited = true;
-        console.log(`[Edit] Mensagem de ${attendantId} para ${userId} (timestamp: ${messageTimestamp}) foi editada.`);
-        res.status(200).send('Mensagem editada com sucesso.');
+        const messageToEdit = session.messageLog[messageIndex];
+        
+        // Atualização local para uma UI responsiva
+        messageToEdit.text = newText;
+        messageToEdit.edited = true;
+        
+        // Se temos o ID do WhatsApp, enfileiramos um comando de edição para o gateway
+        if (messageToEdit.whatsappId) {
+            outboundGatewayQueue.push({
+                type: 'edit',
+                userId,
+                messageId: messageToEdit.whatsappId,
+                newText,
+            });
+            console.log(`[Edit] Comando de edição enfileirado para a mensagem ${messageToEdit.whatsappId} do usuário ${userId}.`);
+            res.status(200).send('Mensagem editada e atualização enfileirada.');
+        } else {
+            console.warn(`[Edit] Mensagem para ${userId} (timestamp: ${messageTimestamp}) editada localmente, mas não foi encontrado whatsappId. Pode ainda não ter sido enviada ou a confirmação falhou.`);
+            res.status(200).send('Mensagem editada localmente (pode não ter sido enviada ainda).');
+        }
     } else {
         console.warn(`[Edit] Tentativa de editar mensagem não encontrada para ${userId}. Timestamp: ${messageTimestamp}`);
         res.status(404).send('Mensagem original não encontrada para edição.');
@@ -702,6 +738,26 @@ apiRouter.post('/internal-chats/edit-message', asyncHandler(async (req, res) => 
 
 
 // --- ROTAS DO GATEWAY ---
+apiRouter.post('/gateway/ack-message', asyncHandler(async (req, res) => {
+    const { tempId, messageId, userId } = req.body;
+    if (!tempId || !messageId || !userId) {
+        return res.sendStatus(400);
+    }
+    
+    const session = activeChats.get(userId);
+    if (session) {
+        // Encontra a mensagem pelo tempId e adiciona o whatsappId real
+        for (let i = session.messageLog.length - 1; i >= 0; i--) {
+            if (session.messageLog[i].tempId === tempId) {
+                session.messageLog[i].whatsappId = messageId;
+                console.log(`[ACK] Mensagem confirmada para ${userId}. ID Temporário ${tempId} mapeado para ID do WhatsApp ${messageId}`);
+                break;
+            }
+        }
+    }
+    res.sendStatus(200);
+}));
+
 apiRouter.post('/gateway/sync-contacts', asyncHandler(async (req, res) => {
     const { contacts } = req.body;
     if (Array.isArray(contacts)) {
