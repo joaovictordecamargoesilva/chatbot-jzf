@@ -500,7 +500,11 @@ apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
 
 apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     const { userId, text, attendantId, files, replyTo } = req.body;
-    if (!userId || (!text && (!files || files.length === 0))) {
+
+    // Garante que 'files' seja um array para prevenir crashes.
+    const filesArray = Array.isArray(files) ? files : [];
+
+    if (!userId || (!text && filesArray.length === 0)) {
         return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
 
@@ -510,7 +514,7 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     }
 
     const timestamp = new Date().toISOString();
-    const fileLogs = files ? files.map(f => ({ ...f })) : [];
+    const fileLogs = filesArray.map(f => ({ ...f }));
 
     const newMessage = {
         sender: 'attendant',
@@ -533,8 +537,8 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
         });
     }
 
-    if (files && files.length > 0) {
-        files.forEach(file => {
+    if (filesArray.length > 0) {
+        filesArray.forEach(file => {
             outboundGatewayQueue.push({
                 type: 'send',
                 tempId: null, // Arquivos não são rastreados para edição por enquanto
@@ -549,6 +553,7 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
 
     res.status(200).send('Mensagem(ns) enfileirada(s) para envio.');
 }));
+
 
 apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     const { userId, attendantId, messageTimestamp, newText } = req.body;
