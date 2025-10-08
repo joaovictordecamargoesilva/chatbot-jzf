@@ -501,7 +501,7 @@ apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
 
 apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     const { userId, text, attendantId, files, replyTo } = req.body;
-    if (!userId || (!text && (!files || files.length === 0))) {
+    if (!userId || (!text && (!Array.isArray(files) || files.length === 0))) {
         return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
 
@@ -534,7 +534,7 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
         });
     }
 
-    if (files && files.length > 0) {
+    if (Array.isArray(files) && files.length > 0) {
         files.forEach(file => {
             outboundGatewayQueue.push({
                 type: 'send',
