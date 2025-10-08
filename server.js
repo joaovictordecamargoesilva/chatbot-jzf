@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "18.3.0_STABLE_COMPLETE";
+const SERVER_VERSION = "18.2.0_MESSAGE_EDIT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -63,6 +63,7 @@ const outboundGatewayQueue = [];
 const internalChats = new Map();
 let syncedContacts = [];
 let nextRequestId = 1;
+const pendingEdits = new Map(); // NOVO: Armazena edições que aguardam confirmação de envio
 
 
 // --- MIDDLEWARE DE LOG GLOBAL ---
@@ -500,13 +501,8 @@ apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
 
 apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     const { userId, text, attendantId, files, replyTo } = req.body;
-
-    // Validação robusta para prevenir crashes no servidor.
-    const isValidFile = (f) => f && typeof f === 'object' && f.name && f.type && f.data;
-    const validFiles = Array.isArray(files) ? files.filter(isValidFile) : [];
-
-    if (!userId || (!text && validFiles.length === 0)) {
-        return res.status(400).send('userId e um texto ou arquivos válidos são obrigatórios.');
+    if (!userId || (!text && (!files || files.length === 0))) {
+        return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
 
     const session = activeChats.get(userId);
@@ -515,7 +511,7 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     }
 
     const timestamp = new Date().toISOString();
-    const fileLogs = validFiles.map(f => ({ ...f }));
+    const fileLogs = files ? files.map(f => ({ ...f })) : [];
 
     const newMessage = {
         sender: 'attendant',
@@ -538,8 +534,8 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
         });
     }
 
-    if (validFiles.length > 0) {
-        validFiles.forEach(file => {
+    if (files && files.length > 0) {
+        files.forEach(file => {
             outboundGatewayQueue.push({
                 type: 'send',
                 tempId: null, // Arquivos não são rastreados para edição por enquanto
@@ -555,7 +551,6 @@ apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
     res.status(200).send('Mensagem(ns) enfileirada(s) para envio.');
 }));
 
-
 apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     const { userId, attendantId, messageTimestamp, newText } = req.body;
 
@@ -564,10 +559,7 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     }
 
     const session = activeChats.get(userId);
-    if (!session) {
-        return res.status(404).send('Sessão do usuário não encontrada em chats ativos.');
-    }
-    if (session.handledBy !== 'human' || session.attendantId !== attendantId) {
+    if (!session || session.handledBy !== 'human' || session.attendantId !== attendantId) {
         return res.status(403).send('Permissão negada para editar mensagens neste chat.');
     }
 
@@ -578,11 +570,10 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     if (messageIndex > -1) {
         const messageToEdit = session.messageLog[messageIndex];
         
-        // Atualização local para uma UI responsiva
+        const originalText = messageToEdit.text;
         messageToEdit.text = newText;
         messageToEdit.edited = true;
         
-        // Se temos o ID do WhatsApp, enfileiramos um comando de edição para o gateway
         if (messageToEdit.whatsappId) {
             outboundGatewayQueue.push({
                 type: 'edit',
@@ -590,15 +581,25 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
                 messageId: messageToEdit.whatsappId,
                 newText,
             });
-            console.log(`[Edit] Comando de edição enfileirado para a mensagem ${messageToEdit.whatsappId} do usuário ${userId}.`);
-            res.status(200).send('Mensagem editada e atualização enfileirada.');
+            console.log(`[Edit] Comando de edição enfileirado para a mensagem ${messageToEdit.whatsappId}.`);
+            return res.status(200).send('Comando de edição enfileirado.');
+        } else if (messageToEdit.tempId) {
+            pendingEdits.set(messageToEdit.tempId, {
+                newText,
+                userId,
+                timestamp: Date.now()
+            });
+            console.log(`[Edit] Edição para TempID ${messageToEdit.tempId} está pendente de confirmação de envio.`);
+            return res.status(202).send('Edição pendente da confirmação de envio.');
         } else {
-            console.warn(`[Edit] Mensagem para ${userId} (timestamp: ${messageTimestamp}) editada localmente, mas não foi encontrado whatsappId. Pode ainda não ter sido enviada ou a confirmação falhou.`);
-            res.status(200).send('Mensagem editada localmente (pode não ter sido enviada ainda).');
+            messageToEdit.text = originalText;
+            messageToEdit.edited = false;
+            console.warn(`[Edit] Tentativa de editar mensagem sem ID (temp ou wpp) para ${userId}. Timestamp: ${messageTimestamp}`);
+            return res.status(409).send('Não é possível editar esta mensagem pois seu ID de envio não foi encontrado.');
         }
     } else {
         console.warn(`[Edit] Tentativa de editar mensagem não encontrada para ${userId}. Timestamp: ${messageTimestamp}`);
-        res.status(404).send('Mensagem original não encontrada para edição.');
+        return res.status(404).send('Mensagem original não encontrada para edição.');
     }
 }));
 
@@ -609,79 +610,65 @@ apiRouter.post('/chats/transfer/:userId', asyncHandler(async (req, res) => {
 
     const session = activeChats.get(userId);
     if (!session || session.attendantId !== transferringAttendantId) {
-        return res.status(403).send('Permissão negada ou chat não encontrado.');
+        return res.status(403).send('Permissão negada para transferir este chat.');
     }
     const newAttendant = ATTENDANTS.find(a => a.id === newAttendantId);
-    if (!newAttendant) return res.status(404).send('Atendente de destino não encontrado.');
-    const oldAttendant = ATTENDANTS.find(a => a.id === transferringAttendantId);
+    if (!newAttendant) return res.status(404).send('Novo atendente não encontrado.');
+    
+    const oldAttendantName = ATTENDANTS.find(a => a.id === transferringAttendantId)?.name || 'Atendente anterior';
 
     session.attendantId = newAttendantId;
-    
-    const transferMessage = `Atendimento transferido de ${oldAttendant?.name || 'atendente anterior'} para ${newAttendant.name}.`;
+    const transferMessage = `Atendimento transferido de ${oldAttendantName} para ${newAttendant.name}.`;
     session.messageLog.push({ sender: 'system', text: transferMessage, timestamp: new Date().toISOString() });
     
-    // Notifica o cliente
-    outboundGatewayQueue.push({ userId, text: `Você foi transferido(a) para o atendente *${newAttendant.name}*.` });
-
-    console.log(`[Transfer] Chat ${userId} transferido de ${oldAttendant?.name} para ${newAttendant.name}.`);
-    res.status(200).send('Transferência realizada com sucesso.');
+    outboundGatewayQueue.push({ userId, text: `Você foi transferido para o atendente ${newAttendant.name}.` });
+    
+    res.status(200).json(session);
 }));
 
 apiRouter.post('/chats/resolve/:userId', asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { attendantId } = req.body;
-    
     const session = activeChats.get(userId) || userSessions.get(userId);
     if (!session) return res.status(404).send('Chat não encontrado.');
 
     const attendant = ATTENDANTS.find(a => a.id === attendantId);
-    if (!attendant && session.handledBy === 'human') return res.status(404).send('Atendente não encontrado.');
 
-    session.resolvedBy = attendant ? attendant.name : 'Sistema';
     session.resolvedAt = new Date().toISOString();
-    
+    session.resolvedBy = attendant ? attendant.name : 'Sistema';
     archiveSession(session);
     activeChats.delete(userId);
     userSessions.delete(userId);
     
-    const requestIndex = requestQueue.findIndex(r => r.userId === userId);
-    if (requestIndex > -1) requestQueue.splice(requestIndex, 1);
-
-    // Envia mensagem de finalização para o cliente
+    // Remove da fila, se estiver lá
+    const queueIndex = requestQueue.findIndex(r => r.userId === userId);
+    if (queueIndex > -1) requestQueue.splice(queueIndex, 1);
+    
     outboundGatewayQueue.push({ userId, text: translations.pt.sessionEnded });
-
-    console.log(`[Resolve] Chat com ${userId} resolvido por ${session.resolvedBy}.`);
-    res.status(200).send('Chat resolvido com sucesso.');
+    console.log(`[Resolve] Chat com ${userId} foi resolvido e arquivado.`);
+    res.status(200).send('Chat resolvido.');
 }));
 
 apiRouter.post('/chats/initiate', asyncHandler(async (req, res) => {
-    const { recipientNumber, message, attendantId } = req.body;
-
-    if (!recipientNumber || !message || !attendantId) {
-        return res.status(400).send('Dados insuficientes para iniciar a conversa.');
+    const { recipientNumber, attendantId, message } = req.body;
+    if (!recipientNumber || !attendantId || !message) {
+        return res.status(400).send('Dados insuficientes para iniciar o chat.');
     }
-    
-    const attendant = ATTENDANTS.find(a => a.id === attendantId);
-    if (!attendant) return res.status(404).send('Atendente não encontrado.');
+    // O cliente pode não estar na lista de contatos, então usamos o número diretamente.
+    const client = syncedContacts.find(c => c.userId === recipientNumber) || { userId: recipientNumber, userName: recipientNumber.split('@')[0] };
 
-    if (activeChats.has(recipientNumber) || requestQueue.some(r => r.userId === recipientNumber)) {
-        return res.status(409).send('Já existe uma conversa ativa ou na fila com este número.');
-    }
-
-    const userName = syncedContacts.find(c => c.userId === recipientNumber)?.userName || recipientNumber.split('@')[0];
-    const session = getSession(recipientNumber, userName);
+    const session = getSession(client.userId, client.userName);
     session.handledBy = 'human';
     session.attendantId = attendantId;
     
-    const initMessage = { sender: 'attendant', text: message, timestamp: new Date().toISOString() };
-    session.messageLog.push(initMessage);
-    
-    activeChats.set(recipientNumber, session);
-    userSessions.delete(recipientNumber);
+    const attendantName = ATTENDANTS.find(a => a.id === attendantId)?.name || 'Atendente';
 
-    outboundGatewayQueue.push({ userId: recipientNumber, text: message });
-    console.log(`[Initiate] Atendente ${attendant.name} iniciou chat com ${recipientNumber}.`);
+    session.messageLog.push({ sender: 'system', text: `Conversa iniciada por ${attendantName}.`, timestamp: new Date().toISOString() });
+    session.messageLog.push({ sender: 'attendant', text: message, timestamp: new Date().toISOString() });
     
+    activeChats.set(client.userId, session);
+    
+    outboundGatewayQueue.push({ userId: client.userId, text: message });
     res.status(201).json({
         userId: session.userId,
         userName: session.userName,
@@ -689,166 +676,213 @@ apiRouter.post('/chats/initiate', asyncHandler(async (req, res) => {
     });
 }));
 
-// --- ROTAS DE CHAT INTERNO ---
+// --- ROTAS DO CHAT INTERNO ---
 apiRouter.get('/internal-chats/summary/:attendantId', asyncHandler(async (req, res) => {
     const { attendantId } = req.params;
     const summary = {};
-
-    internalChats.forEach((messages, chatKey) => {
-        if (chatKey.includes(attendantId)) {
-            const partnerId = chatKey.split('-').find(id => id !== attendantId);
-            if (partnerId && messages.length > 0) {
+    for (const [key, chat] of internalChats.entries()) {
+        const participants = key.split('--');
+        if (participants.includes(attendantId)) {
+            const partnerId = participants.find(p => p !== attendantId);
+            if (chat.length > 0) {
                 summary[partnerId] = {
-                    lastMessage: messages[messages.length - 1]
+                    lastMessage: chat[chat.length - 1]
                 };
             }
         }
-    });
+    }
     res.status(200).json(summary);
 }));
 
-apiRouter.get('/internal-chats/:senderId/:recipientId', asyncHandler(async (req, res) => {
-    const { senderId, recipientId } = req.params;
-    const chatKey1 = `${senderId}-${recipientId}`;
-    const chatKey2 = `${recipientId}-${senderId}`;
-    const messages = internalChats.get(chatKey1) || internalChats.get(chatKey2) || [];
-    res.status(200).json(messages);
+apiRouter.get('/internal-chats/:attendant1Id/:attendant2Id', asyncHandler(async (req, res) => {
+    const { attendant1Id, attendant2Id } = req.params;
+    const key = [attendant1Id, attendant2Id].sort().join('--');
+    const chat = internalChats.get(key) || [];
+    res.status(200).json(chat);
 }));
 
 apiRouter.post('/internal-chats', asyncHandler(async (req, res) => {
     const { senderId, recipientId, text, files, replyTo } = req.body;
-    
-    // FIX: Added robust validation for files to prevent crashes from malformed data.
-    const isValidFile = (f) => f && typeof f === 'object' && f.name && f.type && f.data;
-    const validFiles = Array.isArray(files) ? files.filter(isValidFile) : [];
-
-    if (!senderId || !recipientId || (!text && validFiles.length === 0)) {
-        return res.status(400).send('Dados da mensagem interna inválidos.');
+    if (!senderId || !recipientId || (!text && (!files || files.length === 0))) {
+        return res.status(400).send('Dados insuficientes para enviar mensagem interna.');
     }
-
-    const chatKey1 = `${senderId}-${recipientId}`;
-    const chatKey2 = `${recipientId}-${senderId}`;
-    const chatKey = internalChats.has(chatKey1) ? chatKey1 : chatKey2;
-    
-    if (!internalChats.has(chatKey)) {
-        internalChats.set(chatKey, []);
+    const key = [senderId, recipientId].sort().join('--');
+    if (!internalChats.has(key)) {
+        internalChats.set(key, []);
     }
-    
     const sender = ATTENDANTS.find(a => a.id === senderId);
     const newMessage = {
         senderId,
-        senderName: sender ? sender.name : 'Desconhecido',
+        senderName: sender?.name || 'Desconhecido',
         text,
-        files: validFiles,
+        files,
         replyTo,
-        timestamp: new Date().toISOString(),
+        timestamp: new Date().toISOString()
     };
-    internalChats.get(chatKey).push(newMessage);
+    internalChats.get(key).push(newMessage);
     res.status(201).send('Mensagem interna enviada.');
 }));
 
 apiRouter.post('/internal-chats/edit-message', asyncHandler(async (req, res) => {
     const { senderId, recipientId, messageTimestamp, newText } = req.body;
     if (!senderId || !recipientId || !messageTimestamp || newText === undefined) {
-        return res.status(400).send('Dados insuficientes para editar a mensagem interna.');
+        return res.status(400).send('Dados insuficientes para editar a mensagem.');
     }
-    
-    const chatKey1 = `${senderId}-${recipientId}`;
-    const chatKey2 = `${recipientId}-${senderId}`;
-    const chatKey = internalChats.has(chatKey1) ? chatKey1 : chatKey2;
-    
-    const messages = internalChats.get(chatKey);
-    if (!messages) {
+    const key = [senderId, recipientId].sort().join('--');
+    const chat = internalChats.get(key);
+    if (!chat) {
         return res.status(404).send('Chat interno não encontrado.');
     }
-    
-    const message = messages.find(m => m.timestamp === messageTimestamp && m.senderId === senderId);
-    if (message) {
-        message.text = newText;
-        message.edited = true;
+    const messageIndex = chat.findIndex(m => m.timestamp === messageTimestamp && m.senderId === senderId);
+    if (messageIndex > -1) {
+        chat[messageIndex].text = newText;
+        chat[messageIndex].edited = true;
         res.status(200).send('Mensagem interna editada.');
     } else {
-        res.status(404).send('Mensagem interna original não encontrada.');
+        res.status(404).send('Mensagem interna para editar não encontrada.');
     }
 }));
 
 
 // --- ROTAS DO GATEWAY ---
-apiRouter.post('/whatsapp-webhook', asyncHandler(async (req, res) => {
-    // A lógica de processamento agora é assíncrona e não bloqueia a resposta.
-    processIncomingMessage(req.body).catch(err => {
-        console.error('[FATAL] Erro não tratado no processamento de mensagem em segundo plano:', err);
-    });
-    // Responde imediatamente para o gateway não dar timeout
-    res.status(200).json({ status: "received" });
-}));
-
-
-apiRouter.get('/gateway/poll-outbound', asyncHandler(async (req, res) => {
-    if (outboundGatewayQueue.length > 0) {
-        res.status(200).json(outboundGatewayQueue.splice(0)); // Envia e limpa a fila
-    } else {
-        res.status(204).send(); // No Content
-    }
-}));
-
-
 apiRouter.post('/gateway/ack-message', asyncHandler(async (req, res) => {
     const { tempId, messageId, userId } = req.body;
     if (!tempId || !messageId || !userId) {
-        return res.status(400).send('Dados de confirmação incompletos.');
+        return res.sendStatus(400);
     }
+    
     const session = activeChats.get(userId);
     if (session) {
-        const message = session.messageLog.find(msg => msg.tempId === tempId);
-        if (message) {
-            message.whatsappId = messageId;
-            delete message.tempId;
-            console.log(`[ACK] Mensagem para ${userId} confirmada com ID do WhatsApp: ${messageId}`);
+        for (let i = session.messageLog.length - 1; i >= 0; i--) {
+            if (session.messageLog[i].tempId === tempId) {
+                session.messageLog[i].whatsappId = messageId;
+                console.log(`[ACK] Mensagem confirmada para ${userId}. TempID ${tempId} -> WppID ${messageId}`);
+                
+                if (pendingEdits.has(tempId)) {
+                    const edit = pendingEdits.get(tempId);
+                    outboundGatewayQueue.push({
+                        type: 'edit',
+                        userId: edit.userId,
+                        messageId: messageId,
+                        newText: edit.newText,
+                    });
+                    console.log(`[ACK] Executando edição pendente para TempID ${tempId}`);
+                    pendingEdits.delete(tempId);
+                }
+                break;
+            }
         }
     }
-    res.status(200).send('OK');
+    res.sendStatus(200);
 }));
 
 apiRouter.post('/gateway/sync-contacts', asyncHandler(async (req, res) => {
     const { contacts } = req.body;
     if (Array.isArray(contacts)) {
         syncedContacts = contacts;
-        console.log(`[Sync] Lista de contatos atualizada com ${contacts.length} contatos.`);
+        console.log(`[Gateway] Contatos sincronizados: ${contacts.length} recebidos.`);
         res.status(200).send('Contatos sincronizados.');
     } else {
         res.status(400).send('Formato de contatos inválido.');
     }
 }));
 
-// --- REGISTRO DO ROTEADOR DA API ---
-app.use('/api', apiRouter);
+apiRouter.get('/gateway/poll-outbound', asyncHandler(async (req, res) => {
+    if (outboundGatewayQueue.length > 0) {
+        const messagesToSend = [...outboundGatewayQueue];
+        outboundGatewayQueue.length = 0; // Limpa a fila
+        res.status(200).json(messagesToSend);
+    } else {
+        res.status(204).send(); // No content
+    }
+}));
 
-// --- SERVINDO ARQUIVOS ESTÁTICOS DA UI (Vite Build) ---
-// Essencial para o modo de produção
-const distPath = path.join(__dirname, 'dist');
-if (fs.existsSync(distPath)) {
-    app.use(express.static(distPath));
-    // Rota Curinga: Redireciona todas as outras requisições para o index.html.
-    // Isso é CRUCIAL para que o roteamento do lado do cliente (SPA) funcione corretamente.
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
+// --- ROTA DE WEBHOOK ---
+apiRouter.post('/whatsapp-webhook', (req, res) => {
+    res.status(200).json({ replies: [] });
+    processIncomingMessage(req.body).catch(err => {
+        console.error(`[FATAL] Erro não capturado no processamento de fundo do webhook para o usuário ${req.body?.userId}:`, err);
     });
-    console.log(`[Server] Servindo arquivos estáticos do diretório: ${distPath}`);
-} else {
-    console.warn(`[Server] AVISO: Diretório 'dist' não encontrado. A UI não será servida. Execute 'npm run build'.`);
-}
-
-// --- Middleware de Tratamento de Erros Global ---
-// Deve ser o último middleware adicionado.
-app.use((err, req, res, next) => {
-  console.error(`[Error Handler] Ocorreu um erro na rota ${req.originalUrl}:`, err);
-  res.status(500).send('Ocorreu um erro interno no servidor.');
 });
 
 
-// --- INICIALIZAÇÃO DO SERVIDOR ---
+app.use('/api', apiRouter);
+console.log('[Server Setup] Rotas da API registradas em /api');
+
+// --- VERIFICAÇÃO DE BUILD E SERVIR ARQUIVOS ESTÁTICOS ---
+const staticFilesPath = path.resolve(__dirname, 'dist');
+const indexPath = path.join(staticFilesPath, 'index.html');
+
+if (!fs.existsSync(indexPath)) {
+  console.error('[FATAL STARTUP ERROR] O arquivo principal do frontend (dist/index.html) não foi encontrado.');
+  console.error('Isso geralmente significa que o comando `npm run build` (ou `vite build`) falhou.');
+  console.error('Verifique os logs de build para encontrar o erro e corrija-o antes de tentar o deploy novamente.');
+  process.exit(1); // Encerra o processo com um código de erro.
+}
+
+app.use(express.static(staticFilesPath));
+console.log(`[Server Setup] Servindo arquivos estáticos de: ${staticFilesPath}`);
+
+// --- ROTA "CATCH-ALL" PARA SPA (Single Page Application) ---
+app.get('*', (req, res) => {
+    if (!req.originalUrl.startsWith('/api')) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(404).send('Rota de API não encontrada.');
+    }
+});
+
+
+// --- ERROR HANDLING E INICIALIZAÇÃO DO SERVIDOR ---
+app.use((err, req, res, next) => {
+  console.error("[FATAL ERROR HANDLER] Erro não tratado na rota:", {
+      path: req.path,
+      method: req.method,
+      error: err.message,
+      stack: err.stack,
+  });
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ error: 'Algo deu terrivelmente errado no servidor!' });
+});
+
+// --- VERIFICADOR DE TIMEOUT DA FILA DE ATENDIMENTO ---
+const checkRequestQueueTimeout = () => {
+    const now = new Date();
+    const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
+
+    for (let i = requestQueue.length - 1; i >= 0; i--) {
+        const request = requestQueue[i];
+        const requestAge = now - new Date(request.timestamp);
+
+        if (requestAge > TIMEOUT_MS) {
+            console.log(`[Timeout] A solicitação de ${request.userName} (${request.userId}) expirou.`);
+            
+            requestQueue.splice(i, 1); // Remove da fila
+
+            const session = userSessions.get(request.userId);
+            if (session) {
+                // Notifica o usuário e reseta o estado dele
+                const timeoutMessage = "Nossos atendentes parecem estar ocupados no momento. Enquanto você aguarda, você pode tentar falar com nosso assistente virtual ou escolher uma das opções abaixo novamente.";
+                outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
+                
+                // Reseta a sessão e envia o menu de boas-vindas
+                session.currentState = ChatState.GREETING;
+                session.context = { history: {} };
+                const greetingStep = conversationFlow.get(ChatState.GREETING);
+                const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
+                outboundGatewayQueue.push({ userId: request.userId, text: formattedReply });
+            }
+        }
+    }
+};
+
+// Inicia o verificador de timeout
+setInterval(checkRequestQueueTimeout, 30 * 1000); 
+console.log('[Server Setup] Verificador de timeout da fila de atendimento iniciado.');
+
 app.listen(port, () => {
-    console.log(`[JZF Chatbot Server] Servidor rodando na porta ${port}. Versão: ${SERVER_VERSION}`);
-    console.log(`[JZF Chatbot Server] Ambiente: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[JZF Chatbot Server] Servidor escutando na porta ${port}.`);
+    console.log('[JZF Chatbot Server] Servidor ONLINE e pronto para receber requisições.');
 });
