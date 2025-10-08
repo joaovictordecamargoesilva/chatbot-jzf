@@ -354,7 +354,7 @@ const ChatPanel = ({
   
   useEffect(() => {
      setMessage('');
-     setSelectedFiles([]);
+     //setSelectedFiles([]); // REMOVIDO: A limpeza agora é feita no componente pai (App) ao trocar de chat.
      setReplyingToMessage(null);
      setEditingMessage(null);
   }, [selectedChat?.userId]);
@@ -901,6 +901,7 @@ function App() {
   const handleSelectChatItem = async (item) => {
     setIsLoading(true);
     setSelectedChat(null);
+    setSelectedFiles([]); // Limpa a pré-visualização de arquivos ao trocar de chat
     try {
         const res = await fetch(`/api/chats/history/${item.userId}`);
         if(res.ok){
@@ -951,7 +952,7 @@ function App() {
 
       const tempMessage = {
           sender: Sender.ATTENDANT, text,
-          files: files ? files.map(f => ({ name: f.name })) : null,
+          files: files,
           timestamp: new Date().toISOString(), replyTo: replyContext,
       };
       setSelectedChat(prev => ({ ...prev, messageLog: [...prev.messageLog, tempMessage] }));
@@ -1124,7 +1125,7 @@ function App() {
 
     const tempMessage = {
       senderId: attendant.id, senderName: attendant.name, text,
-      files: files ? files.map(f => ({ name: f.name })) : null,
+      files: files,
       timestamp: new Date().toISOString(), replyTo: replyContext,
     };
     setInternalChatMessages(prev => [...prev, tempMessage]);
