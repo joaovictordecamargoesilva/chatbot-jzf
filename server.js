@@ -500,7 +500,14 @@ apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
 }));
 
 apiRouter.post('/chats/attendant-reply', asyncHandler(async (req, res) => {
-    const { userId, text, attendantId, files, replyTo } = req.body;
+    const { userId, text, attendantId, replyTo } = req.body;
+    let { files } = req.body;
+    
+    // **FIX: Garante que 'files' seja sempre um array para evitar crashes.**
+    if (files && !Array.isArray(files)) {
+        files = [files];
+    }
+    
     if (!userId || (!text && (!files || files.length === 0))) {
         return res.status(400).send('userId e um texto ou arquivos são obrigatórios.');
     }
@@ -702,7 +709,14 @@ apiRouter.get('/internal-chats/:attendant1Id/:attendant2Id', asyncHandler(async 
 }));
 
 apiRouter.post('/internal-chats', asyncHandler(async (req, res) => {
-    const { senderId, recipientId, text, files, replyTo } = req.body;
+    const { senderId, recipientId, text, replyTo } = req.body;
+    let { files } = req.body;
+
+    // **FIX: Garante que 'files' seja sempre um array para evitar crashes.**
+    if (files && !Array.isArray(files)) {
+        files = [files];
+    }
+    
     if (!senderId || !recipientId || (!text && (!files || files.length === 0))) {
         return res.status(400).send('Dados insuficientes para enviar mensagem interna.');
     }
