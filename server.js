@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "18.1.0_MESSAGE_EDIT";
+const SERVER_VERSION = "18.2.0_MESSAGE_EDIT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -63,6 +63,7 @@ const outboundGatewayQueue = [];
 const internalChats = new Map();
 let syncedContacts = [];
 let nextRequestId = 1;
+const pendingEdits = new Map(); // NOVO: Armazena edições que aguardam confirmação de envio
 
 
 // --- MIDDLEWARE DE LOG GLOBAL ---
@@ -558,10 +559,7 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     }
 
     const session = activeChats.get(userId);
-    if (!session) {
-        return res.status(404).send('Sessão do usuário não encontrada em chats ativos.');
-    }
-    if (session.handledBy !== 'human' || session.attendantId !== attendantId) {
+    if (!session || session.handledBy !== 'human' || session.attendantId !== attendantId) {
         return res.status(403).send('Permissão negada para editar mensagens neste chat.');
     }
 
@@ -572,11 +570,10 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
     if (messageIndex > -1) {
         const messageToEdit = session.messageLog[messageIndex];
         
-        // Atualização local para uma UI responsiva
+        const originalText = messageToEdit.text;
         messageToEdit.text = newText;
         messageToEdit.edited = true;
         
-        // Se temos o ID do WhatsApp, enfileiramos um comando de edição para o gateway
         if (messageToEdit.whatsappId) {
             outboundGatewayQueue.push({
                 type: 'edit',
@@ -584,15 +581,25 @@ apiRouter.post('/chats/edit-message', asyncHandler(async (req, res) => {
                 messageId: messageToEdit.whatsappId,
                 newText,
             });
-            console.log(`[Edit] Comando de edição enfileirado para a mensagem ${messageToEdit.whatsappId} do usuário ${userId}.`);
-            res.status(200).send('Mensagem editada e atualização enfileirada.');
+            console.log(`[Edit] Comando de edição enfileirado para a mensagem ${messageToEdit.whatsappId}.`);
+            return res.status(200).send('Comando de edição enfileirado.');
+        } else if (messageToEdit.tempId) {
+            pendingEdits.set(messageToEdit.tempId, {
+                newText,
+                userId,
+                timestamp: Date.now()
+            });
+            console.log(`[Edit] Edição para TempID ${messageToEdit.tempId} está pendente de confirmação de envio.`);
+            return res.status(202).send('Edição pendente da confirmação de envio.');
         } else {
-            console.warn(`[Edit] Mensagem para ${userId} (timestamp: ${messageTimestamp}) editada localmente, mas não foi encontrado whatsappId. Pode ainda não ter sido enviada ou a confirmação falhou.`);
-            res.status(200).send('Mensagem editada localmente (pode não ter sido enviada ainda).');
+            messageToEdit.text = originalText;
+            messageToEdit.edited = false;
+            console.warn(`[Edit] Tentativa de editar mensagem sem ID (temp ou wpp) para ${userId}. Timestamp: ${messageTimestamp}`);
+            return res.status(409).send('Não é possível editar esta mensagem pois seu ID de envio não foi encontrado.');
         }
     } else {
         console.warn(`[Edit] Tentativa de editar mensagem não encontrada para ${userId}. Timestamp: ${messageTimestamp}`);
-        res.status(404).send('Mensagem original não encontrada para edição.');
+        return res.status(404).send('Mensagem original não encontrada para edição.');
     }
 }));
 
@@ -746,11 +753,22 @@ apiRouter.post('/gateway/ack-message', asyncHandler(async (req, res) => {
     
     const session = activeChats.get(userId);
     if (session) {
-        // Encontra a mensagem pelo tempId e adiciona o whatsappId real
         for (let i = session.messageLog.length - 1; i >= 0; i--) {
             if (session.messageLog[i].tempId === tempId) {
                 session.messageLog[i].whatsappId = messageId;
-                console.log(`[ACK] Mensagem confirmada para ${userId}. ID Temporário ${tempId} mapeado para ID do WhatsApp ${messageId}`);
+                console.log(`[ACK] Mensagem confirmada para ${userId}. TempID ${tempId} -> WppID ${messageId}`);
+                
+                if (pendingEdits.has(tempId)) {
+                    const edit = pendingEdits.get(tempId);
+                    outboundGatewayQueue.push({
+                        type: 'edit',
+                        userId: edit.userId,
+                        messageId: messageId,
+                        newText: edit.newText,
+                    });
+                    console.log(`[ACK] Executando edição pendente para TempID ${tempId}`);
+                    pendingEdits.delete(tempId);
+                }
                 break;
             }
         }
