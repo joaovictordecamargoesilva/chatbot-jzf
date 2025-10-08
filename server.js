@@ -145,14 +145,18 @@ function archiveSession(session) {
 }
 
 function getSession(userId, userName = null) {
-    if (!userSessions.has(userId)) {
+    // MODIFICAÇÃO CHAVE: Busca primeiro nos chats ativos, depois nas sessões do bot.
+    // Isso previne que uma nova sessão de bot seja criada para um chat já em atendimento.
+    let session = activeChats.get(userId) || userSessions.get(userId);
+
+    if (!session) {
         // CONTROLE DE MEMÓRIA: Remove a sessão mais antiga se o limite for atingido.
         if (userSessions.size >= MAX_SESSIONS) {
             const oldestKey = userSessions.keys().next().value;
             userSessions.delete(oldestKey);
             console.warn(`[Memory] Limite de ${MAX_SESSIONS} sessões atingido. Sessão mais antiga (${oldestKey}) removida.`);
         }
-        userSessions.set(userId, {
+        session = {
             userId: userId,
             userName: userName,
             currentState: ChatState.GREETING,
@@ -162,11 +166,13 @@ function getSession(userId, userName = null) {
             handledBy: 'bot', // 'bot' | 'human' | 'bot_queued'
             attendantId: null,
             createdAt: new Date().toISOString(),
-        });
-    }
-    const session = userSessions.get(userId);
-    if (userName && session.userName !== userName) {
-        session.userName = userName;
+        };
+        userSessions.set(userId, session);
+    } else {
+        // Se a sessão já existe, apenas atualiza o nome se necessário.
+        if (userName && session.userName !== userName) {
+            session.userName = userName;
+        }
     }
     return session;
 }
