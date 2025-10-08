@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "17.0.1_STABILITY_FIX";
+const SERVER_VERSION = "18.0.0_USER_LOGIC_MERGE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -102,15 +102,14 @@ async function transcribeAudio(file) {
         console.log(`[Transcribe] Iniciando transcrição para arquivo do tipo ${file.type}...`);
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: { 
+            contents: [{ 
                 parts: [
                     { inlineData: { mimeType: file.type, data: file.data } },
                     { text: "Transcreva este áudio em português do Brasil de forma literal." }
                 ]
-            },
+            }],
         });
 
-        // MODIFICAÇÃO: Tratamento robusto da resposta da IA
         const transcription = response?.text?.trim();
         
         if (transcription) {
@@ -195,97 +194,131 @@ function addRequestToQueue(session, department, message) {
     console.log(`[Queue] Nova solicitação adicionada: ID ${request.id} (${userName}) para o setor ${department}`);
 }
 
-// --- FUNÇÃO DE PROCESSAMENTO DE MENSAGENS DO BOT (STATE MACHINE) ---
-async function processMessage(session, userInput, file) {
-    const lang = 'pt';
-    let currentStep = conversationFlow.get(session.currentState);
-    let replies = [];
+// --- PROCESSAMENTO PRINCIPAL DO CHATBOT (Lógica do WhatsApp) ---
 
-    // Função auxiliar para gerar texto e opções
-    const generateReply = (stepKey, context) => {
-        const step = conversationFlow.get(stepKey);
-        if (!step) return '';
+function formatFlowStepForWhatsapp(step, context) {
+    let messageText = '';
+    const textTemplate = translations.pt[step.textKey];
+    if (textTemplate) { messageText = typeof textTemplate === 'function' ? textTemplate(context) : textTemplate; }
+    if (step.options && step.options.length > 0) {
+        const optionsText = step.options.map((opt, index) => `*${index + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n');
+        messageText += `\n\n${optionsText}`;
+    }
+    return messageText;
+}
 
-        let text = typeof translations[lang][step.textKey] === 'function'
-            ? translations[lang][step.textKey](context)
-            : translations[lang][step.textKey];
-
-        if (step.options) {
-            text += '\n\n';
-            step.options.forEach((opt, index) => {
-                text += `${index + 1}. ${translations[lang][opt.textKey]}\n`;
-            });
-        }
-        return text.trim();
-    };
-
-    // 1. Lidar com opções de navegação primeiro (ex: "Voltar ao início")
-    const navigationOption = currentStep?.options?.find(opt => 
-        userInput.toLowerCase().includes(translations[lang][opt.textKey].toLowerCase()) || 
-        userInput === (currentStep.options.indexOf(opt) + 1).toString()
-    );
-
-    if (navigationOption) {
-        session.currentState = navigationOption.nextState;
-        if (navigationOption.payload) {
-            session.context = { ...session.context, ...navigationOption.payload };
-        }
-        
-        // Se a próxima etapa for de transferência, lida com ela
-        if (session.currentState === ChatState.ATTENDANT_TRANSFER || session.currentState === ChatState.SCHEDULING_CONFIRMED) {
-             addRequestToQueue(session, session.context.department || 'Agendamento', userInput);
-             replies.push(generateReply(session.currentState, session.context));
-             session.handledBy = 'bot_queued'; // Estado intermediário para não processar mais msgs
-        } else if (session.currentState === ChatState.END_SESSION) {
-            replies.push(generateReply(ChatState.END_SESSION, session.context));
-            session.currentState = ChatState.GREETING; // Reinicia para a próxima vez
-        } else {
-            replies.push(generateReply(session.currentState, session.context));
-        }
-
-    } // 2. Lidar com entrada de texto livre
-    else if (currentStep && currentStep.requiresTextInput) {
-        
-        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
-            // Lógica da IA
-            if (!ai) {
-                 replies.push("Desculpe, a função de Assistente Virtual está indisponível no momento. Tente novamente mais tarde.");
-            } else {
-                const systemInstruction = departmentSystemInstructions[lang][session.context.department];
-                session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
-
-                try {
-                    const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: [...session.aiHistory],
-                        config: { systemInstruction },
-                    });
-                    
-                    const aiResponseText = response.text;
-                    session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
-                    replies.push(aiResponseText);
-                    
-                } catch (e) {
-                    console.error("Erro na chamada da Gemini API:", e);
-                    replies.push(translations[lang].error);
-                }
-            }
-        } else {
-            // Outros estados que precisam de texto (agendamento)
-            session.context.history[session.currentState] = userInput;
-            session.currentState = currentStep.nextState;
-            replies.push(generateReply(session.currentState, session.context));
-        }
-
-    } else { // 3. Entrada inesperada ou inválida
-         replies.push("Desculpe, não entendi sua resposta. Por favor, escolha uma das opções numeradas.");
-         replies.push(generateReply(session.currentState, session.context)); // Reenvia as opções
+async function processMessage(session, userInput, file) { // file is part of signature but unused in this logic
+    const { userId } = session;
+    
+    // SAFEGUARD: Se o estado for inválido, reseta para o início.
+    if (!conversationFlow.has(session.currentState)) {
+        console.error(`[Flow] Estado inválido ou desconhecido: "${session.currentState}" para o usuário ${userId}. Reiniciando a sessão.`);
+        session.currentState = ChatState.GREETING;
     }
     
-    // Enfileira as respostas para serem enviadas pelo gateway
-    for (const reply of replies) {
-        if (reply) { // Garante que não enfileire respostas vazias
-           outboundGatewayQueue.push({ userId: session.userId, text: reply });
+    let currentStep = conversationFlow.get(session.currentState);
+    let nextState, payload;
+
+    const choice = parseInt(userInput.trim(), 10);
+    const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+    if (selectedOption) {
+        nextState = selectedOption.nextState;
+        payload = selectedOption.payload;
+    } else if (currentStep.requiresTextInput) {
+        // Lógica para chat com IA foi movida para cá para centralização
+        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+            if (!ai) {
+                const errorMsg = "Desculpe, o assistente de IA está temporariamente indisponível.";
+                outboundGatewayQueue.push({ userId, text: errorMsg });
+                session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+            } else {
+                try {
+                    session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: session.aiHistory,
+                        config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." }
+                    });
+                    const aiResponseText = response.text;
+                    
+                    outboundGatewayQueue.push({ userId, text: aiResponseText });
+                    session.messageLog.push({ sender: 'bot', text: aiResponseText, timestamp: new Date() });
+                    session.aiHistory.push({ role: 'model', parts: [{ text: aiResponseText }] });
+                } catch (error) {
+                    console.error(`[AI Chat] Erro CRÍTICO ao processar AI para ${userId}:`, error);
+                    const errorMsg = translations.pt.error;
+                    outboundGatewayQueue.push({ userId, text: errorMsg });
+                    session.messageLog.push({ sender: 'bot', text: errorMsg, timestamp: new Date() });
+                }
+            }
+            return; // Permanece no modo de chat com IA
+        }
+        // Para outros inputs de texto (ex: agendamento)
+        nextState = currentStep.nextState;
+        session.context.history[session.currentState] = userInput;
+    } else {
+        // LÓGICA ATUALIZADA: No estado GREETING, qualquer texto inválido reenvia a saudação.
+        if (session.currentState === ChatState.GREETING) {
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            outboundGatewayQueue.push({ userId, text: stepFormatted });
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+            return;
+        } else {
+            const invalidOptionMsg = "Opção inválida. Por favor, digite apenas o número da opção desejada.";
+            outboundGatewayQueue.push({ userId, text: invalidOptionMsg });
+            session.messageLog.push({ sender: 'bot', text: invalidOptionMsg, timestamp: new Date() });
+            const stepFormatted = formatFlowStepForWhatsapp(currentStep, session.context);
+            outboundGatewayQueue.push({ userId, text: stepFormatted });
+            session.messageLog.push({ sender: 'bot', text: stepFormatted, timestamp: new Date() });
+            return;
+        }
+    }
+    
+    if (payload) {
+        session.context = { ...session.context, ...payload };
+    }
+    
+    if (nextState === ChatState.END_SESSION) {
+        const endMsg = translations.pt.sessionEnded;
+        outboundGatewayQueue.push({ userId, text: endMsg });
+        session.messageLog.push({ sender: 'bot', text: endMsg, timestamp: new Date() });
+        session.resolvedBy = "Cliente";
+        session.resolvedAt = new Date().toISOString();
+        archiveSession(session);
+        userSessions.delete(userId);
+        console.log(`[Flow] Sessão para ${userId} finalizada pelo cliente e arquivada.`);
+        return;
+    }
+    
+    let currentState = nextState;
+    while(currentState) {
+        session.currentState = currentState;
+        const step = conversationFlow.get(currentState);
+        if (!step) {
+            console.error(`[Flow] Estado inválido no loop: ${currentState}. Reiniciando sessão para ${userId}.`);
+            currentState = ChatState.GREETING;
+            continue;
+        }
+
+        if (currentState === ChatState.ATTENDANT_TRANSFER || currentState === ChatState.SCHEDULING_CONFIRMED) {
+            const department = currentState === ChatState.SCHEDULING_CONFIRMED ? 'Agendamento' : session.context.department;
+            const details = session.context.history[ChatState.SCHEDULING_NEW_CLIENT_DETAILS] || session.context.history[ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS];
+            const reason = currentState === ChatState.SCHEDULING_CONFIRMED
+                ? `Solicitação de agendamento.\n- Tipo: ${session.context.clientType}\n- Detalhes: ${details}`
+                : `Cliente pediu para falar com o setor ${department}.`;
+            addRequestToQueue(session, department, reason);
+            session.handledBy = 'bot_queued';
+        }
+        const formattedReply = formatFlowStepForWhatsapp(step, session.context);
+        outboundGatewayQueue.push({ userId, text: formattedReply });
+        session.messageLog.push({ sender: 'bot', text: formattedReply, timestamp: new Date() });
+        
+        if (step.nextState && !step.requiresTextInput && (!step.options || step.options.length === 0)) {
+            currentState = step.nextState;
+            await new Promise(r => setTimeout(r, 500));
+        } else {
+            currentState = null; // Interrompe o loop
         }
     }
 }
@@ -391,6 +424,7 @@ apiRouter.get('/chats/ai-active', asyncHandler(async (req, res) => {
         .map(session => ({
             userId: session.userId,
             userName: session.userName,
+            department: session.context?.department,
             lastMessage: session.messageLog[session.messageLog.length - 1] || null
         }));
     res.status(200).json(aiChats);
@@ -425,7 +459,10 @@ apiRouter.get('/chats/history/:userId', asyncHandler(async (req, res) => {
 apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { attendantId } = req.body;
-    
+
+    const attendant = ATTENDANTS.find(a => a.id === attendantId);
+    if (!attendant) return res.status(404).send('Atendente não encontrado.');
+
     let session;
     let requestIndex = requestQueue.findIndex(r => r.userId === userId);
 
@@ -436,18 +473,24 @@ apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
         session = getSession(userId);
     }
     
+    if (!session) return res.status(404).send('Sessão do usuário não encontrada.');
+
     if (activeChats.has(userId)) {
-        return res.status(409).send('Este chat já está sendo atendido.');
+        return res.status(409).send('Este chat já foi assumido por outro atendente.');
     }
 
     session.handledBy = 'human';
     session.attendantId = attendantId;
-    const attendantName = ATTENDANTS.find(a => a.id === attendantId)?.name || 'um atendente';
-    session.messageLog.push({ sender: 'system', text: `Atendimento transferido para ${attendantName}.`, timestamp: new Date().toISOString() });
     activeChats.set(userId, session);
     userSessions.delete(userId); // Move de sessões de bot para ativas
 
-    console.log(`[Takeover] Atendente ${attendantId} assumiu o chat com ${userId}.`);
+    // ADAPTADO: Adiciona a mensagem de boas-vindas da lógica do usuário.
+    const takeoverMessage = `Olá! Meu nome é *${attendant.name}* e vou continuar seu atendimento.`;
+    outboundGatewayQueue.push({ userId, text: takeoverMessage });
+    session.messageLog.push({ sender: 'system', text: `Atendimento assumido por ${attendant.name}.`, timestamp: new Date().toISOString() });
+    session.messageLog.push({ sender: 'attendant', text: takeoverMessage.replace(/\*/g, ''), timestamp: new Date().toISOString() });
+
+    console.log(`[Takeover] Atendente ${attendant.name} assumiu o chat com ${userId}.`);
     res.status(200).json({ 
         userId: session.userId, 
         userName: session.userName, 
@@ -733,25 +776,30 @@ app.use((err, req, res, next) => {
 // --- VERIFICADOR DE TIMEOUT DA FILA DE ATENDIMENTO ---
 const checkRequestQueueTimeout = () => {
     const now = new Date();
-    const timeout = 10 * 60 * 1000; // 10 minutos
-    const toRemove = [];
+    const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 
-    for (const request of requestQueue) {
-        const requestTime = new Date(request.timestamp);
-        if (now - requestTime > timeout) {
-            toRemove.push(request.userId);
-        }
-    }
+    for (let i = requestQueue.length - 1; i >= 0; i--) {
+        const request = requestQueue[i];
+        const requestAge = now - new Date(request.timestamp);
 
-    if (toRemove.length > 0) {
-        console.log(`[Queue Timeout] Removendo ${toRemove.length} solicitações expiradas.`);
-        for (const userId of toRemove) {
-            const index = requestQueue.findIndex(r => r.userId === userId);
-            if (index > -1) requestQueue.splice(index, 1);
+        if (requestAge > TIMEOUT_MS) {
+            console.log(`[Timeout] A solicitação de ${request.userName} (${request.userId}) expirou.`);
             
-            const session = getSession(userId);
-            session.currentState = ChatState.GREETING; // Reseta o estado
-            outboundGatewayQueue.push({ userId, text: "Sua solicitação de atendimento expirou por inatividade. Se ainda precisar de ajuda, por favor, comece novamente." });
+            requestQueue.splice(i, 1); // Remove da fila
+
+            const session = userSessions.get(request.userId);
+            if (session) {
+                // Notifica o usuário e reseta o estado dele
+                const timeoutMessage = "Nossos atendentes parecem estar ocupados no momento. Enquanto você aguarda, você pode tentar falar com nosso assistente virtual ou escolher uma das opções abaixo novamente.";
+                outboundGatewayQueue.push({ userId: request.userId, text: timeoutMessage });
+                
+                // Reseta a sessão e envia o menu de boas-vindas
+                session.currentState = ChatState.GREETING;
+                session.context = { history: {} };
+                const greetingStep = conversationFlow.get(ChatState.GREETING);
+                const formattedReply = formatFlowStepForWhatsapp(greetingStep, session.context);
+                outboundGatewayQueue.push({ userId: request.userId, text: formattedReply });
+            }
         }
     }
 };
