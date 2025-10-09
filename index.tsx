@@ -1020,19 +1020,20 @@ function App() {
     } catch (err) { alert(err.message); }
   };
   
-    // --- LÓGICA DE SELEÇÃO DE ARQUIVO ROBUSTA ---
+    // --- LÓGICA DE SELEÇÃO DE ARQUIVO ROBUSTA (CORRIGIDA) ---
     const readFileAsBase64 = (file) => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = () => { // Acessa o resultado diretamente do 'reader'
-                if (reader.result && typeof reader.result === 'string') {
-                    const base64Data = reader.result.split(',')[1];
+            reader.onload = (event) => { // Usa o evento 'onload' para acesso seguro
+                const result = event.target?.result;
+                if (result && typeof result === 'string') {
+                    const base64Data = result.split(',')[1];
                     resolve({ name: file.name, type: file.type, data: base64Data });
                 } else {
-                    reject(new Error('Falha ao ler o resultado do arquivo.'));
+                    reject(new Error('Falha ao ler o resultado do arquivo. Formato inesperado.'));
                 }
             };
-            reader.onerror = () => reject(reader.error); // Rejeita com o erro do reader
+            reader.onerror = (error) => reject(error); // Rejeita com o evento de erro
             reader.readAsDataURL(file);
         });
     };
