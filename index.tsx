@@ -1024,15 +1024,15 @@ function App() {
     const readFileAsBase64 = (file) => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = e => {
-                if (e.target && typeof e.target.result === 'string') {
-                    const base64Data = e.target.result.split(',')[1];
+            reader.onload = () => { // Acessa o resultado diretamente do 'reader'
+                if (reader.result && typeof reader.result === 'string') {
+                    const base64Data = reader.result.split(',')[1];
                     resolve({ name: file.name, type: file.type, data: base64Data });
                 } else {
                     reject(new Error('Falha ao ler o resultado do arquivo.'));
                 }
             };
-            reader.onerror = error => reject(error);
+            reader.onerror = () => reject(reader.error); // Rejeita com o erro do reader
             reader.readAsDataURL(file);
         });
     };
