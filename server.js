@@ -36,7 +36,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const SERVER_VERSION = "18.2.0_MESSAGE_EDIT_FIX";
+const SERVER_VERSION = "19.0.0_FULL_HISTORY_AND_REPLY";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -134,13 +134,17 @@ function archiveSession(session) {
         console.error('[archiveSession] Tentativa de arquivar sessão inválida.');
         return;
     }
-    archivedChats.delete(session.userId);
-    archivedChats.set(session.userId, { ...session });
-    
+    // Pega o histórico existente ou cria um novo array
+    const userHistory = archivedChats.get(session.userId) || [];
+    // Adiciona a sessão atual ao histórico
+    userHistory.push({ ...session });
+    archivedChats.set(session.userId, userHistory);
+
+    // Gerenciamento de memória: se o total de usuários arquivados exceder o limite, remove o mais antigo.
     if (archivedChats.size > MAX_ARCHIVED_CHATS) {
         const oldestKey = archivedChats.keys().next().value;
         archivedChats.delete(oldestKey);
-        console.log(`[Memory] Limite de arquivos atingido. Chat arquivado mais antigo (${oldestKey}) removido.`);
+        console.log(`[Memory] Limite de arquivos atingido. Histórico do usuário mais antigo (${oldestKey}) removido.`);
     }
 }
 
@@ -327,7 +331,7 @@ async function processMessage(session, userInput, file) { // file is part of sig
 
 // --- PROCESSADOR DE MENSAGENS EM SEGUNDO PLANO ---
 async function processIncomingMessage(body) {
-    const { userId, userName, userInput, file, gatewayError } = body;
+    const { userId, userName, userInput, file, gatewayError, replyContext } = body;
     
     // Validação essencial
     if (!userId) {
@@ -343,18 +347,37 @@ async function processIncomingMessage(body) {
         return; // Não processa mais se houve erro no gateway
     }
 
-    // Log da mensagem do usuário
+    // Cria a entrada de log
+    const logEntry = {
+        sender: 'user',
+        text: userInput,
+        timestamp: new Date().toISOString(),
+    };
+
+    // Adiciona informações do arquivo se existir
     if (file) {
-        session.messageLog.push({ sender: 'user', text: userInput, file: { ...file }, timestamp: new Date().toISOString() });
-        if (file.type && file.type.startsWith('audio/')) {
-            const transcription = await transcribeAudio(file);
-            effectiveInput = transcription; // Usa a transcrição como a entrada do usuário
-            session.messageLog.push({ sender: 'system', text: `Transcrição do áudio: "${transcription}"`, timestamp: new Date().toISOString() });
-        }
-    } else {
-        session.messageLog.push({ sender: 'user', text: userInput, timestamp: new Date().toISOString() });
+        logEntry.file = { ...file };
     }
 
+    // Adiciona o contexto da resposta se existir
+    if (replyContext) {
+        logEntry.replyTo = {
+            text: replyContext.text,
+            sender: replyContext.fromMe ? 'attendant' : 'user',
+            senderName: replyContext.fromMe ? 'Você' : session.userName,
+        };
+    }
+
+    // Salva a entrada completa no log
+    session.messageLog.push(logEntry);
+
+    // Lida com a transcrição de áudio após o log
+    if (file && file.type && file.type.startsWith('audio/')) {
+        const transcription = await transcribeAudio(file);
+        effectiveInput = transcription; // Usa a transcrição como a entrada do usuário
+        session.messageLog.push({ sender: 'system', text: `Transcrição do áudio: "${transcription}"`, timestamp: new Date().toISOString() });
+    }
+    
     // Se o chat já está com um atendente humano ou na fila, não faz nada.
     if (session.handledBy === 'human' || session.handledBy === 'bot_queued') {
         console.log(`[Background Processor] Mensagem de ${userId} recebida para chat já em atendimento humano/fila. Apenas registrando.`);
@@ -436,25 +459,52 @@ apiRouter.get('/clients', asyncHandler(async (req, res) => {
 }));
 
 apiRouter.get('/chats/history', asyncHandler(async (req, res) => {
-    const history = Array.from(archivedChats.values()).map(session => ({
-        userId: session.userId,
-        userName: session.userName,
-        attendantId: session.attendantId,
-        lastMessage: session.messageLog[session.messageLog.length - 1] || null,
-        resolvedAt: session.resolvedAt,
-        resolvedBy: session.resolvedBy
-    })).sort((a, b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
+    // Mapeia o histórico de cada usuário, pegando a última sessão para criar um resumo
+    const history = Array.from(archivedChats.values()).map(sessionHistory => {
+        // Pega a sessão mais recente do histórico deste usuário
+        const lastSession = sessionHistory[sessionHistory.length - 1];
+        return {
+            userId: lastSession.userId,
+            userName: lastSession.userName,
+            attendantId: lastSession.attendantId,
+            lastMessage: lastSession.messageLog[lastSession.messageLog.length - 1] || null,
+            resolvedAt: lastSession.resolvedAt,
+            resolvedBy: lastSession.resolvedBy
+        };
+    }).sort((a, b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
     res.status(200).json(history);
 }));
 
 apiRouter.get('/chats/history/:userId', asyncHandler(async (req, res) => {
     const { userId } = req.params;
-    const session = activeChats.get(userId) || userSessions.get(userId) || archivedChats.get(userId);
-    if (session) {
-        res.status(200).json(session);
-    } else {
-        res.status(404).send('Chat não encontrado.');
+    const currentSession = activeChats.get(userId) || userSessions.get(userId);
+    const userHistory = archivedChats.get(userId) || [];
+
+    if (!currentSession && userHistory.length === 0) {
+        return res.status(404).send('Chat não encontrado.');
     }
+
+    // Combina os logs de mensagens de todas as sessões (arquivadas e atual)
+    const allSessions = [...userHistory, ...(currentSession ? [currentSession] : [])];
+    let combinedLog = [];
+    allSessions.forEach(s => {
+        if (s && s.messageLog) {
+            combinedLog = combinedLog.concat(s.messageLog);
+        }
+    });
+
+    // Ordena as mensagens cronologicamente
+    combinedLog.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+    // Cria um objeto de sessão representativo para a resposta
+    const representativeSession = currentSession || userHistory[userHistory.length - 1] || {};
+    
+    const responseData = {
+        ...representativeSession,
+        messageLog: combinedLog,
+    };
+
+    res.status(200).json(responseData);
 }));
 
 apiRouter.post('/chats/takeover/:userId', asyncHandler(async (req, res) => {
