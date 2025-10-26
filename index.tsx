@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import ImageEditor from 'tui-image-editor';
 import { conversationFlow, translations, ChatState as ChatStateValues } from './chatbotLogic.js';
@@ -172,7 +172,7 @@ const FileRenderer = ({ file, onImageClick }) => {
     const fileSrc = `data:${file.type};base64,${file.data}`;
 
     if (file.type.startsWith('image/')) {
-        return <img src={fileSrc} alt={file.name} className="mt-2 rounded-lg max-w-xs md:max-w-sm max-h-80 object-contain cursor-pointer" onClick={() => onImageClick(fileSrc)} />;
+        return <img src={fileSrc} alt={file.name} className="w-full h-full object-cover cursor-pointer" onClick={() => onImageClick(fileSrc)} />;
     }
     if (file.type.startsWith('audio/')) {
         return <audio controls src={fileSrc} className="mt-2 w-full max-w-xs"></audio>;
@@ -196,7 +196,7 @@ const FileRenderer = ({ file, onImageClick }) => {
 
 
 // --- START: Merged from components/MessageBubble.tsx ---
-const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAttendant = false }) => {
+const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAttendant = false, messageIndex, isHighlighted = false }) => {
   const [isMenuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -223,6 +223,8 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAtt
       </div>
     );
   }
+  
+  const highlightClass = isHighlighted ? 'bg-yellow-200 ring-2 ring-yellow-400' : '';
 
   const bubbleClasses = isBot
     ? 'bg-white text-gray-800 self-start'
@@ -236,11 +238,11 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAtt
   const canInteract = !isSystem;
 
   return (
-    <div className={`flex w-full ${justifyClass} group items-center`}>
+    <div id={`message-${messageIndex}`} className={`flex w-full ${justifyClass} group items-center`}>
       <div className={`relative flex items-center ${isAttendant ? 'flex-row-reverse' : ''}`}>
         {/* Container da Bolha de Mensagem */}
         <div
-          className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses}`}
+          className={`max-w-md md:max-w-lg lg:max-w-xl p-2 rounded-lg shadow-sm mb-1 flex flex-col ${bubbleClasses} ${highlightClass} transition-colors duration-300`}
         >
           {/* Contexto da Resposta */}
           {message.replyTo && (
@@ -296,6 +298,97 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAtt
 };
 // --- END: Merged from components/MessageBubble.tsx ---
 
+// --- NOVO COMPONENTE: MediaGallery ---
+const MediaGallery = ({ messages, onImageClick }) => {
+    const { media, docs, links } = useMemo(() => {
+        const media = [];
+        const docs = [];
+        const links = [];
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+        messages.forEach((msg, msgIndex) => {
+            if (msg.files && msg.files.length > 0) {
+                msg.files.forEach(file => {
+                    if (file.type.startsWith('image/') || file.type.startsWith('video/')) {
+                        media.push({ ...file, id: `${msgIndex}-${file.name}` });
+                    } else {
+                        docs.push({ ...file, id: `${msgIndex}-${file.name}` });
+                    }
+                });
+            }
+            if (msg.text) {
+                const foundLinks = msg.text.match(urlRegex);
+                if (foundLinks) {
+                    links.push(...[...new Set(foundLinks)].map((link, linkIndex) => ({ link, id: `${msgIndex}-${linkIndex}` })));
+                }
+            }
+        });
+        return { 
+            media: media.reverse(), 
+            docs: docs.reverse(), 
+            links: links.reverse() 
+        };
+    }, [messages]);
+
+    const renderSection = (title, items, renderItem) => (
+        <div className="mb-6">
+            <h3 className="text-lg font-semibold text-gray-700 p-4 border-b">{title} ({items.length})</h3>
+            {items.length > 0 ? (
+                renderItem(items)
+            ) : (
+                <p className="p-4 text-sm text-gray-500">Nenhum item encontrado.</p>
+            )}
+        </div>
+    );
+
+    return (
+        <div className="bg-white h-full">
+            {renderSection('Mídia', media, (items) => (
+                <div className="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
+                    {items.map(item => (
+                        <div key={item.id} className="aspect-square bg-gray-200 rounded-md overflow-hidden relative group">
+                            {item.type.startsWith('image/') && (
+                                <img src={`data:${item.type};base64,${item.data}`} alt={item.name} className="w-full h-full object-cover cursor-pointer" onClick={() => onImageClick(`data:${item.type};base64,${item.data}`)} />
+                            )}
+                            {item.type.startsWith('video/') && (
+                                 <video src={`data:${item.type};base64,${item.data}`} className="w-full h-full object-cover" controls/>
+                            )}
+                            {item.type.startsWith('video/') && (
+                                <div className="absolute inset-0 bg-black bg-opacity-10 flex items-center justify-center pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white opacity-75" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                    </svg>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            ))}
+            {renderSection('Documentos', docs, (items) => (
+                <ul className="p-2 space-y-1">
+                    {items.map(item => (
+                        <li key={item.id} className="border-b last:border-b-0">
+                           <FileRenderer file={item} onImageClick={() => {}} />
+                        </li>
+                    ))}
+                </ul>
+            ))}
+            {renderSection('Links', links, (items) => (
+                <ul className="p-2">
+                    {items.map(item => (
+                        <li key={item.id} className="p-2 border-b last:border-b-0">
+                           <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-sm break-all flex items-center space-x-2">
+                               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                               <span>{item.link}</span>
+                           </a>
+                        </li>
+                    ))}
+                </ul>
+            ))}
+        </div>
+    );
+};
+
 
 // --- START: Merged from components/ChatPanel.tsx ---
 const ChatPanel = ({
@@ -324,6 +417,14 @@ const ChatPanel = ({
   const fileInputRef = useRef(null);
   const messageInputRef = useRef(null);
   
+  // Novos estados para busca e abas
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'media'
+  const [isSearchVisible, setSearchVisible] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState([]); // Array de índices
+  const [currentResultIndex, setCurrentResultIndex] = useState(-1);
+  const searchInputRef = useRef(null);
+  
   const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
 
   const handleSetEdit = (msg) => {
@@ -349,15 +450,64 @@ const ChatPanel = ({
   };
 
   useEffect(() => {
-    scrollToBottom();
-  }, [selectedChat?.messageLog, isLoading]);
+    if (activeTab === 'chat') {
+        scrollToBottom();
+    }
+  }, [selectedChat?.messageLog, isLoading, activeTab]);
   
   useEffect(() => {
      setMessage('');
      //setSelectedFiles([]); // REMOVIDO: A limpeza agora é feita no componente pai (App) ao trocar de chat.
      setReplyingToMessage(null);
      setEditingMessage(null);
+     // Resetar estados da nova UI
+     setActiveTab('chat');
+     setSearchVisible(false);
+     setSearchTerm('');
+     setSearchResults([]);
+     setCurrentResultIndex(-1);
   }, [selectedChat?.userId]);
+
+  // Efeito para busca
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setSearchResults([]);
+      setCurrentResultIndex(-1);
+      return;
+    }
+    const results = selectedChat.messageLog.reduce((acc, msg, index) => {
+      if (msg.text && msg.text.toLowerCase().includes(searchTerm.toLowerCase())) {
+        acc.push(index);
+      }
+      return acc;
+    }, []);
+    setSearchResults(results);
+    setCurrentResultIndex(results.length > 0 ? 0 : -1);
+  }, [searchTerm, selectedChat.messageLog]);
+
+  // Efeito para focar no input de busca
+  useEffect(() => {
+    if (isSearchVisible) {
+      searchInputRef.current?.focus();
+    }
+  }, [isSearchVisible]);
+
+  // Efeito para rolar até o resultado da busca
+  useEffect(() => {
+    if (currentResultIndex > -1 && searchResults.length > 0) {
+      const messageIndex = searchResults[currentResultIndex];
+      document.getElementById(`message-${messageIndex}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [currentResultIndex, searchResults]);
+
+  const handleNextResult = () => {
+    if (searchResults.length === 0) return;
+    setCurrentResultIndex(prev => (prev + 1) % searchResults.length);
+  };
+  const handlePrevResult = () => {
+    if (searchResults.length === 0) return;
+    setCurrentResultIndex(prev => (prev - 1 + searchResults.length) % searchResults.length);
+  };
 
   const handleSend = () => {
     if ((message.trim() || selectedFiles.length > 0) && selectedChat && attendant) {
@@ -401,6 +551,15 @@ const ChatPanel = ({
         </div>
         
         <div className="flex items-center space-x-2">
+            <button
+              onClick={() => { setSearchVisible(true); setActiveTab('chat'); }}
+              className="p-2 text-gray-500 rounded-full hover:bg-gray-200 focus:outline-none"
+              aria-label="Buscar na conversa"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+              </svg>
+            </button>
             {chatType === 'bot' && attendant && (
                  <button
                   onClick={() => onTakeoverChat(selectedChat.userId)}
@@ -433,17 +592,60 @@ const ChatPanel = ({
         </div>
       </header>
 
+      {/* Barra de Busca */}
+      {isSearchVisible && (
+          <div className="p-2 bg-gray-200 border-b flex items-center space-x-2 transition-all duration-300">
+              <input 
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar..."
+                  className="w-full px-3 py-1 text-sm bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-600 w-20 text-center">{currentResultIndex > -1 ? `${currentResultIndex + 1} de ${searchResults.length}` : '0/0'}</span>
+              <button onClick={handlePrevResult} disabled={searchResults.length < 2} className="p-1 rounded-md hover:bg-gray-300 disabled:opacity-50">&#9650;</button>
+              <button onClick={handleNextResult} disabled={searchResults.length < 2} className="p-1 rounded-md hover:bg-gray-300 disabled:opacity-50">&#9660;</button>
+              <button onClick={() => { setSearchVisible(false); setSearchTerm(''); }} className="p-1 rounded-full hover:bg-gray-300 font-bold">&times;</button>
+          </div>
+      )}
+
+      {/* Abas */}
+      <div className="bg-white border-b flex">
+          <button onClick={() => setActiveTab('chat')} className={`py-2 px-4 text-sm font-medium ${activeTab === 'chat' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}>
+              Conversa
+          </button>
+          <button onClick={() => setActiveTab('media')} className={`py-2 px-4 text-sm font-medium ${activeTab === 'media' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}>
+              Mídia, Links e Docs
+          </button>
+      </div>
+
       {/* Corpo do Chat */}
-      <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
-        {selectedChat.messageLog.map((msg, index) => (
-          <MessageBubble key={index} message={msg} onImageClick={onImageClick} onSetReply={setReplyingToMessage} onSetEdit={handleSetEdit} isFromAttendant={msg.sender === Sender.ATTENDANT} />
-        ))}
-        {isLoading && <TypingIndicator />}
-        <div ref={messagesEndRef} />
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === 'chat' ? (
+          <div className="p-4 whatsapp-bg">
+            {selectedChat.messageLog.map((msg, index) => (
+                <MessageBubble 
+                    key={`${msg.timestamp}-${index}`} 
+                    message={msg} 
+                    onImageClick={onImageClick} 
+                    onSetReply={setReplyingToMessage} 
+                    onSetEdit={handleSetEdit} 
+                    isFromAttendant={msg.sender === Sender.ATTENDANT}
+                    messageIndex={index}
+                    isHighlighted={searchResults[currentResultIndex] === index}
+                />
+            ))}
+            {isLoading && <TypingIndicator />}
+            <div ref={messagesEndRef} />
+          </div>
+        ) : (
+          <MediaGallery messages={selectedChat.messageLog} onImageClick={onImageClick} />
+        )}
       </div>
 
       {/* Rodapé do Chat (Input) */}
-      {chatType === 'human' && attendant?.id === selectedChat.attendantId && (
+      {activeTab === 'chat' && chatType === 'human' && attendant?.id === selectedChat.attendantId && (
           <footer className="bg-gray-200 p-3">
             {editingMessage ? (
                  <div className="bg-white rounded-lg shadow-sm p-2">
@@ -1345,11 +1547,13 @@ function App() {
                     <div className="flex-1 overflow-y-auto p-4 whatsapp-bg">
                         {internalChatMessages.map((msg, index) => (
                            <MessageBubble 
-                              key={index} message={{...msg, sender: msg.senderId === attendant.id ? Sender.ATTENDANT : Sender.USER}}
+                              key={`${msg.timestamp}-${index}`} message={{...msg, sender: msg.senderId === attendant.id ? Sender.ATTENDANT : Sender.USER}}
                               onImageClick={handleOpenLightbox}
                               onSetReply={setReplyingToInternal}
                               onSetEdit={(m) => { setEditingInternal(m); setEditedInternalText(m.text); }}
                               isFromAttendant={msg.senderId === attendant.id}
+                              messageIndex={index}
+                              isHighlighted={false}
                            />
                         ))}
                         <div ref={internalMessagesEndRef} />
