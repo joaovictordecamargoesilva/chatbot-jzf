@@ -1006,15 +1006,22 @@ function App() {
       setInternalChatsSummary(current => JSON.stringify(current) !== JSON.stringify(internalSummaryData) ? internalSummaryData : current);
 
       if (selectedChat) {
+          const chatToUpdateId = selectedChat.userId; // Capture ID
           const allCurrentChats = [...activeData, ...aiChatsData];
-          const updatedChatInList = allCurrentChats.find(c => c.userId === selectedChat.userId);
+          const updatedChatInList = allCurrentChats.find(c => c.userId === chatToUpdateId);
           const localLastMessage = selectedChat.messageLog.length > 0 ? selectedChat.messageLog[selectedChat.messageLog.length - 1] : null;
 
           if (updatedChatInList && updatedChatInList.lastMessage && (!localLastMessage || new Date(updatedChatInList.lastMessage.timestamp) > new Date(localLastMessage.timestamp))) {
-              const res = await fetch(`/api/chats/history/${selectedChat.userId}`);
+              const res = await fetch(`/api/chats/history/${chatToUpdateId}`);
               if (res.ok) {
                   const fullChatData = await res.json();
-                  setSelectedChat(prevChat => ({ ...prevChat, messageLog: fullChatData.messageLog }));
+                  setSelectedChat(prevChat => {
+                      // Guard: only update if the chat is still the selected one
+                      if (prevChat && prevChat.userId === chatToUpdateId) {
+                          return { ...prevChat, messageLog: fullChatData.messageLog };
+                      }
+                      return prevChat; // Otherwise, do nothing
+                  });
               }
           }
       }
@@ -1157,7 +1164,10 @@ function App() {
           files: files,
           timestamp: new Date().toISOString(), replyTo: replyContext,
       };
-      setSelectedChat(prev => ({ ...prev, messageLog: [...prev.messageLog, tempMessage] }));
+      setSelectedChat(prev => {
+        if (!prev) return null;
+        return { ...prev, messageLog: [...prev.messageLog, tempMessage] };
+      });
 
       try {
           await fetch('/api/chats/attendant-reply', {
@@ -1169,6 +1179,7 @@ function App() {
 
   const handleEditMessage = async (userId, messageTimestamp, newText) => {
     setSelectedChat(prev => {
+        if (!prev) return null;
         const newLog = prev.messageLog.map(msg => 
             msg.timestamp === messageTimestamp ? { ...msg, text: newText, edited: true } : msg
         );
