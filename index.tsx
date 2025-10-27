@@ -468,14 +468,16 @@ const ChatPanel = ({
      setCurrentResultIndex(-1);
   }, [selectedChat?.userId]);
 
-  // Efeito para busca
+  // --- EFEITO DE BUSCA CORRIGIDO ---
   useEffect(() => {
-    if (!searchTerm.trim()) {
+    // GUARDA ADICIONAL: Não faz nada se não houver chat ou termo de busca, evitando erros.
+    if (!searchTerm.trim() || !selectedChat) {
       setSearchResults([]);
       setCurrentResultIndex(-1);
       return;
     }
-    const results = selectedChat.messageLog.reduce((acc, msg, index) => {
+    // Acessa messageLog de forma segura, tratando o caso de ser nulo ou indefinido.
+    const results = (selectedChat.messageLog || []).reduce((acc, msg, index) => {
       if (msg.text && msg.text.toLowerCase().includes(searchTerm.toLowerCase())) {
         acc.push(index);
       }
@@ -483,7 +485,7 @@ const ChatPanel = ({
     }, []);
     setSearchResults(results);
     setCurrentResultIndex(results.length > 0 ? 0 : -1);
-  }, [searchTerm, selectedChat.messageLog]);
+  }, [searchTerm, selectedChat?.messageLog]); // CORRIGIDO: Usa optional chaining na dependência.
 
   // Efeito para focar no input de busca
   useEffect(() => {
@@ -1019,7 +1021,8 @@ function App() {
           const chatToUpdateId = currentSelectedChat.userId;
           const allCurrentChats = [...activeData, ...aiChatsData];
           const updatedChatInList = allCurrentChats.find(c => c.userId === chatToUpdateId);
-          const localLastMessage = currentSelectedChat.messageLog.length > 0 ? currentSelectedChat.messageLog[currentSelectedChat.messageLog.length - 1] : null;
+          // CORREÇÃO: Adiciona uma verificação para garantir que messageLog existe antes de acessá-lo.
+          const localLastMessage = currentSelectedChat.messageLog && currentSelectedChat.messageLog.length > 0 ? currentSelectedChat.messageLog[currentSelectedChat.messageLog.length - 1] : null;
 
           if (updatedChatInList && updatedChatInList.lastMessage && (!localLastMessage || new Date(updatedChatInList.lastMessage.timestamp) > new Date(localLastMessage.timestamp))) {
               const res = await fetch(`/api/chats/history/${chatToUpdateId}`);
