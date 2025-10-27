@@ -886,6 +886,14 @@ function App() {
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
   const prevData = useRef(null);
 
+  // --- INÍCIO: Correção de Condição de Corrida (Race Condition) ---
+  const selectedChatRef = useRef(selectedChat);
+  useEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
+  // --- FIM: Correção de Condição de Corrida ---
+
+
   const showBrowserNotification = useCallback((title, options) => {
     if (document.hidden && Notification.permission === 'granted') {
       new Notification(title, options);
@@ -1005,31 +1013,35 @@ function App() {
       setAiActiveChats(current => JSON.stringify(current) !== JSON.stringify(aiChatsData) ? aiChatsData : current);
       setInternalChatsSummary(current => JSON.stringify(current) !== JSON.stringify(internalSummaryData) ? internalSummaryData : current);
 
-      if (selectedChat) {
-          const chatToUpdateId = selectedChat.userId; // Capture ID
+      // --- INÍCIO: Lógica de atualização segura usando ref ---
+      const currentSelectedChat = selectedChatRef.current;
+      if (currentSelectedChat) {
+          const chatToUpdateId = currentSelectedChat.userId;
           const allCurrentChats = [...activeData, ...aiChatsData];
           const updatedChatInList = allCurrentChats.find(c => c.userId === chatToUpdateId);
-          const localLastMessage = selectedChat.messageLog.length > 0 ? selectedChat.messageLog[selectedChat.messageLog.length - 1] : null;
+          const localLastMessage = currentSelectedChat.messageLog.length > 0 ? currentSelectedChat.messageLog[currentSelectedChat.messageLog.length - 1] : null;
 
           if (updatedChatInList && updatedChatInList.lastMessage && (!localLastMessage || new Date(updatedChatInList.lastMessage.timestamp) > new Date(localLastMessage.timestamp))) {
               const res = await fetch(`/api/chats/history/${chatToUpdateId}`);
               if (res.ok) {
                   const fullChatData = await res.json();
                   setSelectedChat(prevChat => {
-                      // Guard: only update if the chat is still the selected one
+                      // Guarda extra: só atualiza se o chat ainda for o selecionado.
                       if (prevChat && prevChat.userId === chatToUpdateId) {
                           return { ...prevChat, messageLog: fullChatData.messageLog };
                       }
-                      return prevChat; // Otherwise, do nothing
+                      return prevChat; // Se não, não faz nada.
                   });
               }
           }
       }
+      // --- FIM: Lógica de atualização segura ---
+
     } catch (err) {
       setError(err.message);
       console.error(err);
     }
-  }, [attendant, selectedChat]);
+  }, [attendant]); // Removido selectedChat das dependências para evitar re-criação constante
 
   useEffect(() => {
     fetch('/api/attendants').then(res => res.json()).then(setAttendants);
@@ -1165,7 +1177,8 @@ function App() {
           timestamp: new Date().toISOString(), replyTo: replyContext,
       };
       setSelectedChat(prev => {
-        if (!prev) return null;
+        // Guarda de segurança: só atualiza se o chat for o correto.
+        if (!prev || prev.userId !== userId) return prev;
         return { ...prev, messageLog: [...prev.messageLog, tempMessage] };
       });
 
@@ -1179,7 +1192,8 @@ function App() {
 
   const handleEditMessage = async (userId, messageTimestamp, newText) => {
     setSelectedChat(prev => {
-        if (!prev) return null;
+        // Guarda de segurança: só atualiza se o chat for o correto.
+        if (!prev || prev.userId !== userId) return prev;
         const newLog = prev.messageLog.map(msg => 
             msg.timestamp === messageTimestamp ? { ...msg, text: newText, edited: true } : msg
         );
