@@ -395,7 +395,7 @@ async function processIncomingMessage(body) {
         text: userInput,
         timestamp: new Date().toISOString(),
     };
-    if (file) { logEntry.file = { ...file }; }
+    if (file) { logEntry.files = [file]; } // CORREÇÃO: Sempre usar a propriedade 'files' como um array
     if (replyContext) {
         logEntry.replyTo = {
             text: replyContext.text,
@@ -496,15 +496,22 @@ apiRouter.get('/clients', asyncHandler(async (req, res) => {
 }));
 
 apiRouter.get('/chats/history', asyncHandler(async (req, res) => {
-    const history = Array.from(archivedChats.values()).flatMap(sessionHistory => sessionHistory).map(lastSession => ({
+    // CORREÇÃO: Garante que cada usuário apareça apenas uma vez na lista,
+    // representando sua conversa resolvida mais recente.
+    const history = Array.from(archivedChats.values())
+        // Pega apenas a sessão mais recente do histórico de cada usuário.
+        .map(userSessionsArray => userSessionsArray[userSessionsArray.length - 1])
+        .map(lastSession => ({
             userId: lastSession.userId,
             userName: lastSession.userName,
             attendantId: lastSession.attendantId,
             lastMessage: lastSession.messageLog[lastSession.messageLog.length - 1] || null,
             resolvedAt: lastSession.resolvedAt,
             resolvedBy: lastSession.resolvedBy
-        })
-    ).sort((a, b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
+        }))
+        // Ordena a lista final pela data de resolução mais recente.
+        .sort((a, b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
+    
     res.status(200).json(history);
 }));
 
@@ -529,8 +536,16 @@ apiRouter.get('/chats/history/:userId', asyncHandler(async (req, res) => {
 
     const representativeSession = currentSession || userHistory[userHistory.length - 1] || {};
     
+    // CORREÇÃO: Constrói o objeto de resposta explicitamente para garantir clareza
+    // e evitar a sobreposição acidental de um messageLog incompleto, garantindo que
+    // toda a mídia seja incluída.
     const responseData = {
-        ...representativeSession,
+        userId: representativeSession.userId,
+        userName: representativeSession.userName,
+        attendantId: representativeSession.attendantId,
+        handledBy: representativeSession.handledBy || 'human', // Assume 'human' para histórico
+        context: representativeSession.context,
+        // O messageLog combinado é a única fonte de verdade para as mensagens.
         messageLog: combinedLog,
     };
 
