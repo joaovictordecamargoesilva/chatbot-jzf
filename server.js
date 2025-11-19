@@ -109,6 +109,9 @@ const activeChats = loadData('activeChats.json', new Map());
 const archivedChats = loadData('archivedChats.json', new Map());
 const internalChats = loadData('internalChats.json', new Map());
 let syncedContacts = loadData('syncedContacts.json', []);
+// --- NOVO: Estado da conexão com o WhatsApp ---
+let gatewayStatus = { status: 'DISCONNECTED', qrCode: null };
+
 
 let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
 const MAX_SESSIONS = 2000;
@@ -882,6 +885,9 @@ apiRouter.post('/gateway/sync-contacts', asyncHandler(async (req, res) => {
 }));
 
 apiRouter.get('/gateway/poll-outbound', asyncHandler(async (req, res) => {
+    if (gatewayStatus.status !== 'CONNECTED') {
+        return res.status(204).send(); // Não envia nada se não estiver conectado
+    }
     if (outboundGatewayQueue.length > 0) {
         const messagesToSend = [...outboundGatewayQueue];
         outboundGatewayQueue.length = 0;
@@ -890,6 +896,23 @@ apiRouter.get('/gateway/poll-outbound', asyncHandler(async (req, res) => {
         res.status(204).send();
     }
 }));
+
+// --- NOVAS ROTAS DE STATUS DO GATEWAY ---
+apiRouter.post('/gateway/status', (req, res) => {
+    const { status, qrCode } = req.body;
+    if (!status) {
+        return res.status(400).send('O status é obrigatório.');
+    }
+    gatewayStatus.status = status;
+    gatewayStatus.qrCode = qrCode || null;
+    console.log(`[Gateway Status] Status do gateway atualizado para: ${status}`);
+    res.sendStatus(200);
+});
+
+apiRouter.get('/gateway/status', (req, res) => {
+    res.status(200).json(gatewayStatus);
+});
+
 
 // --- ROTA DE WEBHOOK ---
 apiRouter.post('/whatsapp-webhook', (req, res) => {
