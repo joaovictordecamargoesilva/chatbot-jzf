@@ -9,109 +9,122 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 import fetch from 'node-fetch';
 import fs from 'fs';
+import path from 'path';
 
 // --- CONFIGURAÇÃO ---
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
-const SESSION_FOLDER = 'baileys_auth_info';
+// MUDANÇA CRÍTICA: Nome da pasta alterado para forçar uma nova sessão limpa
+const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_v3');
 
 // --- HELPER: Atualizar Status no Backend ---
 async function updateBackendStatus(status, qrCode = null) {
     try {
+        console.log(`[Gateway] Enviando status para backend: ${status}`);
         await fetch(`${BACKEND_URL}/api/gateway/status`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status, qrCode }),
         });
-        console.log(`[Gateway] Status atualizado: ${status}`);
     } catch (error) {
-        if (error.code !== 'ECONNREFUSED') console.error('[Gateway] Falha ao atualizar status:', error.message);
+        // Ignora erros de conexão se o backend estiver reiniciando
+        if (error.code !== 'ECONNREFUSED') console.error('[Gateway] Aviso: Backend indisponível momentaneamente.');
     }
 }
 
 // --- FUNÇÃO PRINCIPAL ---
 async function startSock() {
-    // Avisa que está carregando
-    updateBackendStatus('LOADING');
+    // Limpa console e avisa início
+    console.log('---------------------------------------------------');
+    console.log('[Gateway] Iniciando nova instância do WhatsApp...');
+    console.log(`[Gateway] Diretório de sessão: ${SESSION_FOLDER}`);
+    
+    // 1. Informa que está carregando imediatamente
+    await updateBackendStatus('LOADING');
 
+    // 2. Prepara autenticação
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
     const { version } = await fetchLatestBaileysVersion();
     
-    console.log(`[Gateway] Iniciando Baileys v${version.join('.')}...`);
+    console.log(`[Gateway] Versão do Baileys: v${version.join('.')}`);
 
     const sock = makeWASocket({
         version,
-        logger: pino({ level: 'silent' }), // Reduz logs no terminal
-        printQRInTerminal: true, // Útil para debug local
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: true, // QR no terminal ajuda no debug
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
-        browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Nome que aparece no WhatsApp do celular
+        // Configuração de navegador para parecer um Chrome real
+        browser: ['JZF Atendimento', 'Chrome', '120.0.0'], 
         generateHighQualityLinkPreview: true,
+        // Aumenta timeouts para evitar desconexões em redes lentas
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
+        syncFullHistory: false, // Carrega mais rápido ignorando histórico antigo
     });
 
-    // Salva as credenciais sempre que atualizarem (login, novas chaves, etc)
     sock.ev.on('creds.update', saveCreds);
 
-    // Gerencia a conexão e QR Code
+    // 3. Monitoramento de Conexão e QR Code
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('[Gateway] QR Code recebido do WhatsApp.');
+            console.log('[Gateway] QR CODE GERADO! Convertendo para imagem...');
             try {
-                const url = await QRCode.toDataURL(qr);
-                updateBackendStatus('QR_CODE_READY', url);
+                // Gera QR com margem branca para facilitar leitura
+                const url = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
+                await updateBackendStatus('QR_CODE_READY', url);
+                console.log('[Gateway] QR Code enviado para o frontend com sucesso.');
             } catch (err) {
-                console.error('[Gateway] Erro ao gerar imagem do QR Code:', err);
+                console.error('[Gateway] Erro crítico ao gerar imagem do QR:', err);
             }
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('[Gateway] Conexão fechada. Reconectar?', shouldReconnect);
-            updateBackendStatus('DISCONNECTED');
+            console.log(`[Gateway] Conexão fechada. Razão: ${lastDisconnect?.error}, Reconectar: ${shouldReconnect}`);
+            
+            await updateBackendStatus('DISCONNECTED');
             
             if (shouldReconnect) {
-                setTimeout(startSock, 2000); // Tenta reconectar em 2s
+                console.log('[Gateway] Tentando reconectar em 5 segundos...');
+                setTimeout(startSock, 5000);
             } else {
-                console.log('[Gateway] Desconectado pelo celular. Limpando sessão...');
+                console.log('[Gateway] Desconectado (Logout). Limpando sessão e reiniciando...');
                 fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
-                setTimeout(startSock, 2000); // Reinicia para gerar novo QR
+                setTimeout(startSock, 2000);
             }
         } else if (connection === 'open') {
-            console.log('[Gateway] CONEXÃO ESTABELECIDA COM SUCESSO!');
-            updateBackendStatus('CONNECTED');
+            console.log('[Gateway] >>> CONECTADO AO WHATSAPP! <<<');
+            await updateBackendStatus('CONNECTED');
         }
     });
 
-    // Gerencia Mensagens Recebidas
+    // 4. Gerencia Mensagens
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            if (!msg.message) continue;
-            if (msg.key.fromMe) continue; // Ignora mensagens enviadas por mim (via celular)
+            if (!msg.message || msg.key.fromMe) continue;
 
             const userId = msg.key.remoteJid;
             const userName = msg.pushName || userId.split('@')[0];
             
+            console.log(`[Gateway] Mensagem recebida de ${userName}`);
+
             let userInput = '';
             let filePayload = null;
-            let gatewayError = false;
             let replyContext = null;
 
-            // Identifica o tipo de mensagem
             const messageType = Object.keys(msg.message)[0];
             const messageContent = msg.message[messageType];
 
-            // Extrai texto e contexto
             if (messageType === 'conversation') {
                 userInput = msg.message.conversation;
             } else if (messageType === 'extendedTextMessage') {
                 userInput = msg.message.extendedTextMessage.text;
-                
-                // Verifica se é uma resposta a outra mensagem
                 const contextInfo = msg.message.extendedTextMessage.contextInfo;
                 if (contextInfo && contextInfo.quotedMessage) {
                      const quoted = contextInfo.quotedMessage;
@@ -121,16 +134,10 @@ async function startSock() {
                          fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net' 
                      };
                 }
-            } else if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'].includes(messageType)) {
-                // Mídia recebida
-                userInput = messageContent.caption || ''; // Legenda da imagem/vídeo
+            } else if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                userInput = messageContent.caption || '';
                 try {
-                    console.log(`[Gateway] Baixando mídia (${messageType}) de ${userName}...`);
-                    const buffer = await downloadMediaMessage(
-                        msg,
-                        'buffer',
-                        { logger: pino({ level: 'silent' }) }
-                    );
+                    const buffer = await downloadMediaMessage(msg, 'buffer', { logger: pino({ level: 'silent' }) });
                     filePayload = {
                         name: `${messageType}.${messageContent.mimetype.split('/')[1] || 'bin'}`,
                         type: messageContent.mimetype,
@@ -138,111 +145,66 @@ async function startSock() {
                     };
                 } catch (err) {
                     console.error('[Gateway] Erro ao baixar mídia:', err);
-                    gatewayError = true;
                     userInput = '[Erro ao baixar mídia]';
                 }
             }
 
-            if (!userInput && !filePayload) continue; // Ignora mensagens vazias/desconhecidas
+            if (!userInput && !filePayload) continue;
 
-            const payload = {
-                userId,
-                userName,
-                userInput,
-                file: filePayload,
-                gatewayError,
-                replyContext
-            };
-
-            // Envia para o webhook do servidor
             try {
-                const response = await fetch(`${BACKEND_URL}/api/whatsapp-webhook`, {
+                await fetch(`${BACKEND_URL}/api/whatsapp-webhook`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({ userId, userName, userInput, file: filePayload, replyContext })
                 });
-                
-                // Processa respostas imediatas (se houver)
-                const data = await response.json();
-                if (data.replies && data.replies.length > 0) {
-                    for (const replyText of data.replies) {
-                        await sock.sendMessage(userId, { text: replyText });
-                    }
-                }
             } catch (err) {
-                console.error('[Gateway] Erro ao enviar para webhook:', err.message);
+                console.error('[Gateway] Erro ao enviar webhook:', err.message);
             }
         }
     });
 
-    // --- POLLING DE MENSAGENS DE SAÍDA ---
-    // Busca periodicamente mensagens que o backend quer enviar
+    // 5. Polling de Saída
     setInterval(async () => {
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gateway/poll-outbound`);
-            if (response.status === 200) {
-                const messages = await response.json();
-                
+            const res = await fetch(`${BACKEND_URL}/api/gateway/poll-outbound`);
+            if (res.status === 200) {
+                const messages = await res.json();
                 for (const msg of messages) {
                     try {
-                        let sentMsg;
+                        // Delay proposital para evitar bloqueio por spam
+                        await new Promise(r => setTimeout(r, 500));
                         
-                        // 1. Edição de Mensagem
                         if (msg.type === 'edit') {
-                             // O Baileys precisa do ID original para editar
                              await sock.sendMessage(msg.userId, { 
                                  text: msg.newText, 
                                  edit: { remoteJid: msg.userId, fromMe: true, id: msg.messageId } 
                              });
-                        
-                        // 2. Envio de Mídia (Arquivo/Imagem/Áudio)
                         } else if (msg.file && msg.file.data) {
                             const buffer = Buffer.from(msg.file.data, 'base64');
                             const mimetype = msg.file.type;
-
-                            if (mimetype.startsWith('image/')) {
-                                sentMsg = await sock.sendMessage(msg.userId, { image: buffer, caption: msg.text });
-                            } else if (mimetype.startsWith('video/')) {
-                                sentMsg = await sock.sendMessage(msg.userId, { video: buffer, caption: msg.text });
-                            } else if (mimetype.startsWith('audio/')) {
-                                sentMsg = await sock.sendMessage(msg.userId, { audio: buffer, mimetype });
-                            } else {
-                                sentMsg = await sock.sendMessage(msg.userId, { 
-                                    document: buffer, 
-                                    mimetype, 
-                                    fileName: msg.file.name,
-                                    caption: msg.text 
+                            const options = { caption: msg.text };
+                            
+                            if (mimetype.startsWith('image/')) await sock.sendMessage(msg.userId, { image: buffer, ...options });
+                            else if (mimetype.startsWith('video/')) await sock.sendMessage(msg.userId, { video: buffer, ...options });
+                            else if (mimetype.startsWith('audio/')) await sock.sendMessage(msg.userId, { audio: buffer, mimetype });
+                            else await sock.sendMessage(msg.userId, { document: buffer, mimetype, fileName: msg.file.name, ...options });
+                        } else if (msg.text) {
+                            const sent = await sock.sendMessage(msg.userId, { text: msg.text });
+                            if (sent && msg.tempId) {
+                                await fetch(`${BACKEND_URL}/api/gateway/ack-message`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ tempId: msg.tempId, messageId: sent.key.id, userId: msg.userId }),
                                 });
                             }
-
-                        // 3. Envio de Texto Simples
-                        } else if (msg.text) {
-                            sentMsg = await sock.sendMessage(msg.userId, { text: msg.text });
-                        }
-
-                        // Confirmação de envio (ACK) para o Backend
-                        if (sentMsg && msg.tempId) {
-                            await fetch(`${BACKEND_URL}/api/gateway/ack-message`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    tempId: msg.tempId,
-                                    messageId: sentMsg.key.id,
-                                    userId: msg.userId,
-                                }),
-                            });
                         }
                     } catch (e) {
-                        console.error(`[Gateway] Erro ao enviar mensagem para ${msg.userId}:`, e.message);
+                        console.error(`[Gateway] Falha no envio para ${msg.userId}:`, e.message);
                     }
-                    await new Promise(r => setTimeout(r, 300)); // Delay suave para evitar bloqueio
                 }
             }
-        } catch (error) {
-             // Erros de polling são normais se o backend reiniciar
-        }
-    }, 1000); // Verifica a cada 1 segundo para resposta rápida
+        } catch (error) { /* Silently fail on poll error */ }
+    }, 1000);
 }
 
-// Inicia o Gateway
 startSock();
