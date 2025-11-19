@@ -25,7 +25,10 @@ async function updateBackendStatus(status, qrCode = null) {
         });
         console.log(`[Gateway] Status atualizado no backend: ${status}`);
     } catch (error) {
-        console.error('[Gateway] FALHA ao atualizar o status no backend:', error.message);
+        // Ignora erros de conexão se o servidor principal ainda estiver subindo
+        if (error.code !== 'ECONNREFUSED') {
+            console.error('[Gateway] FALHA ao atualizar o status no backend:', error.message);
+        }
     }
 }
 
@@ -61,30 +64,33 @@ const syncContacts = async (client) => {
   }
 };
 
+// Avisa o backend que estamos iniciando o processo (status: LOADING)
+updateBackendStatus('LOADING');
+
+console.log('[Gateway] Inicializando wppconnect (criando sessão jzf-session-v2)...');
 
 wppconnect
   .create({
-    session: 'jzf-chatbot-session', // Nome da sessão
+    session: 'jzf-session-v2', // Nome alterado para forçar limpeza de cache e nova geração de QR
     catchQR: (base64Qr, asciiQR) => {
-      console.log('[Gateway] QR Code recebido. Enviando para o backend para exibição no frontend.');
-      // Envia o QR code em formato de data URL para o backend
-      updateBackendStatus('QR_CODE_READY', base64Qr); // base64Qr já vem formatado ou não dependendo da versão, garantiremos no frontend
+      console.log('[Gateway] >>> QR CODE GERADO COM SUCESSO <<<');
+      console.log('[Gateway] Enviando QR Code para o painel...');
+      updateBackendStatus('QR_CODE_READY', base64Qr);
     },
     statusFind: (statusSession, session) => {
-        console.log('Status da Sessão:', statusSession);
-        console.log('Nome da Sessão:', session);
+        console.log(`[Gateway] Status da Sessão: ${statusSession}`);
         if (statusSession === 'isLogged' || statusSession === 'inChat' || statusSession === 'qrReadSuccess') {
             updateBackendStatus('CONNECTED');
         }
-        if (statusSession === 'browserClose') {
+        if (statusSession === 'browserClose' || statusSession === 'autocloseCalled') {
             updateBackendStatus('DISCONNECTED');
         }
     },
-    headless: true, // 'true' é mais estável que 'new' em alguns ambientes
+    headless: true, // Mantém headless true para servidores
     devtools: false,
     useChrome: false,
     debug: false,
-    logQR: false,
+    logQR: false, // Desativado no terminal para não poluir, já que vai pro frontend
     browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -92,38 +98,36 @@ wppconnect
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
+        '--single-process', // Adicionado para maior estabilidade em contêineres pequenos
         '--disable-gpu'
     ],
     disableWelcome: true,
     updatesLog: false,
-    autoClose: 0, // Não fechar automaticamente se o QR code não for lido rápido
+    autoClose: 0,
   })
   .then((client) => {
+    console.log('[Gateway] Cliente conectado com sucesso!');
     updateBackendStatus('CONNECTED');
     start(client);
     
-    // --- NOVO: Listener para mudanças de estado da conexão ---
     client.onStateChange((state) => {
         console.log('[Gateway] Estado da conexão mudou:', state);
         if (['CONFLICT', 'UNPAIRED', 'UNLAUNCHED'].includes(state)) {
-            // Estes estados indicam uma desconexão que requer intervenção (novo QR code).
             updateBackendStatus('DISCONNECTED');
-            console.log('[Gateway] Conexão perdida. Fechando cliente para gerar novo QR na reinicialização.');
+            console.log('[Gateway] Conexão perdida. Fechando cliente...');
             client.close();
-            // Em um ambiente com PM2 ou similar, o processo será reiniciado automaticamente,
-            // gerando um novo QR code.
         }
     });
 
   })
   .catch((error) => {
-      console.log('ERRO AO CRIAR CLIENTE:', error);
+      console.error('[Gateway] ERRO FATAL AO CRIAR CLIENTE:', error);
       updateBackendStatus('ERROR');
   });
 
 
 async function start(client) {
-  console.log('Cliente WhatsApp conectado e pronto para receber mensagens!');
+  console.log('[Gateway] Loop principal iniciado.');
   
   // Sincroniza os contatos ao iniciar e depois periodicamente
   await syncContacts(client);
@@ -172,15 +176,13 @@ async function start(client) {
         }
     } catch (error) {
         // Silencia erros de timeout ou conexão, pois são esperados em polling
-        if (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT') {
+        if (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT' && error.code !== 'ECONNREFUSED') {
            console.error('[Gateway] Erro ao buscar mensagens de saída:', error.message);
         }
     }
   }, 3000); // Verifica a cada 3 segundos
 
   client.onMessage(async (message) => {
-    // CORREÇÃO: A verificação de `hasMedia` ou `type` deve acontecer antes para evitar descartar áudios.
-    // Ignora mensagens de grupos, status e as próprias mensagens do bot.
     const hasContent = message.body || message.hasMedia || ['image', 'audio', 'ptt', 'video', 'document'].includes(message.type);
     if (message.isGroupMsg || message.from === 'status@broadcast' || !hasContent || message.fromMe) {
         return;
@@ -194,19 +196,17 @@ async function start(client) {
     let gatewayError = false;
     let replyContext = null;
 
-    // Verifica se a mensagem é uma resposta
     if (message.quotedMsg) {
         replyContext = {
             text: message.quotedMsg.body || (message.quotedMsg.hasMedia ? `[Mídia: ${message.quotedMsg.type}]` : ''),
-            fromMe: message.quotedMsg.fromMe, // Informa se a mensagem respondida foi enviada pelo bot/atendente
+            fromMe: message.quotedMsg.fromMe,
         };
     }
     
-    // --- LÓGICA DE DETECÇÃO DE MÍDIA ATUALIZADA E ROBUSTA ---
     const isMedia = message.hasMedia || ['image', 'audio', 'ptt', 'video', 'document'].includes(message.type);
 
     if (isMedia) {
-        userInput = message.caption || ''; // Usa a legenda como texto principal da mensagem
+        userInput = message.caption || '';
         console.log(`[Gateway] Mídia detectada (${message.type}). Decriptando para ${userName}...`);
         try {
             const mediaBuffer = await client.decryptFile(message);
@@ -229,8 +229,6 @@ async function start(client) {
             filePayload = null;
         }
     }
-    // Fallback para vazamento de thumbnail: se não foi identificado como mídia, mas o corpo parece ser,
-    // ainda tratamos como um erro de mídia para não poluir o chat com texto base64.
     else if (typeof userInput === 'string' && userInput.startsWith('/9j/')) {
         console.warn(`[Gateway] Detectado vazamento de thumbnail em mensagem de texto para ${userName}. Bloqueando.`);
         userInput = `[Mídia (imagem) não pôde ser carregada]`;
@@ -250,7 +248,6 @@ async function start(client) {
     console.log(`Mensagem de ${userName} (${userId}) recebida. Encaminhando para o backend...`);
     
     try {
-      // Envia o payload unificado para o webhook do servidor principal
       const response = await fetch(`${BACKEND_URL}/api/whatsapp-webhook`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -264,7 +261,6 @@ async function start(client) {
       
       const data = await response.json();
       
-      // Envia as respostas do backend de volta para o usuário
       if (data.replies && data.replies.length > 0) {
         console.log(`Backend respondeu. Enviando ${data.replies.length} mensagem(ns) para ${userId}...`);
         for (const replyText of data.replies) {
@@ -275,7 +271,6 @@ async function start(client) {
 
     } catch (error) {
       console.error('Erro ao comunicar com o servidor de backend:', error);
-      await client.sendText(userId, "Desculpe, estou enfrentando um problema técnico no momento. Por favor, tente novamente mais tarde.");
     }
   });
 }
