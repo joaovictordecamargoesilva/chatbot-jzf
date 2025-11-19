@@ -336,7 +336,7 @@ function App() {
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState(null);
   
-  const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), ai_active: new Set(), internal: new Set() });
+  const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
 
   const fetchData = useCallback(async () => {
