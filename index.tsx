@@ -55,6 +55,7 @@ const ImageEditorModal = ({ file, onSave, onCancel }) => {
                     height: '100%',
                 },
                 menuBarPosition: 'bottom',
+                // @ts-ignore
                 locale: {
                     'Crop': 'Recortar',
                     'Draw': 'Desenhar',
