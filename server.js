@@ -33,7 +33,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.0.0_INTEGRATED";
+const SERVER_VERSION = "21.0.1_INTEGRATED_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -482,10 +482,10 @@ setInterval(async () => {
 
 
 // --- ROTAS DA API (Express) ---
+const apiRouter = express.Router();
+
 // Rotas simplificadas, removendo webhooks e polling externos
 apiRouter.get('/gateway/status', (req, res) => res.json(gatewayStatus));
-
-// ... (Restante das rotas API existentes mantidas abaixo) ...
 
 apiRouter.get('/health', (req, res) => res.send('OK'));
 apiRouter.get('/attendants', (req, res) => res.json(ATTENDANTS));
