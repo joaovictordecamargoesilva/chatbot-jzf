@@ -67,11 +67,11 @@ const syncContacts = async (client) => {
 // Avisa o backend que estamos iniciando o processo (status: LOADING)
 updateBackendStatus('LOADING');
 
-console.log('[Gateway] Inicializando wppconnect (criando sessão jzf-session-v2)...');
+console.log('[Gateway] Inicializando wppconnect (criando sessão jzf-session-v3)...');
 
 wppconnect
   .create({
-    session: 'jzf-session-v2', // Nome alterado para forçar limpeza de cache e nova geração de QR
+    session: 'jzf-session-v3', // Sessão nova (v3) para garantir limpeza total de cache
     catchQR: (base64Qr, asciiQR) => {
       console.log('[Gateway] >>> QR CODE GERADO COM SUCESSO <<<');
       console.log('[Gateway] Enviando QR Code para o painel...');
@@ -86,20 +86,20 @@ wppconnect
             updateBackendStatus('DISCONNECTED');
         }
     },
-    headless: true, // Mantém headless true para servidores
+    headless: true, 
     devtools: false,
     useChrome: false,
     debug: false,
-    logQR: false, // Desativado no terminal para não poluir, já que vai pro frontend
+    logQR: false, 
+    // Argumentos mais estáveis para evitar crash do Puppeteer
     browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
-        '--no-zygote',
-        '--single-process', // Adicionado para maior estabilidade em contêineres pequenos
         '--disable-gpu'
+        // Removido '--single-process' e '--no-zygote' pois causam instabilidade em alguns OS
     ],
     disableWelcome: true,
     updatesLog: false,
