@@ -905,7 +905,10 @@ apiRouter.post('/gateway/status', (req, res) => {
     }
     gatewayStatus.status = status;
     gatewayStatus.qrCode = qrCode || null;
-    console.log(`[Gateway Status] Status do gateway atualizado para: ${status}`);
+    
+    // Log de depuração para confirmar recebimento de status
+    console.log(`[Gateway Status] Atualização recebida. Novo status: ${status}, Tem QR Code: ${!!qrCode}`);
+    
     res.sendStatus(200);
 });
 
