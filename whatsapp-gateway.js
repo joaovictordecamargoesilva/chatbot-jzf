@@ -12,8 +12,8 @@ import path from 'path';
 
 // --- CONFIGURAÇÃO ---
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
-// CRÍTICO: Usamos um nome de pasta novo para limpar qualquer sessão antiga travada
-const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_clean_v5');
+// CRÍTICO: Usamos um nome de pasta novo para limpar qualquer sessão antiga travada e forçar novo QR
+const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_clean_v6');
 
 // --- HELPER: Atualizar Status no Backend ---
 async function updateBackendStatus(status, qrCode = null) {
@@ -33,60 +33,54 @@ async function updateBackendStatus(status, qrCode = null) {
 // --- FUNÇÃO PRINCIPAL ---
 async function startSock() {
     console.log('---------------------------------------------------');
-    console.log('[Gateway] Iniciando nova instância do WhatsApp (Baileys)...');
+    console.log('[Gateway] Iniciando nova instância do WhatsApp (Baileys) [VANILLA MODE]...');
     console.log(`[Gateway] Diretório de sessão: ${SESSION_FOLDER}`);
     
-    // 1. Força o status LOADING imediatamente para a UI não ficar presa
     await updateBackendStatus('LOADING');
 
-    // 2. Prepara autenticação
+    // Prepara autenticação da forma mais simples possível (igual ao CAR CLASS)
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
     const { version } = await fetchLatestBaileysVersion();
     
     console.log(`[Gateway] Versão do Baileys: v${version.join('.')}`);
 
-    // Configuração simplificada baseada no código de referência funcional
     const sock = makeWASocket({
         version,
+        auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true, // QR no terminal ajuda no debug
-        auth: state, // Passando o state diretamente, sem makeCacheableSignalKeyStore
-        browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Configuração de navegador simplificada
-        connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 10000,
-        syncFullHistory: false,
+        printQRInTerminal: true,
+        // Mantendo a configuração de browser EXATAMENTE igual ao exemplo que funciona
+        browser: ['CARCLASS', 'Chrome', '1.0.0']
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // 3. Monitoramento de Conexão e QR Code
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('[Gateway] QR CODE GERADO! Convertendo para imagem...');
+            console.log('[Gateway] QR CODE RECIBIDO DO BAILEYS');
             try {
-                const url = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
+                const url = await QRCode.toDataURL(qr);
                 await updateBackendStatus('QR_CODE_READY', url);
-                console.log('[Gateway] QR Code enviado para o frontend com sucesso.');
+                console.log('[Gateway] QR Code enviado para o frontend.');
             } catch (err) {
-                console.error('[Gateway] Erro crítico ao gerar imagem do QR:', err);
+                console.error('[Gateway] Erro ao processar imagem QR:', err);
             }
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`[Gateway] Conexão fechada. Razão: ${lastDisconnect?.error}, Reconectar: ${shouldReconnect}`);
+            console.log(`[Gateway] Conexão fechada. Reconectar: ${shouldReconnect}`);
             
             await updateBackendStatus('DISCONNECTED');
             
             if (shouldReconnect) {
-                console.log('[Gateway] Tentando reconectar em 5 segundos...');
-                setTimeout(startSock, 5000);
+                setTimeout(startSock, 3000);
             } else {
-                console.log('[Gateway] Desconectado (Logout). Limpando sessão e reiniciando...');
+                console.log('[Gateway] Desconectado. Limpando sessão...');
                 fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
-                setTimeout(startSock, 2000);
+                setTimeout(startSock, 1000);
             }
         } else if (connection === 'open') {
             console.log('[Gateway] >>> CONECTADO AO WHATSAPP! <<<');
@@ -94,7 +88,6 @@ async function startSock() {
         }
     });
 
-    // 4. Gerencia Mensagens
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
@@ -148,12 +141,12 @@ async function startSock() {
                     body: JSON.stringify({ userId, userName, userInput, file: filePayload, replyContext })
                 });
             } catch (err) {
-                console.error('[Gateway] Erro ao enviar webhook:', err.message);
+                console.error('[Gateway] Erro webhook:', err.message);
             }
         }
     });
 
-    // 5. Polling de Saída
+    // Polling simples
     setInterval(async () => {
         try {
             const res = await fetch(`${BACKEND_URL}/api/gateway/poll-outbound`);
@@ -188,11 +181,11 @@ async function startSock() {
                             }
                         }
                     } catch (e) {
-                        console.error(`[Gateway] Falha no envio para ${msg.userId}:`, e.message);
+                        console.error(`[Gateway] Falha no envio:`, e.message);
                     }
                 }
             }
-        } catch (error) { /* Silently fail on poll error */ }
+        } catch (error) { }
     }, 1000);
 }
 
