@@ -1488,25 +1488,53 @@ function App() {
         <div className="flex items-center justify-center w-full h-screen bg-gray-200">
             <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg text-center">
                 <h2 className="text-2xl font-bold text-gray-800">Conectar ao WhatsApp</h2>
-                {gatewayStatus.status === 'LOADING' && <p className="text-gray-600">Verificando status da conexão...</p>}
-                {gatewayStatus.status === 'ERROR' && <p className="text-red-500 font-semibold">Não foi possível conectar ao serviço. Verifique o gateway e recarregue a página.</p>}
-                {gatewayStatus.status === 'DISCONNECTED' && (
-                    <div>
-                        <p className="text-gray-600 mb-2">WhatsApp desconectado. Aguardando a geração de um novo QR Code...</p>
-                        <div className="animate-pulse h-2 bg-gray-300 rounded w-3/4 mx-auto mb-4"></div>
-                        <p className="text-xs text-gray-500">Isso pode levar alguns segundos se o sistema estiver reiniciando.</p>
-                        <button onClick={pollStatus} className="mt-4 px-4 py-2 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200">
-                           Forçar Recarregamento do Status
+                
+                {gatewayStatus.status === 'LOADING' && (
+                    <div className="flex flex-col items-center space-y-4">
+                        <p className="text-gray-600 font-medium animate-pulse">Iniciando gateway de conexão...</p>
+                        <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                          <div className="bg-blue-600 h-2.5 rounded-full w-2/3 animate-pulse"></div>
+                        </div>
+                        <p className="text-xs text-gray-500">Aguarde alguns instantes enquanto o QR Code é gerado.</p>
+                    </div>
+                )}
+
+                {gatewayStatus.status === 'ERROR' && (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                        <p className="text-red-600 font-semibold mb-2">Erro ao conectar ao serviço</p>
+                        <p className="text-sm text-red-500">Verifique se o arquivo <span className="font-mono bg-red-100 px-1">whatsapp-gateway.js</span> está rodando no servidor sem erros.</p>
+                        <button onClick={pollStatus} className="mt-4 px-4 py-2 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 font-medium">
+                           Tentar Novamente
                         </button>
                     </div>
                 )}
-                {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
-                    <div className="flex flex-col items-center">
-                        <p className="mb-4 text-gray-700">Abra o WhatsApp no seu celular, vá em "Aparelhos conectados" e escaneie o código abaixo.</p>
-                        <img src={gatewayStatus.qrCode} alt="QR Code do WhatsApp" className="mx-auto border-4 border-gray-300 rounded-lg" style={{ width: '256px', height: '256px' }}/>
-                        <p className="text-sm text-gray-500 mt-4">A conexão será mantida ativa permanentemente.</p>
+
+                {gatewayStatus.status === 'DISCONNECTED' && (
+                    <div>
+                        <p className="text-gray-600 mb-4">WhatsApp desconectado. O sistema está tentando gerar um novo QR Code.</p>
+                        <div className="flex justify-center mb-4">
+                            <svg className="animate-spin h-8 w-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        </div>
+                        <p className="text-xs text-gray-500 mb-4">Se isso demorar mais que 1 minuto, reinicie o servidor.</p>
+                        <button onClick={pollStatus} className="px-4 py-2 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200">
+                           Forçar Verificação de Status
+                        </button>
                     </div>
                 )}
+                
+                {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
+                    <div className="flex flex-col items-center bg-blue-50 p-4 rounded-lg border border-blue-100">
+                        <p className="mb-4 text-gray-800 font-medium">Abra o WhatsApp no seu celular, vá em "Aparelhos conectados" e escaneie:</p>
+                        <div className="p-2 bg-white rounded-lg shadow-sm">
+                            <img src={gatewayStatus.qrCode} alt="QR Code do WhatsApp" className="mx-auto" style={{ width: '256px', height: '256px' }}/>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-4">A conexão será mantida ativa permanentemente.</p>
+                    </div>
+                )}
+                
                 <div className="pt-4 border-t border-gray-200 mt-4">
                     <p className="text-sm text-gray-600">Atendente: <span className="font-semibold">{attendant.name}</span></p>
                     <button onClick={handleLogout} className="mt-2 text-xs text-red-500 hover:underline">Sair (deslogar do painel)</button>
