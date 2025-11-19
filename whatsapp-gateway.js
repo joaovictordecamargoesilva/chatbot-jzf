@@ -13,8 +13,8 @@ import path from 'path';
 
 // --- CONFIGURAÇÃO ---
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
-// MUDANÇA CRÍTICA: Nome da pasta alterado para forçar uma nova sessão limpa
-const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_v3');
+// CRÍTICO: Usamos um nome de pasta novo para limpar qualquer sessão antiga travada
+const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_clean_v4');
 
 // --- HELPER: Atualizar Status no Backend ---
 async function updateBackendStatus(status, qrCode = null) {
@@ -33,12 +33,11 @@ async function updateBackendStatus(status, qrCode = null) {
 
 // --- FUNÇÃO PRINCIPAL ---
 async function startSock() {
-    // Limpa console e avisa início
     console.log('---------------------------------------------------');
-    console.log('[Gateway] Iniciando nova instância do WhatsApp...');
+    console.log('[Gateway] Iniciando nova instância do WhatsApp (Baileys)...');
     console.log(`[Gateway] Diretório de sessão: ${SESSION_FOLDER}`);
     
-    // 1. Informa que está carregando imediatamente
+    // 1. Força o status LOADING imediatamente para a UI não ficar presa
     await updateBackendStatus('LOADING');
 
     // 2. Prepara autenticação
@@ -55,13 +54,11 @@ async function startSock() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
-        // Configuração de navegador para parecer um Chrome real
         browser: ['JZF Atendimento', 'Chrome', '120.0.0'], 
         generateHighQualityLinkPreview: true,
-        // Aumenta timeouts para evitar desconexões em redes lentas
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
-        syncFullHistory: false, // Carrega mais rápido ignorando histórico antigo
+        syncFullHistory: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -73,7 +70,6 @@ async function startSock() {
         if (qr) {
             console.log('[Gateway] QR CODE GERADO! Convertendo para imagem...');
             try {
-                // Gera QR com margem branca para facilitar leitura
                 const url = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
                 await updateBackendStatus('QR_CODE_READY', url);
                 console.log('[Gateway] QR Code enviado para o frontend com sucesso.');
@@ -112,8 +108,6 @@ async function startSock() {
             const userId = msg.key.remoteJid;
             const userName = msg.pushName || userId.split('@')[0];
             
-            console.log(`[Gateway] Mensagem recebida de ${userName}`);
-
             let userInput = '';
             let filePayload = null;
             let replyContext = null;
@@ -171,7 +165,6 @@ async function startSock() {
                 const messages = await res.json();
                 for (const msg of messages) {
                     try {
-                        // Delay proposital para evitar bloqueio por spam
                         await new Promise(r => setTimeout(r, 500));
                         
                         if (msg.type === 'edit') {
