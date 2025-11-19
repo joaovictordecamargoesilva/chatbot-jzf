@@ -68,7 +68,7 @@ wppconnect
     catchQR: (base64Qr, asciiQR) => {
       console.log('[Gateway] QR Code recebido. Enviando para o backend para exibição no frontend.');
       // Envia o QR code em formato de data URL para o backend
-      updateBackendStatus('QR_CODE_READY', `data:image/png;base64,${base64Qr}`);
+      updateBackendStatus('QR_CODE_READY', base64Qr); // base64Qr já vem formatado ou não dependendo da versão, garantiremos no frontend
     },
     statusFind: (statusSession, session) => {
         console.log('Status da Sessão:', statusSession);
@@ -76,15 +76,27 @@ wppconnect
         if (statusSession === 'isLogged' || statusSession === 'inChat' || statusSession === 'qrReadSuccess') {
             updateBackendStatus('CONNECTED');
         }
+        if (statusSession === 'browserClose') {
+            updateBackendStatus('DISCONNECTED');
+        }
     },
-    headless: 'new',
-    puppeteerOptions: {
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-        ]
-    },
+    headless: true, // 'true' é mais estável que 'new' em alguns ambientes
+    devtools: false,
+    useChrome: false,
+    debug: false,
     logQR: false,
+    browserArgs: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+    ],
+    disableWelcome: true,
+    updatesLog: false,
+    autoClose: 0, // Não fechar automaticamente se o QR code não for lido rápido
   })
   .then((client) => {
     updateBackendStatus('CONNECTED');
