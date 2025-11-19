@@ -442,7 +442,7 @@ function App() {
                 {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
                     <div className="bg-white p-2 rounded border shadow-sm inline-block">
                         <img src={gatewayStatus.qrCode} alt="QR Code" className="w-64 h-64 object-contain"/>
-                        <p className="mt-4 text-sm text-gray-600 font-medium">Abra o WhatsApp > Aparelhos conectados > Conectar</p>
+                        <p className="mt-4 text-sm text-gray-600 font-medium">Abra o WhatsApp &gt; Aparelhos conectados &gt; Conectar</p>
                     </div>
                 )}
 
