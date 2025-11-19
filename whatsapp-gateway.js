@@ -1,21 +1,20 @@
-// --- WHATSAPP GATEWAY UNIFICADO ---
-// Este arquivo conecta-se ao WhatsApp usando @wppconnect e atua como uma ponte para o nosso servidor.
-
-import wppconnect from '@wppconnect-team/wppconnect';
+import makeWASocket, { 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    downloadMediaMessage, 
+    makeCacheableSignalKeyStore 
+} from '@whiskeysockets/baileys';
+import pino from 'pino';
+import QRCode from 'qrcode';
 import fetch from 'node-fetch';
+import fs from 'fs';
 
-// IMPORTANTE: A URL do backend agora é configurada via variáveis de ambiente para segurança e flexibilidade.
-// No ambiente da Render, crie uma variável de ambiente chamada BACKEND_URL com o valor da URL do seu serviço.
-// Exemplo: 'https://chatbot-jzf-server.onrender.com'
+// --- CONFIGURAÇÃO ---
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
+const SESSION_FOLDER = 'baileys_auth_info';
 
-if (!process.env.BACKEND_URL) {
-  console.warn('AVISO: A variável de ambiente BACKEND_URL não está definida. Usando http://localhost:3000 como padrão. Isso pode não funcionar em produção.');
-}
-
-console.log(`Gateway iniciado. Tentando conectar ao backend em: ${BACKEND_URL}`);
-
-// --- NOVA FUNÇÃO: Atualizar status no backend ---
+// --- HELPER: Atualizar Status no Backend ---
 async function updateBackendStatus(status, qrCode = null) {
     try {
         await fetch(`${BACKEND_URL}/api/gateway/status`, {
@@ -23,254 +22,227 @@ async function updateBackendStatus(status, qrCode = null) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status, qrCode }),
         });
-        console.log(`[Gateway] Status atualizado no backend: ${status}`);
+        console.log(`[Gateway] Status atualizado: ${status}`);
     } catch (error) {
-        // Ignora erros de conexão se o servidor principal ainda estiver subindo
-        if (error.code !== 'ECONNREFUSED') {
-            console.error('[Gateway] FALHA ao atualizar o status no backend:', error.message);
-        }
+        if (error.code !== 'ECONNREFUSED') console.error('[Gateway] Falha ao atualizar status:', error.message);
     }
 }
 
+// --- FUNÇÃO PRINCIPAL ---
+async function startSock() {
+    // Avisa que está carregando
+    updateBackendStatus('LOADING');
 
-// Função para sincronizar contatos de forma robusta
-const syncContacts = async (client) => {
-  try {
-    console.log('[Gateway] Iniciando sincronização de contatos do WhatsApp...');
-    const allContacts = await client.getAllContacts();
-    const formattedContacts = allContacts
-      .filter(c => c.isUser && !c.isMe && c.id.server === 'c.us') // Apenas contatos de usuários
-      .map(c => ({
-        userId: c.id._serialized,
-        userName: c.name || c.pushname || c.id.user,
-      }));
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
+    const { version } = await fetchLatestBaileysVersion();
     
-    console.log(`[Gateway] Encontrados ${allContacts.length} contatos no total, ${formattedContacts.length} são usuários válidos para sincronização.`);
+    console.log(`[Gateway] Iniciando Baileys v${version.join('.')}...`);
 
-    const syncResponse = await fetch(`${BACKEND_URL}/api/gateway/sync-contacts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contacts: formattedContacts })
+    const sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }), // Reduz logs no terminal
+        printQRInTerminal: true, // Útil para debug local
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+        },
+        browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Nome que aparece no WhatsApp do celular
+        generateHighQualityLinkPreview: true,
     });
-    
-    if (syncResponse.ok) {
-        console.log(`[Gateway] Sincronização BEM-SUCEDIDA de ${formattedContacts.length} contatos com o servidor.`);
-    } else {
-        console.error(`[Gateway] FALHA ao sincronizar contatos com o servidor. Status: ${syncResponse.status} - ${syncResponse.statusText}`);
-    }
 
-  } catch (error) {
-    console.error('[Gateway] Erro CRÍTICO durante a sincronização de contatos:', error.message);
-  }
-};
+    // Salva as credenciais sempre que atualizarem (login, novas chaves, etc)
+    sock.ev.on('creds.update', saveCreds);
 
-// Avisa o backend que estamos iniciando o processo (status: LOADING)
-updateBackendStatus('LOADING');
+    // Gerencia a conexão e QR Code
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-console.log('[Gateway] Inicializando wppconnect (criando sessão jzf-session-v3)...');
+        if (qr) {
+            console.log('[Gateway] QR Code recebido do WhatsApp.');
+            try {
+                const url = await QRCode.toDataURL(qr);
+                updateBackendStatus('QR_CODE_READY', url);
+            } catch (err) {
+                console.error('[Gateway] Erro ao gerar imagem do QR Code:', err);
+            }
+        }
 
-wppconnect
-  .create({
-    session: 'jzf-session-v3', // Sessão nova (v3) para garantir limpeza total de cache
-    catchQR: (base64Qr, asciiQR) => {
-      console.log('[Gateway] >>> QR CODE GERADO COM SUCESSO <<<');
-      console.log('[Gateway] Enviando QR Code para o painel...');
-      updateBackendStatus('QR_CODE_READY', base64Qr);
-    },
-    statusFind: (statusSession, session) => {
-        console.log(`[Gateway] Status da Sessão: ${statusSession}`);
-        if (statusSession === 'isLogged' || statusSession === 'inChat' || statusSession === 'qrReadSuccess') {
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('[Gateway] Conexão fechada. Reconectar?', shouldReconnect);
+            updateBackendStatus('DISCONNECTED');
+            
+            if (shouldReconnect) {
+                setTimeout(startSock, 2000); // Tenta reconectar em 2s
+            } else {
+                console.log('[Gateway] Desconectado pelo celular. Limpando sessão...');
+                fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
+                setTimeout(startSock, 2000); // Reinicia para gerar novo QR
+            }
+        } else if (connection === 'open') {
+            console.log('[Gateway] CONEXÃO ESTABELECIDA COM SUCESSO!');
             updateBackendStatus('CONNECTED');
         }
-        if (statusSession === 'browserClose' || statusSession === 'autocloseCalled') {
-            updateBackendStatus('DISCONNECTED');
-        }
-    },
-    headless: true, 
-    devtools: false,
-    useChrome: false,
-    debug: false,
-    logQR: false, 
-    // Argumentos mais estáveis para evitar crash do Puppeteer
-    browserArgs: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--disable-gpu'
-        // Removido '--single-process' e '--no-zygote' pois causam instabilidade em alguns OS
-    ],
-    disableWelcome: true,
-    updatesLog: false,
-    autoClose: 0,
-  })
-  .then((client) => {
-    console.log('[Gateway] Cliente conectado com sucesso!');
-    updateBackendStatus('CONNECTED');
-    start(client);
-    
-    client.onStateChange((state) => {
-        console.log('[Gateway] Estado da conexão mudou:', state);
-        if (['CONFLICT', 'UNPAIRED', 'UNLAUNCHED'].includes(state)) {
-            updateBackendStatus('DISCONNECTED');
-            console.log('[Gateway] Conexão perdida. Fechando cliente...');
-            client.close();
+    });
+
+    // Gerencia Mensagens Recebidas
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        for (const msg of messages) {
+            if (!msg.message) continue;
+            if (msg.key.fromMe) continue; // Ignora mensagens enviadas por mim (via celular)
+
+            const userId = msg.key.remoteJid;
+            const userName = msg.pushName || userId.split('@')[0];
+            
+            let userInput = '';
+            let filePayload = null;
+            let gatewayError = false;
+            let replyContext = null;
+
+            // Identifica o tipo de mensagem
+            const messageType = Object.keys(msg.message)[0];
+            const messageContent = msg.message[messageType];
+
+            // Extrai texto e contexto
+            if (messageType === 'conversation') {
+                userInput = msg.message.conversation;
+            } else if (messageType === 'extendedTextMessage') {
+                userInput = msg.message.extendedTextMessage.text;
+                
+                // Verifica se é uma resposta a outra mensagem
+                const contextInfo = msg.message.extendedTextMessage.contextInfo;
+                if (contextInfo && contextInfo.quotedMessage) {
+                     const quoted = contextInfo.quotedMessage;
+                     const quotedBody = quoted.conversation || quoted.extendedTextMessage?.text || (quoted.imageMessage ? '[Imagem]' : '[Mídia]');
+                     replyContext = {
+                         text: quotedBody,
+                         fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net' 
+                     };
+                }
+            } else if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'].includes(messageType)) {
+                // Mídia recebida
+                userInput = messageContent.caption || ''; // Legenda da imagem/vídeo
+                try {
+                    console.log(`[Gateway] Baixando mídia (${messageType}) de ${userName}...`);
+                    const buffer = await downloadMediaMessage(
+                        msg,
+                        'buffer',
+                        { logger: pino({ level: 'silent' }) }
+                    );
+                    filePayload = {
+                        name: `${messageType}.${messageContent.mimetype.split('/')[1] || 'bin'}`,
+                        type: messageContent.mimetype,
+                        data: buffer.toString('base64')
+                    };
+                } catch (err) {
+                    console.error('[Gateway] Erro ao baixar mídia:', err);
+                    gatewayError = true;
+                    userInput = '[Erro ao baixar mídia]';
+                }
+            }
+
+            if (!userInput && !filePayload) continue; // Ignora mensagens vazias/desconhecidas
+
+            const payload = {
+                userId,
+                userName,
+                userInput,
+                file: filePayload,
+                gatewayError,
+                replyContext
+            };
+
+            // Envia para o webhook do servidor
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/whatsapp-webhook`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                // Processa respostas imediatas (se houver)
+                const data = await response.json();
+                if (data.replies && data.replies.length > 0) {
+                    for (const replyText of data.replies) {
+                        await sock.sendMessage(userId, { text: replyText });
+                    }
+                }
+            } catch (err) {
+                console.error('[Gateway] Erro ao enviar para webhook:', err.message);
+            }
         }
     });
 
-  })
-  .catch((error) => {
-      console.error('[Gateway] ERRO FATAL AO CRIAR CLIENTE:', error);
-      updateBackendStatus('ERROR');
-  });
+    // --- POLLING DE MENSAGENS DE SAÍDA ---
+    // Busca periodicamente mensagens que o backend quer enviar
+    setInterval(async () => {
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/gateway/poll-outbound`);
+            if (response.status === 200) {
+                const messages = await response.json();
+                
+                for (const msg of messages) {
+                    try {
+                        let sentMsg;
+                        
+                        // 1. Edição de Mensagem
+                        if (msg.type === 'edit') {
+                             // O Baileys precisa do ID original para editar
+                             await sock.sendMessage(msg.userId, { 
+                                 text: msg.newText, 
+                                 edit: { remoteJid: msg.userId, fromMe: true, id: msg.messageId } 
+                             });
+                        
+                        // 2. Envio de Mídia (Arquivo/Imagem/Áudio)
+                        } else if (msg.file && msg.file.data) {
+                            const buffer = Buffer.from(msg.file.data, 'base64');
+                            const mimetype = msg.file.type;
 
+                            if (mimetype.startsWith('image/')) {
+                                sentMsg = await sock.sendMessage(msg.userId, { image: buffer, caption: msg.text });
+                            } else if (mimetype.startsWith('video/')) {
+                                sentMsg = await sock.sendMessage(msg.userId, { video: buffer, caption: msg.text });
+                            } else if (mimetype.startsWith('audio/')) {
+                                sentMsg = await sock.sendMessage(msg.userId, { audio: buffer, mimetype });
+                            } else {
+                                sentMsg = await sock.sendMessage(msg.userId, { 
+                                    document: buffer, 
+                                    mimetype, 
+                                    fileName: msg.file.name,
+                                    caption: msg.text 
+                                });
+                            }
 
-async function start(client) {
-  console.log('[Gateway] Loop principal iniciado.');
-  
-  // Sincroniza os contatos ao iniciar e depois periodicamente
-  await syncContacts(client);
-  setInterval(() => syncContacts(client), 15 * 60 * 1000); // Sincroniza a cada 15 minutos
-
-  // Polling para buscar mensagens enviadas pelo atendente
-  setInterval(async () => {
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/gateway/poll-outbound`);
-        if (response.status === 200) {
-            const messages = await response.json();
-            for (const msg of messages) {
-                try {
-                    if (msg.type === 'edit') {
-                        console.log(`[Gateway] Editando mensagem ${msg.messageId} para ${msg.userId}`);
-                        await client.editMessage(msg.userId, msg.messageId, msg.newText);
-                    } else { // Trata 'send' e mensagens legadas sem tipo
-                        let sentMessage;
-                        if (msg.file && msg.file.data) {
-                            console.log(`[Gateway] Enviando ARQUIVO para ${msg.userId}`);
-                            const base64Data = `data:${msg.file.type};base64,${msg.file.data}`;
-                            sentMessage = await client.sendFile(msg.userId, base64Data, msg.file.name, msg.text || '');
+                        // 3. Envio de Texto Simples
                         } else if (msg.text) {
-                            console.log(`[Gateway] Enviando mensagem de texto para ${msg.userId}`);
-                            sentMessage = await client.sendText(msg.userId, msg.text);
+                            sentMsg = await sock.sendMessage(msg.userId, { text: msg.text });
                         }
 
-                        // Se a mensagem tinha um tempId, confirma o envio com o ID real do WhatsApp
-                        if (sentMessage && msg.tempId) {
+                        // Confirmação de envio (ACK) para o Backend
+                        if (sentMsg && msg.tempId) {
                             await fetch(`${BACKEND_URL}/api/gateway/ack-message`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     tempId: msg.tempId,
-                                    messageId: sentMessage.id,
+                                    messageId: sentMsg.key.id,
                                     userId: msg.userId,
                                 }),
                             });
                         }
+                    } catch (e) {
+                        console.error(`[Gateway] Erro ao enviar mensagem para ${msg.userId}:`, e.message);
                     }
-                } catch (e) {
-                    console.error(`[Gateway] Erro ao processar comando de saída para ${msg.userId}:`, e.message);
+                    await new Promise(r => setTimeout(r, 300)); // Delay suave para evitar bloqueio
                 }
-                await new Promise(r => setTimeout(r, 250)); // Pequeno delay entre envios
             }
+        } catch (error) {
+             // Erros de polling são normais se o backend reiniciar
         }
-    } catch (error) {
-        // Silencia erros de timeout ou conexão, pois são esperados em polling
-        if (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT' && error.code !== 'ECONNREFUSED') {
-           console.error('[Gateway] Erro ao buscar mensagens de saída:', error.message);
-        }
-    }
-  }, 3000); // Verifica a cada 3 segundos
-
-  client.onMessage(async (message) => {
-    const hasContent = message.body || message.hasMedia || ['image', 'audio', 'ptt', 'video', 'document'].includes(message.type);
-    if (message.isGroupMsg || message.from === 'status@broadcast' || !hasContent || message.fromMe) {
-        return;
-    }
-
-    const userId = message.from;
-    const userName = message.notifyName || message.sender.pushname || userId;
-    
-    let userInput = message.body || '';
-    let filePayload = null;
-    let gatewayError = false;
-    let replyContext = null;
-
-    if (message.quotedMsg) {
-        replyContext = {
-            text: message.quotedMsg.body || (message.quotedMsg.hasMedia ? `[Mídia: ${message.quotedMsg.type}]` : ''),
-            fromMe: message.quotedMsg.fromMe,
-        };
-    }
-    
-    const isMedia = message.hasMedia || ['image', 'audio', 'ptt', 'video', 'document'].includes(message.type);
-
-    if (isMedia) {
-        userInput = message.caption || '';
-        console.log(`[Gateway] Mídia detectada (${message.type}). Decriptando para ${userName}...`);
-        try {
-            const mediaBuffer = await client.decryptFile(message);
-            
-            if (mediaBuffer) {
-                const base64Data = mediaBuffer.toString('base64');
-                filePayload = {
-                    name: message.filename || `${message.type}-${Date.now()}.${message.mimetype.split('/')[1] || 'bin'}`,
-                    type: message.mimetype,
-                    data: base64Data
-                };
-                console.log(`[Gateway] Mídia decriptada com sucesso: ${filePayload.name}`);
-            } else {
-                throw new Error("A descriptografia retornou um buffer vazio ou nulo.");
-            }
-        } catch (e) {
-            console.error(`[Gateway] Erro CRÍTICO ao decriptar mídia de ${userName}:`, e.message);
-            gatewayError = true;
-            userInput = `[Mídia (${message.type}) não pôde ser carregada]`;
-            filePayload = null;
-        }
-    }
-    else if (typeof userInput === 'string' && userInput.startsWith('/9j/')) {
-        console.warn(`[Gateway] Detectado vazamento de thumbnail em mensagem de texto para ${userName}. Bloqueando.`);
-        userInput = `[Mídia (imagem) não pôde ser carregada]`;
-        gatewayError = true;
-        filePayload = null;
-    }
-
-    const payload = {
-        userId,
-        userName,
-        userInput,
-        file: filePayload,
-        gatewayError,
-        replyContext,
-    };
-
-    console.log(`Mensagem de ${userName} (${userId}) recebida. Encaminhando para o backend...`);
-    
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/whatsapp-webhook`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`Erro no backend: ${response.status} ${response.statusText}. Resposta: ${errorBody}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.replies && data.replies.length > 0) {
-        console.log(`Backend respondeu. Enviando ${data.replies.length} mensagem(ns) para ${userId}...`);
-        for (const replyText of data.replies) {
-          await client.sendText(userId, replyText);
-          await new Promise(r => setTimeout(r, 750)); 
-        }
-      }
-
-    } catch (error) {
-      console.error('Erro ao comunicar com o servidor de backend:', error);
-    }
-  });
+    }, 1000); // Verifica a cada 1 segundo para resposta rápida
 }
+
+// Inicia o Gateway
+startSock();
