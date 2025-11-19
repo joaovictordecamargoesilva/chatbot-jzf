@@ -776,7 +776,7 @@ const ChatPanel = ({
 
 
 // --- START: Merged from components/Login.tsx ---
-const Login = ({ attendants, onLogin, onRegister }) => {
+const Login = ({ attendants, onLogin, onRegister, isBackendOffline }) => {
   const [selectedAttendant, setSelectedAttendant] = useState('');
   const [newAttendantName, setNewAttendantName] = useState('');
 
@@ -792,13 +792,31 @@ const Login = ({ attendants, onLogin, onRegister }) => {
       <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg">
         <h2 className="text-3xl font-bold text-center text-gray-800">Painel de Atendimento</h2>
         
+        {isBackendOffline && (
+             <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+                <div className="flex">
+                    <div className="flex-shrink-0">
+                        <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                    </div>
+                    <div className="ml-3">
+                        <p className="text-sm text-yellow-700">
+                            Conectando ao servidor... Aguarde um momento.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        )}
+
         {/* Seção de Login */}
         <div className="space-y-4">
           <h3 className="text-xl font-semibold text-gray-700">Entrar como atendente</h3>
           <select
             value={selectedAttendant}
             onChange={(e) => setSelectedAttendant(e.target.value)}
-            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200"
+            disabled={isBackendOffline}
           >
             <option value="" disabled>Selecione seu nome</option>
             {attendants.map(a => (
@@ -807,7 +825,7 @@ const Login = ({ attendants, onLogin, onRegister }) => {
           </select>
           <button
             onClick={() => onLogin(selectedAttendant)}
-            disabled={!selectedAttendant}
+            disabled={!selectedAttendant || isBackendOffline}
             className="w-full px-4 py-2 font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:bg-blue-300"
           >
             Entrar
@@ -824,11 +842,12 @@ const Login = ({ attendants, onLogin, onRegister }) => {
             value={newAttendantName}
             onChange={(e) => setNewAttendantName(e.target.value)}
             placeholder="Digite seu nome completo"
-            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+            className="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200"
+            disabled={isBackendOffline}
           />
           <button
             onClick={handleRegister}
-            disabled={!newAttendantName.trim()}
+            disabled={!newAttendantName.trim() || isBackendOffline}
             className="w-full px-4 py-2 font-bold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 disabled:bg-green-300"
           >
             Registrar-se
@@ -890,6 +909,7 @@ function App() {
 
   // NOVO ESTADO: Status da conexão com o WhatsApp
   const [gatewayStatus, setGatewayStatus] = useState({ status: 'LOADING', qrCode: null });
+  const [isBackendOffline, setIsBackendOffline] = useState(true);
 
 
   // --- INÍCIO: Correção de Condição de Corrida (Race Condition) ---
@@ -1046,12 +1066,28 @@ function App() {
 
     } catch (err) {
       setError(err.message);
-      console.error(err);
+      // console.error(err); // Reduz log no console
     }
   }, [attendant]); // Removido selectedChat das dependências para evitar re-criação constante
 
   useEffect(() => {
-    fetch('/api/attendants').then(res => res.json()).then(setAttendants);
+      const loadAttendants = async () => {
+          try {
+              const res = await fetch('/api/attendants');
+              if (res.ok) {
+                  const data = await res.json();
+                  setAttendants(data);
+                  setIsBackendOffline(false);
+              } else {
+                  throw new Error("Status não ok");
+              }
+          } catch (e) {
+              console.warn("Backend offline, tentando reconectar em 2s...");
+              setIsBackendOffline(true);
+              setTimeout(loadAttendants, 2000);
+          }
+      };
+      loadAttendants();
   }, []);
 
   useEffect(() => {
@@ -1069,12 +1105,14 @@ function App() {
           if (res.ok) {
               const data = await res.json();
               setGatewayStatus(current => JSON.stringify(current) !== JSON.stringify(data) ? data : current);
+              setIsBackendOffline(false);
           } else {
                setGatewayStatus({ status: 'ERROR', qrCode: null });
           }
       } catch (err) {
-          console.error('Falha ao buscar status do gateway:', err);
+          // console.error('Falha ao buscar status do gateway:', err);
           setGatewayStatus({ status: 'ERROR', qrCode: null });
+          setIsBackendOffline(true);
       }
   }, []);
 
@@ -1479,7 +1517,7 @@ function App() {
 
 
   if (!attendant) {
-    return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} />;
+    return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} isBackendOffline={isBackendOffline} />;
   }
   
   // --- NOVA TELA DE CONEXÃO DO WHATSAPP ---
@@ -1488,6 +1526,12 @@ function App() {
         <div className="flex items-center justify-center w-full h-screen bg-gray-200">
             <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg text-center">
                 <h2 className="text-2xl font-bold text-gray-800">Conectar ao WhatsApp</h2>
+                
+                {isBackendOffline && (
+                     <div className="p-4 mb-4 bg-yellow-50 text-yellow-700 rounded-lg border border-yellow-200 text-sm">
+                        Conexão com o servidor perdida. Tentando reconectar...
+                     </div>
+                )}
                 
                 {gatewayStatus.status === 'LOADING' && (
                     <div className="flex flex-col items-center space-y-4">
