@@ -1,17 +1,13 @@
 {
   "name": "jzf-chatbot-server",
-  "version": "3.0.0",
-  "description": "Servidor de API para o Chatbot de Atendimento.",
+  "version": "3.1.0",
+  "description": "Servidor de API para o Chatbot de Atendimento (Integrado).",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "build": "vite build",
-    "dev:backend": "node server.js",
-    "dev:ui": "vite",
-    "gateway": "node whatsapp-gateway.js",
-    "gateway:prod": "BACKEND_URL=https://chatbot-jzf.onrender.com node whatsapp-gateway.js",
-    "dev": "concurrently \"npm:dev:*\" \"npm:gateway\"",
+    "dev": "node server.js",
     "postinstall": "npm run build"
   },
   "author": "JZF Contabilidade",
