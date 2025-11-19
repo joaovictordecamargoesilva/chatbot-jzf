@@ -2,8 +2,7 @@ import makeWASocket, {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    downloadMediaMessage, 
-    makeCacheableSignalKeyStore 
+    downloadMediaMessage 
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -14,7 +13,7 @@ import path from 'path';
 // --- CONFIGURAÇÃO ---
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
 // CRÍTICO: Usamos um nome de pasta novo para limpar qualquer sessão antiga travada
-const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_clean_v4');
+const SESSION_FOLDER = path.join(process.cwd(), 'baileys_session_clean_v5');
 
 // --- HELPER: Atualizar Status no Backend ---
 async function updateBackendStatus(status, qrCode = null) {
@@ -46,16 +45,13 @@ async function startSock() {
     
     console.log(`[Gateway] Versão do Baileys: v${version.join('.')}`);
 
+    // Configuração simplificada baseada no código de referência funcional
     const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: true, // QR no terminal ajuda no debug
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-        },
-        browser: ['JZF Atendimento', 'Chrome', '120.0.0'], 
-        generateHighQualityLinkPreview: true,
+        auth: state, // Passando o state diretamente, sem makeCacheableSignalKeyStore
+        browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Configuração de navegador simplificada
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
         syncFullHistory: false,
