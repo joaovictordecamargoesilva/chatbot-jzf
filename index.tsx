@@ -55,20 +55,21 @@ const ImageEditorModal = ({ file, onSave, onCancel }) => {
                     height: '100%',
                 },
                 menuBarPosition: 'bottom',
-                locale: {
-                    'Crop': 'Recortar',
-                    'Draw': 'Desenhar',
-                    'Text': 'Texto',
-                    'Apply': 'Aplicar',
-                    'Cancel': 'Cancelar',
-                    'Rectangle': 'Retângulo',
-                    'Triangle': 'Triângulo',
-                    'Circle': 'Círculo',
-                    'Free': 'Livre',
-                    'Straight': 'Reta',
-                    'Color': 'Cor',
-                    'Range': 'Tamanho',
-                }
+            },
+            // FIX: The 'locale' property should be a top-level option, not inside 'includeUI'.
+            locale: {
+                'Crop': 'Recortar',
+                'Draw': 'Desenhar',
+                'Text': 'Texto',
+                'Apply': 'Aplicar',
+                'Cancel': 'Cancelar',
+                'Rectangle': 'Retângulo',
+                'Triangle': 'Triângulo',
+                'Circle': 'Círculo',
+                'Free': 'Livre',
+                'Straight': 'Reta',
+                'Color': 'Cor',
+                'Range': 'Tamanho',
             },
             cssMaxWidth: document.documentElement.clientWidth * 0.9,
             cssMaxHeight: document.documentElement.clientHeight * 0.8,
@@ -888,6 +889,10 @@ function App() {
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
   const prevData = useRef(null);
 
+  // NOVO ESTADO: Status da conexão com o WhatsApp
+  const [gatewayStatus, setGatewayStatus] = useState({ status: 'LOADING', qrCode: null });
+
+
   // --- INÍCIO: Correção de Condição de Corrida (Race Condition) ---
   const selectedChatRef = useRef(selectedChat);
   useEffect(() => {
@@ -1051,13 +1056,38 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (attendant) {
+    if (attendant && gatewayStatus.status === 'CONNECTED') {
       fetchData();
       const interval = setInterval(fetchData, 2500);
       return () => clearInterval(interval);
     }
-  }, [attendant, fetchData]);
+  }, [attendant, fetchData, gatewayStatus.status]);
   
+  // NOVO EFEITO: Polling do status do Gateway do WhatsApp
+  useEffect(() => {
+    if (!attendant) return; // Só verifica o status se estiver logado
+    
+    const pollStatus = async () => {
+        try {
+            const res = await fetch('/api/gateway/status');
+            if (res.ok) {
+                const data = await res.json();
+                setGatewayStatus(current => JSON.stringify(current) !== JSON.stringify(data) ? data : current);
+            } else {
+                 setGatewayStatus({ status: 'ERROR', qrCode: null });
+            }
+        } catch (err) {
+            console.error('Falha ao buscar status do gateway:', err);
+            setGatewayStatus({ status: 'ERROR', qrCode: null });
+        }
+    };
+    
+    pollStatus(); // Busca inicial
+    const intervalId = setInterval(pollStatus, 3000); // Verifica a cada 3 segundos
+    
+    return () => clearInterval(intervalId);
+  }, [attendant]);
+
   useEffect(() => {
     const fetchClients = async () => {
         try {
@@ -1268,7 +1298,8 @@ function App() {
         });
     };
 
-    const handleFileSelect = async (event) => {
+    // FIX: Added type annotation to the event parameter to allow access to file properties.
+    const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (!files || files.length === 0) return;
 
@@ -1300,7 +1331,8 @@ function App() {
         }
     };
     
-    const handleInternalFileSelect = async (event) => {
+    // FIX: Added type annotation to the event parameter to allow access to file properties.
+    const handleInternalFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (!files || files.length === 0) return;
         
@@ -1450,6 +1482,31 @@ function App() {
   if (!attendant) {
     return <Login attendants={attendants} onLogin={handleLogin} onRegister={handleRegister} />;
   }
+  
+  // --- NOVA TELA DE CONEXÃO DO WHATSAPP ---
+  if (gatewayStatus.status !== 'CONNECTED') {
+    return (
+        <div className="flex items-center justify-center w-full h-screen bg-gray-200">
+            <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-lg text-center">
+                <h2 className="text-2xl font-bold text-gray-800">Conectar ao WhatsApp</h2>
+                {gatewayStatus.status === 'LOADING' && <p className="text-gray-600">Verificando status da conexão...</p>}
+                {gatewayStatus.status === 'ERROR' && <p className="text-red-500 font-semibold">Não foi possível conectar ao serviço. Verifique o gateway e recarregue a página.</p>}
+                {gatewayStatus.status === 'DISCONNECTED' && <p className="text-gray-600">WhatsApp desconectado. Aguardando a geração de um novo QR Code...</p>}
+                {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
+                    <div className="flex flex-col items-center">
+                        <p className="mb-4 text-gray-700">Abra o WhatsApp no seu celular, vá em "Aparelhos conectados" e escaneie o código abaixo.</p>
+                        <img src={gatewayStatus.qrCode} alt="QR Code do WhatsApp" className="mx-auto border-4 border-gray-300 rounded-lg" style={{ width: '256px', height: '256px' }}/>
+                        <p className="text-sm text-gray-500 mt-4">A conexão será mantida ativa permanentemente.</p>
+                    </div>
+                )}
+                <div className="pt-4 border-t border-gray-200">
+                    <p className="text-sm text-gray-600">Atendente: <span className="font-semibold">{attendant.name}</span></p>
+                    <button onClick={handleLogout} className="mt-2 text-xs text-red-500 hover:underline">Sair (deslogar do painel)</button>
+                </div>
+            </div>
+        </div>
+    );
+  }
 
   const filteredClients = clients.filter(c =>
     c.userName.toLowerCase().includes(clientSearchTerm.toLowerCase()) || c.userId.includes(clientSearchTerm)
@@ -1478,7 +1535,10 @@ function App() {
           <h1 className="text-xl font-bold text-gray-800">JZF Atendimento</h1>
           <div className="mt-2 text-sm text-gray-600">
              <div className="flex items-center justify-between">
-                <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
+                <div>
+                    <p>Atendente: <span className="font-semibold">{attendant.name}</span></p>
+                    <p className="text-green-600 font-semibold text-xs">WhatsApp Conectado</p>
+                </div>
                 <div>
                   <button onClick={() => setInitiateModalOpen(true)} className="text-xs font-semibold text-blue-600 hover:underline mr-3">Novo Chat</button>
                   <button onClick={handleLogout} className="text-xs text-red-500 hover:underline">Sair</button>
