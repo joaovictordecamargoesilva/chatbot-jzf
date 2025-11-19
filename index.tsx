@@ -345,7 +345,8 @@ function App() {
       const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes, internalSummaryRes] = await Promise.all([
         fetch('/api/requests'), fetch('/api/chats/active'), fetch('/api/chats/history'), fetch('/api/attendants'), fetch('/api/chats/ai-active'), fetch(`/api/internal-chats/summary/${attendant.id}`)
       ]);
-      if (!reqRes.ok) throw new Error('Falha de rede');
+      // Modificado: Se der erro, apenas loga e não trava o componente.
+      if (!reqRes.ok) { console.warn('Erro ao buscar dados, tentando novamente...'); return; }
       
       setRequestQueue(await reqRes.json());
       setActiveChats(await activeRes.json());
@@ -361,7 +362,7 @@ function App() {
                if (res.ok) setSelectedChat({ ...selectedChat, ...(await res.json()) });
           }
       }
-    } catch (err) { }
+    } catch (err) { console.warn('Rede instável no fetchData, ignorando erro...'); }
   }, [attendant, isBackendOffline, selectedChat]);
 
   const pollStatus = useCallback(async () => {
@@ -373,6 +374,7 @@ function App() {
               setIsBackendOffline(false);
           }
       } catch (err) { 
+          // Mantém offline se falhar, mas sem log de erro crítico
           setIsBackendOffline(true); 
       }
   }, []);
@@ -392,7 +394,7 @@ function App() {
   useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 3000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
   useEffect(() => { if (attendant && !isBackendOffline) fetch('/api/clients').then(r=>r.json()).then(setClients).catch(()=>{}); }, [attendant, isBackendOffline]);
 
-  const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: e.target.result.split(',')[1] }); r.readAsDataURL(file); });
+  const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
   const handleFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
   const handleInternalFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setInternalSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
 
@@ -400,6 +402,15 @@ function App() {
       const tempMsg = { sender: Sender.ATTENDANT, text, files, timestamp: new Date().toISOString(), replyTo: replyTo ? { text: replyTo.text, senderName: replyTo.sender === 'user' ? selectedChat.userName : 'Você' } : null };
       setSelectedChat(p => p?.userId === userId ? { ...p, messageLog: [...p.messageLog, tempMsg] } : p);
       await fetch('/api/chats/attendant-reply', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, text, attendantId, files, replyTo }) });
+  };
+
+  const handleEditMessage = async (userId, messageTimestamp, newText) => {
+      setSelectedChat(p => {
+          if (p?.userId !== userId) return p;
+          const newLog = p.messageLog.map(m => (m.timestamp === messageTimestamp && m.sender === Sender.ATTENDANT) ? { ...m, text: newText, edited: true } : m);
+          return { ...p, messageLog: newLog };
+      });
+      await fetch('/api/chats/edit-message', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, attendantId: attendant.id, messageTimestamp, newText }) });
   };
   
   // Handlers simplificados (mantendo lógica original)
@@ -418,27 +429,27 @@ function App() {
             <div className="w-full max-w-md p-8 bg-white rounded-xl shadow-lg text-center">
                 <h2 className="text-2xl font-bold text-gray-800 mb-4">Conexão WhatsApp</h2>
                 
-                {isBackendOffline && <div className="p-3 mb-4 bg-yellow-100 text-yellow-800 rounded text-sm">Tentando reconectar ao servidor...</div>}
+                {isBackendOffline && <div className="p-3 mb-4 bg-yellow-100 text-yellow-800 rounded text-sm">Conectando ao servidor... Por favor, aguarde.</div>}
 
                 {gatewayStatus.status === 'LOADING' && (
                     <div className="animate-pulse flex flex-col items-center">
                         <div className="h-4 bg-gray-300 rounded w-3/4 mb-4"></div>
                         <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                        <p className="text-sm text-gray-500 mt-4">Iniciando serviços...</p>
+                        <p className="text-sm text-gray-500 mt-4">Iniciando serviços e gerando QR Code...</p>
                     </div>
                 )}
 
                 {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
                     <div className="bg-white p-2 rounded border shadow-sm inline-block">
                         <img src={gatewayStatus.qrCode} alt="QR Code" className="w-64 h-64 object-contain"/>
-                        <p className="mt-4 text-sm text-gray-600 font-medium">Escaneie com seu WhatsApp</p>
+                        <p className="mt-4 text-sm text-gray-600 font-medium">Abra o WhatsApp > Aparelhos conectados > Conectar</p>
                     </div>
                 )}
 
                 {gatewayStatus.status === 'DISCONNECTED' && (
                     <div>
                         <div className="text-red-500 mb-2 font-bold">Desconectado</div>
-                        <p className="text-gray-600 text-sm">O sistema tentará gerar um novo QR Code em instantes.</p>
+                        <p className="text-gray-600 text-sm">O sistema está tentando reconectar automaticamente.</p>
                         <div className="mt-4 w-8 h-8 border-4 border-gray-300 border-t-gray-600 rounded-full animate-spin mx-auto"></div>
                     </div>
                 )}
@@ -469,7 +480,7 @@ function App() {
       </aside>
       <main className="flex-1 flex flex-col">
         {activeView !== 'internal_chat' ? (
-            <ChatPanel selectedChat={selectedChat} attendant={attendant} onSendMessage={handleSendMessage} onResolveChat={async(id)=>{await fetch(`/api/chats/resolve/${id}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); fetchData(); setSelectedChat(null);}} onTransferChat={async(uid, aid)=>{await fetch(`/api/chats/transfer/${uid}`,{method:'POST',body:JSON.stringify({newAttendantId:aid, transferringAttendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); setSelectedChat(null); fetchData();}} onTakeoverChat={async(uid)=>{const res=await fetch(`/api/chats/takeover/${uid}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); if(res.ok) handleSelectChatItem(await res.json());}} isLoading={isLoading} attendants={attendants} onImageClick={setLightboxSrc} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} onFileSelect={handleFileSelect} onEditFile={setEditingFile} />
+            <ChatPanel selectedChat={selectedChat} attendant={attendant} onSendMessage={handleSendMessage} onEditMessage={handleEditMessage} onResolveChat={async(id)=>{await fetch(`/api/chats/resolve/${id}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); fetchData(); setSelectedChat(null);}} onTransferChat={async(uid, aid)=>{await fetch(`/api/chats/transfer/${uid}`,{method:'POST',body:JSON.stringify({newAttendantId:aid, transferringAttendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); setSelectedChat(null); fetchData();}} onTakeoverChat={async(uid)=>{const res=await fetch(`/api/chats/takeover/${uid}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); if(res.ok) handleSelectChatItem(await res.json());}} isLoading={isLoading} attendants={attendants} onImageClick={setLightboxSrc} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} onFileSelect={handleFileSelect} onEditFile={setEditingFile} />
         ) : <div className="flex items-center justify-center h-full text-gray-500">Chat interno em desenvolvimento (use a versão completa para esta funcionalidade)</div>}
       </main>
       {isInitiateModalOpen && (
