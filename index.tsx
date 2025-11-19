@@ -1063,29 +1063,29 @@ function App() {
   }, [attendant, fetchData, gatewayStatus.status]);
   
   // NOVO EFEITO: Polling do status do Gateway do WhatsApp
+  const pollStatus = useCallback(async () => {
+      try {
+          const res = await fetch('/api/gateway/status');
+          if (res.ok) {
+              const data = await res.json();
+              setGatewayStatus(current => JSON.stringify(current) !== JSON.stringify(data) ? data : current);
+          } else {
+               setGatewayStatus({ status: 'ERROR', qrCode: null });
+          }
+      } catch (err) {
+          console.error('Falha ao buscar status do gateway:', err);
+          setGatewayStatus({ status: 'ERROR', qrCode: null });
+      }
+  }, []);
+
   useEffect(() => {
     if (!attendant) return; // Só verifica o status se estiver logado
-    
-    const pollStatus = async () => {
-        try {
-            const res = await fetch('/api/gateway/status');
-            if (res.ok) {
-                const data = await res.json();
-                setGatewayStatus(current => JSON.stringify(current) !== JSON.stringify(data) ? data : current);
-            } else {
-                 setGatewayStatus({ status: 'ERROR', qrCode: null });
-            }
-        } catch (err) {
-            console.error('Falha ao buscar status do gateway:', err);
-            setGatewayStatus({ status: 'ERROR', qrCode: null });
-        }
-    };
     
     pollStatus(); // Busca inicial
     const intervalId = setInterval(pollStatus, 3000); // Verifica a cada 3 segundos
     
     return () => clearInterval(intervalId);
-  }, [attendant]);
+  }, [attendant, pollStatus]);
 
   useEffect(() => {
     const fetchClients = async () => {
@@ -1490,7 +1490,16 @@ function App() {
                 <h2 className="text-2xl font-bold text-gray-800">Conectar ao WhatsApp</h2>
                 {gatewayStatus.status === 'LOADING' && <p className="text-gray-600">Verificando status da conexão...</p>}
                 {gatewayStatus.status === 'ERROR' && <p className="text-red-500 font-semibold">Não foi possível conectar ao serviço. Verifique o gateway e recarregue a página.</p>}
-                {gatewayStatus.status === 'DISCONNECTED' && <p className="text-gray-600">WhatsApp desconectado. Aguardando a geração de um novo QR Code...</p>}
+                {gatewayStatus.status === 'DISCONNECTED' && (
+                    <div>
+                        <p className="text-gray-600 mb-2">WhatsApp desconectado. Aguardando a geração de um novo QR Code...</p>
+                        <div className="animate-pulse h-2 bg-gray-300 rounded w-3/4 mx-auto mb-4"></div>
+                        <p className="text-xs text-gray-500">Isso pode levar alguns segundos se o sistema estiver reiniciando.</p>
+                        <button onClick={pollStatus} className="mt-4 px-4 py-2 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200">
+                           Forçar Recarregamento do Status
+                        </button>
+                    </div>
+                )}
                 {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
                     <div className="flex flex-col items-center">
                         <p className="mb-4 text-gray-700">Abra o WhatsApp no seu celular, vá em "Aparelhos conectados" e escaneie o código abaixo.</p>
@@ -1498,7 +1507,7 @@ function App() {
                         <p className="text-sm text-gray-500 mt-4">A conexão será mantida ativa permanentemente.</p>
                     </div>
                 )}
-                <div className="pt-4 border-t border-gray-200">
+                <div className="pt-4 border-t border-gray-200 mt-4">
                     <p className="text-sm text-gray-600">Atendente: <span className="font-semibold">{attendant.name}</span></p>
                     <button onClick={handleLogout} className="mt-2 text-xs text-red-500 hover:underline">Sair (deslogar do painel)</button>
                 </div>
