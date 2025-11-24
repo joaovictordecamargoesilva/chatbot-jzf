@@ -481,6 +481,25 @@ function App() {
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
 
+  // Refs para controle de notificação
+  const lastProcessedMsgTimestampRef = useRef(0);
+  const audioContextRef = useRef(null);
+
+  // Inicializa permissão de notificação e AudioContext
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission !== "granted") {
+        Notification.requestPermission();
+    }
+  }, []);
+
+  const playNotificationSound = () => {
+    try {
+        const audio = new Audio("https://cdn.freesound.org/previews/235/235911_2391840-lq.mp3"); // Som sutil de "beep"
+        audio.volume = 0.5;
+        audio.play().catch(() => {}); // Ignora erro de autoplay se bloqueado
+    } catch(e) {}
+  };
+
   // Atualiza o ref sempre que o estado muda
   useEffect(() => {
     selectedChatRef.current = selectedChat;
@@ -500,6 +519,37 @@ function App() {
       const newActiveChats = await activeRes.json();
       const newAiChats = await aiChatsRes.json();
       
+      // SISTEMA DE NOTIFICAÇÃO
+      let shouldNotify = false;
+      let notificationBody = "";
+      let notificationTitle = "Nova Mensagem";
+
+      // Verifica novas mensagens em chats ativos
+      for (const chat of newActiveChats) {
+          const lastMsg = chat.lastMessage;
+          if (lastMsg && lastMsg.sender === Sender.USER && new Date(lastMsg.timestamp).getTime() > lastProcessedMsgTimestampRef.current) {
+              // Verifica se não é o chat que já está aberto e visível
+              const isChatOpenAndFocused = selectedChatRef.current?.userId === chat.userId && !document.hidden;
+              
+              if (!isChatOpenAndFocused) {
+                 shouldNotify = true;
+                 notificationTitle = chat.userName;
+                 notificationBody = lastMsg.text || "📷 Enviou um arquivo";
+              }
+              lastProcessedMsgTimestampRef.current = Math.max(lastProcessedMsgTimestampRef.current, new Date(lastMsg.timestamp).getTime());
+          }
+      }
+
+      if (shouldNotify) {
+           playNotificationSound();
+           if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(notificationTitle, {
+                    body: notificationBody,
+                    icon: "https://cdn-icons-png.flaticon.com/512/124/124034.png" // Ícone genérico de chat
+                });
+           }
+      }
+
       setRequestQueue(newQueue);
       setActiveChats(newActiveChats);
       setChatHistory(await historyRes.json());
