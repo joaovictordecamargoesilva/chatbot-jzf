@@ -32,7 +32,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.2.0_STATIC_FIX";
+const SERVER_VERSION = "21.3.0_FEATURE_UPDATE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -193,8 +193,11 @@ function formatFlowStepForWhatsapp(step, context) {
     let messageText = '';
     const textTemplate = translations.pt[step.textKey];
     if (textTemplate) messageText = typeof textTemplate === 'function' ? textTemplate(context) : textTemplate;
+    
     if (step.options?.length > 0) {
         messageText += `\n\n${step.options.map((opt, i) => `*${i + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n')}`;
+        // INSTRUÇÃO ADICIONADA CONFORME SOLICITADO
+        messageText += `\n\nPor favor, digite o número da opção desejada.`;
     }
     return messageText;
 }
@@ -602,16 +605,30 @@ app.post('/api/chats/takeover/:userId', (req, res) => {
         }
     }
     
+    // Busca nome do atendente
+    const attendantObj = ATTENDANTS.find(a => a.id === attendantId);
+    const attendantName = attendantObj ? attendantObj.name : 'um atendente';
+
     session.handledBy = 'human';
     session.attendantId = attendantId;
     
+    // Mensagem de takeover personalizada
+    const takeoverMsg = `Olá, eu sou o atendente ${attendantName} e vou dar continuidade em seu atendimento.`;
+
+    session.messageLog.push({
+        sender: 'attendant',
+        text: takeoverMsg,
+        timestamp: new Date().toISOString(),
+        status: 2
+    });
+
     // Move para activeChats
     userSessions.delete(userId);
     saveData('userSessions.json', userSessions);
     activeChats.set(userId, session);
     saveData('activeChats.json', activeChats);
     
-    queueOutbound(userId, { text: "Um atendente assumiu a conversa." });
+    queueOutbound(userId, { text: takeoverMsg });
     
     res.json(session);
 });
