@@ -657,22 +657,34 @@ app.post('/api/chats/attendant-reply', (req, res) => {
 });
 
 app.post('/api/chats/initiate', (req, res) => {
-    const { recipientNumber, message, attendantId } = req.body;
+    const { recipientNumber, clientName, message, attendantId, files } = req.body;
     let userId = recipientNumber.includes('@') ? recipientNumber : recipientNumber + '@s.whatsapp.net';
     
     // Verifica se já existe
     if(activeChats.has(userId)) return res.json(activeChats.get(userId));
     
-    const session = getSession(userId); // Cria ou recupera
+    // Passa o clientName para garantir que a sessão inicie com o nome correto
+    const session = getSession(userId, clientName); 
     session.handledBy = 'human';
     session.attendantId = attendantId;
-    session.messageLog.push({ sender: 'attendant', text: message, timestamp: new Date().toISOString(), status: 1 });
+    
+    const msg = { 
+        sender: 'attendant', 
+        text: message, 
+        timestamp: new Date().toISOString(), 
+        status: 1 
+    };
+    if (files && files.length > 0) {
+        msg.files = files;
+    }
+
+    session.messageLog.push(msg);
     
     userSessions.delete(userId);
     activeChats.set(userId, session);
     saveData('activeChats.json', activeChats);
     
-    queueOutbound(userId, { text: message });
+    queueOutbound(userId, { text: message, files });
     res.json(session);
 });
 
