@@ -18,8 +18,7 @@ import makeWASocket, {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    downloadMediaMessage,
-    makeInMemoryStore
+    downloadMediaMessage
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -33,7 +32,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.1.0_HISTORY_MERGE";
+const SERVER_VERSION = "21.1.1_FIX_DEPLOY";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
