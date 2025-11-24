@@ -32,7 +32,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.1.1_FIX_DEPLOY";
+const SERVER_VERSION = "21.2.0_STATIC_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -106,6 +106,15 @@ let sock = null;
 
 // --- MIDDLEWARE ---
 app.use(express.json({ limit: '50mb' }));
+
+// --- SERVIR ARQUIVOS ESTÁTICOS (FRONTEND) ---
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    console.log(`[Server] Servindo frontend estático de: ${distPath}`);
+} else {
+    console.warn(`[Server] ALERTA: Pasta 'dist' não encontrada. Certifique-se de que 'npm run build' foi executado.`);
+}
 
 // --- CONFIGURAÇÃO IA (GEMINI) ---
 let ai = null;
@@ -725,6 +734,21 @@ app.post('/api/chats/edit-message', (req, res) => {
 
 // Chats Internos (Mock)
 app.get('/api/internal-chats/summary/:attendantId', (req, res) => res.json({}));
+
+// ROTA CATCH-ALL PARA SPA (IMPORTANTE: Deve ser a última rota)
+app.get('*', (req, res) => {
+    // Se for requisição de API que passou despercebida, retorna 404 JSON
+    if (req.path.startsWith('/api')) {
+        return res.status(404).json({ error: 'Endpoint API não encontrado' });
+    }
+    // Para qualquer outra rota, retorna o index.html do React
+    const indexPath = path.join(distPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(500).send('Erro: Build do frontend não encontrado (index.html)');
+    }
+});
 
 // Inicia servidor
 startWhatsApp();
