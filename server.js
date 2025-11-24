@@ -385,18 +385,22 @@ async function startWhatsApp() {
         for (const update of updates) {
             // update.key.remoteJid é o ID do chat
             // update.update.status é o novo status (4 = lido, 3 = entregue)
-            if (!update.update.status) continue;
+            const newStatus = update.update.status;
+            if (!newStatus) continue;
             
             const userId = update.key.remoteJid;
-            const session = activeChats.get(userId) || userSessions.get(userId);
+            
+            // Busca a sessão em activeChats ou userSessions
+            let session = activeChats.get(userId) || userSessions.get(userId);
             
             if (session) {
                 // Procura a mensagem pelo whatsappId
                 const msg = session.messageLog.find(m => m.whatsappId === update.key.id);
                 if (msg) {
-                    // Só atualiza se o status novo for maior que o atual (evita regressão de lido para entregue)
-                    if (!msg.status || update.update.status > msg.status) {
-                        msg.status = update.update.status;
+                    // Só atualiza se o status novo for maior que o atual (evita regressão)
+                    // Status 4 (READ) > 3 (DELIVERY) > 2 (SERVER)
+                    if (!msg.status || newStatus > msg.status) {
+                        msg.status = newStatus;
                         hasChanges = true;
                     }
                 }
@@ -501,7 +505,7 @@ setInterval(async () => {
                 const logMsg = session.messageLog.find(m => m.tempId === msg.tempId);
                 if (logMsg) {
                     logMsg.whatsappId = sentMsg.key.id;
-                    logMsg.status = 2; // SERVER_ACK (Enviado)
+                    logMsg.status = 2; // SERVER_ACK (Enviado/Um Check)
                     
                     if (activeChats.has(msg.userId)) saveData('activeChats.json', activeChats);
                     else saveData('userSessions.json', userSessions);
@@ -544,7 +548,7 @@ apiRouter.get('/requests', (req, res) => res.json(requestQueue));
 // Endpoint melhorado: Retorna também o último status e comprimento do log para facilitar o polling eficiente
 apiRouter.get('/chats/active', (req, res) => {
     const list = Array.from(activeChats.values()).map(s => {
-        const lastMsg = s.messageLog.slice(-1)[0];
+        const lastMsg = s.messageLog.length > 0 ? s.messageLog[s.messageLog.length - 1] : null;
         return { 
             userId: s.userId, 
             userName: s.userName, 
