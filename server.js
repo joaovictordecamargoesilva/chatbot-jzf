@@ -33,7 +33,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.0.2_READ_RECEIPTS";
+const SERVER_VERSION = "21.0.3_FEATURES_UPDATE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -104,6 +104,7 @@ const pendingEdits = new Map();
 // Status do Gateway (WhatsApp)
 let gatewayStatus = { status: 'DISCONNECTED', qrCode: null };
 let sock = null; // Instância do socket do Baileys
+const apiRouter = express.Router(); // Declarar Router aqui para uso global
 
 // --- MIDDLEWARE ---
 app.use(express.json({ limit: '50mb' }));
@@ -335,7 +336,11 @@ async function startWhatsApp() {
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
         emitOwnEvents: false,
-        retryRequestDelayMs: 250
+        retryRequestDelayMs: 250,
+        // Habilitar a busca de status de mensagens antigas se necessário
+        getMessage: async (key) => {
+            return { conversation: 'hello' };
+        }
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -379,20 +384,20 @@ async function startWhatsApp() {
         
         for (const update of updates) {
             // update.key.remoteJid é o ID do chat
-            // update.update.status é o novo status (4 = lido)
+            // update.update.status é o novo status (4 = lido, 3 = entregue)
             if (!update.update.status) continue;
             
             const userId = update.key.remoteJid;
             const session = activeChats.get(userId) || userSessions.get(userId);
             
             if (session) {
+                // Procura a mensagem pelo whatsappId
                 const msg = session.messageLog.find(m => m.whatsappId === update.key.id);
                 if (msg) {
-                    msg.status = update.update.status;
-                    hasChanges = true;
-                    // Se foi lido (4), também atualizamos localmente
-                    if (update.update.status === 4) {
-                        // console.log(`[WhatsApp] Mensagem lida por ${userId}`);
+                    // Só atualiza se o status novo for maior que o atual (evita regressão de lido para entregue)
+                    if (!msg.status || update.update.status > msg.status) {
+                        msg.status = update.update.status;
+                        hasChanges = true;
                     }
                 }
             }
@@ -519,7 +524,6 @@ setInterval(async () => {
 
 
 // --- ROTAS DA API (Express) ---
-const apiRouter = express.Router();
 
 // Rotas simplificadas, removendo webhooks e polling externos
 apiRouter.get('/gateway/status', (req, res) => res.json(gatewayStatus));
@@ -536,9 +540,24 @@ apiRouter.post('/attendants', (req, res) => {
 });
 
 apiRouter.get('/requests', (req, res) => res.json(requestQueue));
+
+// Endpoint melhorado: Retorna também o último status e comprimento do log para facilitar o polling eficiente
 apiRouter.get('/chats/active', (req, res) => {
-    res.json(Array.from(activeChats.values()).map(s => ({ userId: s.userId, userName: s.userName, attendantId: s.attendantId, lastMessage: s.messageLog.slice(-1)[0] })));
+    const list = Array.from(activeChats.values()).map(s => {
+        const lastMsg = s.messageLog.slice(-1)[0];
+        return { 
+            userId: s.userId, 
+            userName: s.userName, 
+            attendantId: s.attendantId, 
+            lastMessage: lastMsg,
+            // Metadados extras para o frontend detectar mudanças sem baixar tudo
+            logLength: s.messageLog.length,
+            lastMsgStatus: lastMsg?.status
+        };
+    });
+    res.json(list);
 });
+
 apiRouter.get('/chats/ai-active', (req, res) => {
     res.json(Array.from(userSessions.values()).filter(s => s.handledBy === 'bot' && !requestQueue.some(r => r.userId === s.userId) && s.currentState !== ChatState.GREETING).map(s => ({ userId: s.userId, userName: s.userName, department: s.context?.department, lastMessage: s.messageLog.slice(-1)[0] })));
 });
@@ -575,8 +594,8 @@ apiRouter.post('/chats/takeover/:userId', (req, res) => {
     }
     
     if (!session) return res.status(404).send('Sessão não encontrada');
-    if (activeChats.has(userId)) return res.status(409).send('Chat já assumido');
-
+    
+    // Permitir takeover mesmo se já ativo (reassumir/transferir forçado pelo próprio user)
     session.handledBy = 'human';
     session.attendantId = attendantId;
     activeChats.set(userId, session);
@@ -610,6 +629,41 @@ apiRouter.post('/chats/attendant-reply', (req, res) => {
     session.messageLog.push(newMessage);
     saveData('activeChats.json', activeChats);
     res.send('Enviado');
+});
+
+// NOVA ROTA: Encaminhar Mensagem
+apiRouter.post('/chats/forward', (req, res) => {
+    const { originalMessage, targetUserId, attendantId } = req.body;
+    const session = activeChats.get(targetUserId); // Só permite encaminhar para chats ativos por enquanto
+    
+    if (!session) return res.status(404).send('Destinatário não está em um atendimento ativo.');
+
+    const timestamp = new Date().toISOString();
+    const isMedia = originalMessage.files && originalMessage.files.length > 0;
+    
+    const textToSend = originalMessage.text || (isMedia ? "" : ""); // Mantém texto se houver
+
+    if (originalMessage.files) {
+        originalMessage.files.forEach(f => {
+            queueOutbound(targetUserId, { file: f, text: textToSend });
+        });
+    } else {
+        queueOutbound(targetUserId, { text: textToSend });
+    }
+
+    const newMessage = { 
+        sender: 'attendant', 
+        text: textToSend, 
+        files: originalMessage.files || [], 
+        timestamp, 
+        tempId: `fwd_${timestamp}`, 
+        status: 1,
+        isForwarded: true
+    };
+
+    session.messageLog.push(newMessage);
+    saveData('activeChats.json', activeChats);
+    res.send('Encaminhado');
 });
 
 apiRouter.post('/chats/edit-message', (req, res) => {
