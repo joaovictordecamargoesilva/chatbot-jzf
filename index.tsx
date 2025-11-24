@@ -31,6 +31,7 @@ const MessageStatusIcon = ({ status }) => {
     // Status do Baileys: 0: ERROR, 1: PENDING, 2: SERVER_ACK (Enviado), 3: DELIVERY_ACK (Entregue), 4: READ (Lido), 5: PLAYED
     if (!status || status <= 1) return <svg viewBox="0 0 16 16" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path fill="currentColor" d="M7.5 3a.5.5 0 0 1 .5.5v5.21l3.248 1.856a.5.5 0 0 1-.496.868l-3.5-2A.5.5 0 0 1 7 9V3.5a.5.5 0 0 1 .5-.5z"/></svg>; // Relógio
     
+    // Status 4 (Lido) = Azul. Status 2 (Enviado) e 3 (Entregue) = Cinza
     const colorClass = status >= 4 ? "text-blue-500" : "text-gray-400";
     
     if (status === 2) {
@@ -47,6 +48,50 @@ const MessageStatusIcon = ({ status }) => {
     );
 };
 
+// --- NOVO COMPONENTE: Emoji Picker ---
+const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","😷","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
+
+const EmojiPicker = ({ onSelect, onClose }) => {
+    return (
+        <div className="absolute bottom-16 left-4 bg-white border shadow-lg rounded-lg p-2 w-64 h-64 overflow-y-auto z-50 grid grid-cols-6 gap-1">
+             {COMMON_EMOJIS.map(e => <button key={e} onClick={() => onSelect(e)} className="text-xl hover:bg-gray-100 rounded">{e}</button>)}
+             <button onClick={onClose} className="col-span-6 mt-2 text-xs text-red-500 font-bold border-t pt-1">Fechar</button>
+        </div>
+    );
+};
+
+// --- NOVO COMPONENTE: Modal de Encaminhamento ---
+const ForwardModal = ({ onClose, onForward, chats }) => {
+    const [searchTerm, setSearchTerm] = useState("");
+    
+    const filtered = chats.filter(c => c.userName.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+            <div className="bg-white p-4 rounded-lg w-full max-w-sm h-96 flex flex-col">
+                <h3 className="font-bold text-lg mb-2">Encaminhar para...</h3>
+                <input 
+                    type="text" 
+                    placeholder="Buscar conversa..." 
+                    className="p-2 border rounded mb-2 w-full" 
+                    value={searchTerm} 
+                    onChange={e => setSearchTerm(e.target.value)} 
+                    autoFocus
+                />
+                <div className="flex-1 overflow-y-auto">
+                    {filtered.length === 0 ? <p className="text-gray-500 text-sm p-2">Nenhum chat ativo encontrado.</p> : 
+                    filtered.map(c => (
+                        <div key={c.userId} onClick={() => onForward(c.userId)} className="p-3 border-b hover:bg-gray-100 cursor-pointer flex justify-between items-center">
+                            <span className="font-medium">{c.userName}</span>
+                            <span className="text-blue-600 text-xs">Enviar</span>
+                        </div>
+                    ))}
+                </div>
+                <button onClick={onClose} className="mt-2 w-full p-2 bg-gray-200 rounded text-gray-700 font-semibold">Cancelar</button>
+            </div>
+        </div>
+    );
+};
 
 // --- NOVO COMPONENTE: ImageEditorModal ---
 const ImageEditorModal = ({ file, onSave, onCancel }) => {
@@ -138,7 +183,7 @@ const FileRenderer = ({ file, onImageClick }) => {
     );
 };
 
-const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAttendant = false, messageIndex, isHighlighted = false }) => {
+const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, onForward, isFromAttendant = false, messageIndex, isHighlighted = false }) => {
   const [isMenuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const isBot = message.sender === Sender.BOT;
@@ -156,14 +201,19 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAtt
   
   const highlightClass = isHighlighted ? 'bg-yellow-200 ring-2 ring-yellow-400' : '';
   const bubbleClasses = isBot ? 'bg-white text-gray-800 self-start' : isAttendant ? 'bg-green-100 text-gray-800 self-end' : 'bg-white text-gray-800 self-start';
-  // Ajuste visual: Bot/User esquerda (branco), Atendente direita (verde claro WhatsApp)
   const containerClass = (isAttendant) ? 'justify-end' : 'justify-start';
-  const colorClass = (isAttendant) ? 'bg-[#dcf8c6]' : 'bg-white'; // Verde WhatsApp para atendente (eu), Branco para usuário/bot
+  const colorClass = (isAttendant) ? 'bg-[#dcf8c6]' : 'bg-white'; 
 
   return (
     <div id={`message-${messageIndex}`} className={`flex w-full ${containerClass} group items-center`}>
       <div className={`relative flex items-center ${isAttendant ? 'flex-row-reverse' : ''}`}>
         <div className={`max-w-md md:max-w-lg p-2 rounded-lg shadow-sm mb-1 flex flex-col ${colorClass} ${highlightClass}`}>
+          {message.isForwarded && (
+             <div className="flex items-center text-xs text-gray-500 italic mb-1">
+                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                 Encaminhada
+             </div>
+          )}
           {message.replyTo && (
               <div className="p-2 mb-1 text-xs bg-gray-500 bg-opacity-10 rounded-md border-l-2 border-blue-400">
                   <p className="font-semibold text-blue-500">{message.replyTo.senderName}</p>
@@ -184,8 +234,9 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, isFromAtt
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" /></svg>
               </button>
               {isMenuOpen && (
-                <div ref={menuRef} className={`absolute top-6 z-10 w-32 bg-white rounded shadow-lg ring-1 ring-black ring-opacity-5 ${isAttendant ? 'right-0' : 'left-0'}`}>
+                <div ref={menuRef} className={`absolute top-6 z-20 w-32 bg-white rounded shadow-lg ring-1 ring-black ring-opacity-5 ${isAttendant ? 'right-0' : 'left-0'}`}>
                     <button onClick={() => { onSetReply(message); setMenuOpen(false); }} className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100">Responder</button>
+                    <button onClick={() => { onForward(message); setMenuOpen(false); }} className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100">Encaminhar</button>
                     {isFromAttendant && message.text && <button onClick={() => { onSetEdit(message); setMenuOpen(false); }} className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100">Editar</button>}
                 </div>
               )}
@@ -223,7 +274,7 @@ const MediaGallery = ({ messages, onImageClick }) => {
     );
 };
 
-const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onResolveChat, onTransferChat, onTakeoverChat, isLoading, attendants, onImageClick, selectedFiles, setSelectedFiles, onFileSelect, onEditFile }) => {
+const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onResolveChat, onTransferChat, onTakeoverChat, isLoading, attendants, onImageClick, selectedFiles, setSelectedFiles, onFileSelect, onEditFile, activeChats }) => {
   const [message, setMessage] = useState('');
   const [isTransferModalOpen, setTransferModalOpen] = useState(false);
   const [transferToAttendantId, setTransferToAttendantId] = useState('');
@@ -240,7 +291,11 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
   const [currentResultIndex, setCurrentResultIndex] = useState(-1);
   const chatType = selectedChat?.handledBy === 'bot' ? 'bot' : 'human';
   
-  // Verifica se o chat é do atendente atual
+  // New States
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isForwardModalOpen, setForwardModalOpen] = useState(false);
+  const [messageToForward, setMessageToForward] = useState(null);
+
   const isOwner = attendant?.id === selectedChat?.attendantId;
 
   useEffect(() => { if (activeTab === 'chat') messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [selectedChat?.messageLog, isLoading, activeTab]);
@@ -256,19 +311,37 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
 
   const handleSend = () => { if ((message.trim() || selectedFiles.length) && selectedChat) { onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFiles, replyingToMessage); setMessage(''); setSelectedFiles([]); setReplyingToMessage(null); } };
 
+  const handleEmojiSelect = (emoji) => {
+      setMessage(prev => prev + emoji);
+      setShowEmojiPicker(false);
+  };
+
+  const openForwardModal = (msg) => {
+      setMessageToForward(msg);
+      setForwardModalOpen(true);
+  };
+
+  const handleForward = async (targetUserId) => {
+      if (!messageToForward) return;
+      await fetch('/api/chats/forward', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ originalMessage: messageToForward, targetUserId, attendantId: attendant.id })
+      });
+      setForwardModalOpen(false);
+      setMessageToForward(null);
+  };
+
   if (!selectedChat) return <div className="flex-1 flex flex-col items-center justify-center bg-gray-100 text-gray-500"><span>Selecione um atendimento para começar.</span></div>;
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-100">
+    <div className="flex-1 flex flex-col bg-gray-100 relative">
       <header className="bg-white p-3 border-b flex justify-between items-center shadow-sm">
         <div><h2 className="font-semibold">{selectedChat.userName}</h2><p className="text-xs text-gray-500">{chatType === 'bot' ? 'Assistente Virtual' : `Atendido por: ${attendants.find(a => a.id === selectedChat.attendantId)?.name || '...'}`}</p></div>
         <div className="flex items-center space-x-2">
             <button onClick={() => { setSearchVisible(true); setActiveTab('chat'); }} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full"><svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg></button>
             {chatType === 'bot' && <button onClick={() => onTakeoverChat(selectedChat.userId)} className="px-3 py-1 text-xs text-white bg-purple-600 rounded hover:bg-purple-700">Assumir</button>}
-            
-            {/* Botão Transferir visível para todos os humanos para permitir supervisão, mas idealmente usado pelo dono */}
             {chatType === 'human' && <button onClick={() => setTransferModalOpen(true)} className="px-3 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700">Transferir</button>}
-            
             <button onClick={() => onResolveChat(selectedChat.userId)} className="px-3 py-1 text-xs text-white bg-green-600 rounded hover:bg-green-700">Resolver</button>
         </div>
       </header>
@@ -284,7 +357,7 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
       <div className="flex-1 overflow-y-auto relative">
         {activeTab === 'chat' ? (
           <div className="p-4 whatsapp-bg min-h-full">
-            {selectedChat.messageLog.map((msg, i) => <MessageBubble key={i} message={msg} onImageClick={onImageClick} onSetReply={setReplyingToMessage} onSetEdit={(m)=>{setEditingMessage(m); setEditedText(m.text)}} isFromAttendant={msg.sender === Sender.ATTENDANT} messageIndex={i} isHighlighted={searchResults[currentResultIndex] === i} />)}
+            {selectedChat.messageLog.map((msg, i) => <MessageBubble key={i} message={msg} onImageClick={onImageClick} onSetReply={setReplyingToMessage} onSetEdit={(m)=>{setEditingMessage(m); setEditedText(m.text)}} onForward={openForwardModal} isFromAttendant={msg.sender === Sender.ATTENDANT} messageIndex={i} isHighlighted={searchResults[currentResultIndex] === i} />)}
             {isLoading && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </div>
@@ -293,7 +366,9 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
       
       {/* Footer / Input Area */}
       {activeTab === 'chat' && (
-          <footer className="bg-gray-200 p-3">
+          <footer className="bg-gray-200 p-3 relative">
+             {showEmojiPicker && <EmojiPicker onSelect={handleEmojiSelect} onClose={() => setShowEmojiPicker(false)} />}
+
              {!isOwner && chatType === 'human' && (
                 <div className="text-xs text-center text-gray-500 mb-2 p-1 bg-yellow-100 rounded border border-yellow-300">
                     Você está visualizando o atendimento de <b>{attendants.find(a=>a.id === selectedChat.attendantId)?.name}</b>. 
@@ -308,8 +383,8 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
                 {replyingToMessage && <div className="p-2 mb-2 bg-blue-50 border-l-4 border-blue-400 text-xs relative"><p className="font-bold text-blue-600">Respondendo a {replyingToMessage.senderName}</p><p className="truncate">{replyingToMessage.text || 'Arquivo'}</p><button onClick={()=>setReplyingToMessage(null)} className="absolute top-1 right-1 font-bold">&times;</button></div>}
                 {selectedFiles.length > 0 && <div className="p-2 mb-2 bg-blue-100 rounded flex space-x-2 overflow-x-auto">{selectedFiles.map((f,i) => <div key={i} className="relative w-16 h-16 bg-white"><img src={`data:${f.type};base64,${f.data}`} className="w-full h-full object-cover"/><button onClick={()=>setSelectedFiles(fs=>fs.filter((_,idx)=>idx!==i))} className="absolute top-0 right-0 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">&times;</button></div>)}</div>}
                 
-                {/* Input Controls - Sempre visíveis se for humano, mas desabilitados se não for o dono */}
                 <div className={`flex items-center bg-white rounded-full px-2 shadow ${!isOwner && chatType === 'human' ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 hover:text-gray-700 text-xl" disabled={!isOwner && chatType === 'human'}>😊</button>
                   <button onClick={() => fileInputRef.current.click()} className="p-2 text-gray-500 hover:text-gray-700" disabled={!isOwner && chatType === 'human'}><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg></button>
                   <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" multiple />
                   <input 
@@ -335,6 +410,9 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
             <div className="flex justify-end space-x-2"><button onClick={() => setTransferModalOpen(false)} className="px-4 py-2 bg-gray-200 rounded">Cancelar</button><button onClick={() => { onTransferChat(selectedChat.userId, transferToAttendantId); setTransferModalOpen(false); }} className="px-4 py-2 bg-blue-600 text-white rounded">Transferir</button></div>
           </div>
         </div>
+      )}
+      {isForwardModalOpen && (
+          <ForwardModal onClose={() => setForwardModalOpen(false)} onForward={handleForward} chats={activeChats} />
       )}
     </div>
   );
@@ -394,32 +472,46 @@ function App() {
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
 
+  // Polling de dados otimizado para atualização em tempo real
   const fetchData = useCallback(async () => {
     if (!attendant || isBackendOffline) return;
     try {
       const [reqRes, activeRes, historyRes, attendantsRes, aiChatsRes, internalSummaryRes] = await Promise.all([
         fetch('/api/requests'), fetch('/api/chats/active'), fetch('/api/chats/history'), fetch('/api/attendants'), fetch('/api/chats/ai-active'), fetch(`/api/internal-chats/summary/${attendant.id}`)
       ]);
-      // Modificado: Se der erro, apenas loga e não trava o componente.
+      
       if (!reqRes.ok) { console.warn('Erro ao buscar dados, tentando novamente...'); return; }
       
-      setRequestQueue(await reqRes.json());
-      setActiveChats(await activeRes.json());
+      const newQueue = await reqRes.json();
+      const newActiveChats = await activeRes.json();
+      
+      setRequestQueue(newQueue);
+      setActiveChats(newActiveChats);
       setChatHistory(await historyRes.json());
       setAttendants(await attendantsRes.json());
       setAiActiveChats(await aiChatsRes.json());
       setInternalChatsSummary(await internalSummaryRes.json());
       
+      // Lógica de atualização em tempo real do chat aberto
       if (selectedChat) {
-          const updated = [...await activeRes.json(), ...await aiChatsRes.json()].find(c => c.userId === selectedChat.userId);
-          // Atualiza se houver mensagem nova OU mudança de status (ticks)
-          const lastMsgUpdated = updated && updated.lastMessage?.timestamp !== selectedChat.messageLog[selectedChat.messageLog.length-1]?.timestamp;
-          // Verificação superficial de status
-          const statusUpdated = updated && updated.lastMessage?.status !== selectedChat.messageLog[selectedChat.messageLog.length-1]?.status;
+          const updatedChatSummary = [...newActiveChats, ...await aiChatsRes.json()].find(c => c.userId === selectedChat.userId);
+          
+          if (updatedChatSummary) {
+              const currentLastMsg = selectedChat.messageLog[selectedChat.messageLog.length - 1];
+              const remoteLastMsg = updatedChatSummary.lastMessage;
 
-          if (lastMsgUpdated || statusUpdated) {
-               const res = await fetch(`/api/chats/history/${selectedChat.userId}`);
-               if (res.ok) setSelectedChat({ ...selectedChat, ...(await res.json()) });
+              // Condições para forçar recarregamento:
+              // 1. Número de mensagens mudou
+              // 2. A última mensagem mudou (timestamp diferente)
+              // 3. O status da última mensagem mudou (ex: de enviado para lido)
+              const hasNewMessages = updatedChatSummary.logLength !== selectedChat.messageLog.length; // Usa logLength vindo da API
+              const statusChanged = remoteLastMsg && currentLastMsg && remoteLastMsg.status !== currentLastMsg.status;
+
+              if (hasNewMessages || statusChanged) {
+                  // console.log("Detectada mudança no chat, recarregando...");
+                  const res = await fetch(`/api/chats/history/${selectedChat.userId}`);
+                  if (res.ok) setSelectedChat({ ...selectedChat, ...(await res.json()) });
+              }
           }
       }
     } catch (err) { console.warn('Rede instável no fetchData, ignorando erro...'); }
@@ -434,7 +526,6 @@ function App() {
               setIsBackendOffline(false);
           }
       } catch (err) { 
-          // Mantém offline se falhar, mas sem log de erro crítico
           setIsBackendOffline(true); 
       }
   }, []);
@@ -451,7 +542,7 @@ function App() {
   }, []);
 
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
-  useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 3000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
+  useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 2000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]); // Intervalo reduzido para 2s para percepção real-time
   useEffect(() => { if (attendant && !isBackendOffline) fetch('/api/clients').then(r=>r.json()).then(setClients).catch(()=>{}); }, [attendant, isBackendOffline]);
 
   const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
@@ -478,6 +569,32 @@ function App() {
   const handleRegister = async (name) => { const res = await fetch('/api/attendants', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}); if(res.ok) setAttendants([...attendants, await res.json()]); };
   const handleLogout = () => { setAttendant(null); localStorage.removeItem('attendantId'); };
   const handleSelectChatItem = async (item) => { setIsLoading(true); setSelectedChat(null); try { const res = await fetch(`/api/chats/history/${item.userId}`); if(res.ok) setSelectedChat({...item, ...await res.json()}); } finally { setIsLoading(false); } };
+  
+  // Novo Handler: Assumir ao clicar na fila
+  const handleQueueClick = async (item) => {
+      setIsLoading(true);
+      try {
+          // Chama o endpoint de takeover
+          const res = await fetch(`/api/chats/takeover/${item.userId}`, {
+              method: 'POST', 
+              body: JSON.stringify({attendantId:attendant.id}),
+              headers:{'Content-Type':'application/json'}
+          });
+          if(res.ok) {
+              const updatedChat = await res.json();
+              // Busca o histórico completo para garantir
+              const histRes = await fetch(`/api/chats/history/${item.userId}`);
+              if(histRes.ok) {
+                  setSelectedChat({...updatedChat, ...await histRes.json()});
+                  // Muda a visualização para Ativos para que o usuário não se perca
+                  setActiveView('active');
+              }
+          }
+      } finally {
+          setIsLoading(false);
+          fetchData(); // Atualiza a lista lateral
+      }
+  };
 
   useEffect(() => { const saved = localStorage.getItem('attendantId'); if(saved && attendants.length) handleLogin(saved); }, [attendants]);
 
@@ -533,14 +650,35 @@ function App() {
             {['queue', 'active', 'ai_active', 'history', 'internal_chat'].map(v => <button key={v} onClick={() => setActiveView(v)} className={`flex-1 p-2 rounded ${activeView === v ? 'bg-white shadow font-bold' : 'text-gray-600'}`}>{v === 'ai_active' ? 'IA' : v === 'internal_chat' ? 'Interno' : v.charAt(0).toUpperCase() + v.slice(1)} {notifications[v]?.size || notifications[v] || ''}</button>)}
         </nav>
         <div className="flex-1 overflow-y-auto">
-            {activeView === 'queue' && requestQueue.map(r => <div key={r.id} onClick={()=>handleSelectChatItem({userId:r.userId, userName:r.userName})} className="p-3 border-b cursor-pointer hover:bg-gray-50"><p className="font-bold">{r.userName}</p><p className="text-xs text-gray-500">{r.department}</p></div>)}
+            {/* Lista da Fila com Auto-Takeover no Click */}
+            {activeView === 'queue' && requestQueue.map(r => <div key={r.id} onClick={()=>handleQueueClick(r)} className="p-3 border-b cursor-pointer hover:bg-gray-50"><p className="font-bold">{r.userName}</p><p className="text-xs text-gray-500">{r.department} (Clique para assumir)</p></div>)}
+            
             {activeView === 'active' && activeChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p></div>)}
             {activeView === 'ai_active' && aiActiveChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
+            
+             {/* Histórico simplificado */}
+             {activeView === 'history' && chatHistory.map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className="p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70"><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString()}</p></div>)}
         </div>
       </aside>
       <main className="flex-1 flex flex-col">
         {activeView !== 'internal_chat' ? (
-            <ChatPanel selectedChat={selectedChat} attendant={attendant} onSendMessage={handleSendMessage} onEditMessage={handleEditMessage} onResolveChat={async(id)=>{await fetch(`/api/chats/resolve/${id}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); fetchData(); setSelectedChat(null);}} onTransferChat={async(uid, aid)=>{await fetch(`/api/chats/transfer/${uid}`,{method:'POST',body:JSON.stringify({newAttendantId:aid, transferringAttendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); setSelectedChat(null); fetchData();}} onTakeoverChat={async(uid)=>{const res=await fetch(`/api/chats/takeover/${uid}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); if(res.ok) handleSelectChatItem(await res.json());}} isLoading={isLoading} attendants={attendants} onImageClick={setLightboxSrc} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} onFileSelect={handleFileSelect} onEditFile={setEditingFile} />
+            <ChatPanel 
+                selectedChat={selectedChat} 
+                attendant={attendant} 
+                onSendMessage={handleSendMessage} 
+                onEditMessage={handleEditMessage} 
+                onResolveChat={async(id)=>{await fetch(`/api/chats/resolve/${id}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); fetchData(); setSelectedChat(null);}} 
+                onTransferChat={async(uid, aid)=>{await fetch(`/api/chats/transfer/${uid}`,{method:'POST',body:JSON.stringify({newAttendantId:aid, transferringAttendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); setSelectedChat(null); fetchData();}} 
+                onTakeoverChat={async(uid)=>{const res=await fetch(`/api/chats/takeover/${uid}`,{method:'POST',body:JSON.stringify({attendantId:attendant.id}),headers:{'Content-Type':'application/json'}}); if(res.ok) handleSelectChatItem(await res.json());}} 
+                isLoading={isLoading} 
+                attendants={attendants} 
+                onImageClick={setLightboxSrc} 
+                selectedFiles={selectedFiles} 
+                setSelectedFiles={setSelectedFiles} 
+                onFileSelect={handleFileSelect} 
+                onEditFile={setEditingFile}
+                activeChats={activeChats} // Passado para o modal de Forward
+            />
         ) : <div className="flex items-center justify-center h-full text-gray-500">Chat interno em desenvolvimento (use a versão completa para esta funcionalidade)</div>}
       </main>
       {isInitiateModalOpen && (
