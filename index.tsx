@@ -29,13 +29,17 @@ const TypingIndicator = () => (
 // --- COMPONENTE: MessageStatusIcon (Ticks do WhatsApp) ---
 const MessageStatusIcon = ({ status }) => {
     // Status do Baileys: 0: ERROR, 1: PENDING, 2: SERVER_ACK (Enviado), 3: DELIVERY_ACK (Entregue), 4: READ (Lido), 5: PLAYED
-    if (!status || status <= 1) return <svg viewBox="0 0 16 16" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path fill="currentColor" d="M7.5 3a.5.5 0 0 1 .5.5v5.21l3.248 1.856a.5.5 0 0 1-.496.868l-3.5-2A.5.5 0 0 1 7 9V3.5a.5.5 0 0 1 .5-.5z"/></svg>; // Relógio
+    // Se status for indefinido ou <= 1, mostra relógio
+    if (status === undefined || status === null || status <= 1) {
+        return <svg viewBox="0 0 16 16" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path fill="currentColor" d="M7.5 3a.5.5 0 0 1 .5.5v5.21l3.248 1.856a.5.5 0 0 1-.496.868l-3.5-2A.5.5 0 0 1 7 9V3.5a.5.5 0 0 1 .5-.5z"/></svg>;
+    }
     
-    // Status 4 (Lido) = Azul. Status 2 (Enviado) e 3 (Entregue) = Cinza
-    const colorClass = status >= 4 ? "text-blue-500" : "text-gray-400";
+    // Status 4 (Lido) ou 5 (Played) = Azul. 
+    const isRead = status >= 4;
+    const colorClass = isRead ? "text-blue-500" : "text-gray-400";
     
     if (status === 2) {
-        // Um check (Enviado)
+        // Um check (Enviado ao servidor)
         return <svg viewBox="0 0 16 15" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 14.376l-3.89-3.956a.363.363 0 0 0-.506 0l-.477.476a.372.372 0 0 0 0 .515l4.636 4.706a.363.363 0 0 0 .506 0l10.122-12.28a.372.372 0 0 0 .052-.52z"/></svg>;
     }
     
@@ -384,7 +388,7 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
                 {selectedFiles.length > 0 && <div className="p-2 mb-2 bg-blue-100 rounded flex space-x-2 overflow-x-auto">{selectedFiles.map((f,i) => <div key={i} className="relative w-16 h-16 bg-white"><img src={`data:${f.type};base64,${f.data}`} className="w-full h-full object-cover"/><button onClick={()=>setSelectedFiles(fs=>fs.filter((_,idx)=>idx!==i))} className="absolute top-0 right-0 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">&times;</button></div>)}</div>}
                 
                 <div className={`flex items-center bg-white rounded-full px-2 shadow ${!isOwner && chatType === 'human' ? 'opacity-50 pointer-events-none' : ''}`}>
-                  <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 hover:text-gray-700 text-xl" disabled={!isOwner && chatType === 'human'}>😊</button>
+                  <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 hover:text-gray-700 text-xl" disabled={!isOwner && chatType === 'human'} >😊</button>
                   <button onClick={() => fileInputRef.current.click()} className="p-2 text-gray-500 hover:text-gray-700" disabled={!isOwner && chatType === 'human'}><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg></button>
                   <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" multiple />
                   <input 
@@ -461,6 +465,9 @@ function App() {
   const [gatewayStatus, setGatewayStatus] = useState({ status: 'LOADING', qrCode: null });
   const [isBackendOffline, setIsBackendOffline] = useState(true);
   
+  // Ref para rastrear o chat selecionado dentro do intervalo
+  const selectedChatRef = useRef(null);
+  
   // Modals
   const [isInitiateModalOpen, setInitiateModalOpen] = useState(false);
   const [clients, setClients] = useState([]);
@@ -471,6 +478,11 @@ function App() {
   
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
+
+  // Atualiza o ref sempre que o estado muda
+  useEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
 
   // Polling de dados otimizado para atualização em tempo real
   const fetchData = useCallback(async () => {
@@ -484,38 +496,47 @@ function App() {
       
       const newQueue = await reqRes.json();
       const newActiveChats = await activeRes.json();
+      const newAiChats = await aiChatsRes.json();
       
       setRequestQueue(newQueue);
       setActiveChats(newActiveChats);
       setChatHistory(await historyRes.json());
       setAttendants(await attendantsRes.json());
-      setAiActiveChats(await aiChatsRes.json());
+      setAiActiveChats(newAiChats);
       setInternalChatsSummary(await internalSummaryRes.json());
       
       // Lógica de atualização em tempo real do chat aberto
-      if (selectedChat) {
-          const updatedChatSummary = [...newActiveChats, ...await aiChatsRes.json()].find(c => c.userId === selectedChat.userId);
+      // Usa o REF para garantir que estamos comparando com o chat ATUALMENTE aberto na tela, e não um closure antigo
+      const currentChat = selectedChatRef.current;
+      
+      if (currentChat) {
+          const updatedChatSummary = [...newActiveChats, ...newAiChats].find(c => c.userId === currentChat.userId);
           
           if (updatedChatSummary) {
-              const currentLastMsg = selectedChat.messageLog[selectedChat.messageLog.length - 1];
-              const remoteLastMsg = updatedChatSummary.lastMessage;
+              const currentLastMsg = currentChat.messageLog[currentChat.messageLog.length - 1];
+              
+              // Verifica se houve mudança no comprimento do log OU no status da última mensagem
+              const logLengthChanged = updatedChatSummary.logLength !== currentChat.messageLog.length;
+              
+              // Verifica mudança de status (de pendente para enviado, ou de enviado para lido)
+              // updatedChatSummary.lastMsgStatus vem do servidor
+              const statusChanged = currentLastMsg && updatedChatSummary.lastMsgStatus !== currentLastMsg.status;
+              
+              const lastMsgTimestampChanged = currentLastMsg && updatedChatSummary.lastMessage && updatedChatSummary.lastMessage.timestamp !== currentLastMsg.timestamp;
 
-              // Condições para forçar recarregamento:
-              // 1. Número de mensagens mudou
-              // 2. A última mensagem mudou (timestamp diferente)
-              // 3. O status da última mensagem mudou (ex: de enviado para lido)
-              const hasNewMessages = updatedChatSummary.logLength !== selectedChat.messageLog.length; // Usa logLength vindo da API
-              const statusChanged = remoteLastMsg && currentLastMsg && remoteLastMsg.status !== currentLastMsg.status;
-
-              if (hasNewMessages || statusChanged) {
-                  // console.log("Detectada mudança no chat, recarregando...");
-                  const res = await fetch(`/api/chats/history/${selectedChat.userId}`);
-                  if (res.ok) setSelectedChat({ ...selectedChat, ...(await res.json()) });
+              if (logLengthChanged || statusChanged || lastMsgTimestampChanged) {
+                  // console.log("Detectada mudança no chat (msg ou status), recarregando...");
+                  const res = await fetch(`/api/chats/history/${currentChat.userId}`);
+                  if (res.ok) {
+                      const newData = await res.json();
+                      // Preserva o estado de edição/reply se necessário, mas aqui atualizamos o log inteiro
+                      setSelectedChat(prev => ({ ...prev, ...newData }));
+                  }
               }
           }
       }
     } catch (err) { console.warn('Rede instável no fetchData, ignorando erro...'); }
-  }, [attendant, isBackendOffline, selectedChat]);
+  }, [attendant, isBackendOffline]); // Removido selectedChat da dependência para evitar recriação constante do intervalo
 
   const pollStatus = useCallback(async () => {
       try {
@@ -542,7 +563,10 @@ function App() {
   }, []);
 
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
-  useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 2000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]); // Intervalo reduzido para 2s para percepção real-time
+  
+  // Polling de 1 segundo para sensação de tempo real
+  useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 1000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
+  
   useEffect(() => { if (attendant && !isBackendOffline) fetch('/api/clients').then(r=>r.json()).then(setClients).catch(()=>{}); }, [attendant, isBackendOffline]);
 
   const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
@@ -553,6 +577,8 @@ function App() {
       const tempMsg = { sender: Sender.ATTENDANT, text, files, timestamp: new Date().toISOString(), replyTo: replyTo ? { text: replyTo.text, senderName: replyTo.sender === 'user' ? selectedChat.userName : 'Você' } : null, status: 1 };
       setSelectedChat(p => p?.userId === userId ? { ...p, messageLog: [...p.messageLog, tempMsg] } : p);
       await fetch('/api/chats/attendant-reply', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, text, attendantId, files, replyTo }) });
+      // Fetch imediato para confirmar envio
+      setTimeout(fetchData, 500);
   };
 
   const handleEditMessage = async (userId, messageTimestamp, newText) => {
@@ -562,6 +588,7 @@ function App() {
           return { ...p, messageLog: newLog };
       });
       await fetch('/api/chats/edit-message', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, attendantId: attendant.id, messageTimestamp, newText }) });
+      setTimeout(fetchData, 500);
   };
   
   // Handlers simplificados (mantendo lógica original)
