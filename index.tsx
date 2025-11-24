@@ -473,8 +473,10 @@ function App() {
   const [clients, setClients] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [initiateMessage, setInitiateMessage] = useState('');
+  const [initiateFiles, setInitiateFiles] = useState([]); // Novo estado para arquivos no modal
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState(null);
+  const initiateFileInputRef = useRef(null);
   
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
@@ -572,6 +574,9 @@ function App() {
   const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
   const handleFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
   const handleInternalFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setInternalSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
+  
+  // Novo Handler para arquivos no modal de Início
+  const handleInitiateFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setInitiateFiles(p => [...p, ...processed]); e.target.value=null; };
 
   const handleSendMessage = async (userId, text, attendantId, files, replyTo) => {
       const tempMsg = { sender: Sender.ATTENDANT, text, files, timestamp: new Date().toISOString(), replyTo: replyTo ? { text: replyTo.text, senderName: replyTo.sender === 'user' ? selectedChat.userName : 'Você' } : null, status: 1 };
@@ -716,8 +721,51 @@ function App() {
                   <div className="flex-1 overflow-y-auto border rounded mb-4">
                       {filteredClients.map(c => <div key={c.userId} onClick={()=>setSelectedClient(c)} className={`p-2 cursor-pointer hover:bg-gray-100 ${selectedClient?.userId===c.userId?'bg-blue-100':''}`}>{c.userName}</div>)}
                   </div>
-                  <textarea value={initiateMessage} onChange={e=>setInitiateMessage(e.target.value)} placeholder="Mensagem..." className="p-2 border rounded mb-2 h-20"></textarea>
-                  <div className="flex justify-end space-x-2"><button onClick={()=>setInitiateModalOpen(false)} className="px-4 py-2 bg-gray-200 rounded">Cancelar</button><button onClick={async()=>{ if(!selectedClient) return; const res = await fetch('/api/chats/initiate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({recipientNumber:selectedClient.userId, message:initiateMessage, attendantId:attendant.id})}); if(res.ok) { setInitiateModalOpen(false); handleSelectChatItem(await res.json()); }}} className="px-4 py-2 bg-blue-600 text-white rounded">Enviar</button></div>
+                  
+                  {/* Área de Preview de Arquivos no Modal */}
+                  {initiateFiles.length > 0 && (
+                      <div className="flex space-x-2 overflow-x-auto mb-2 p-1 bg-gray-50 rounded">
+                           {initiateFiles.map((f, i) => (
+                               <div key={i} className="relative w-12 h-12 bg-gray-200 flex-shrink-0">
+                                   <img src={`data:${f.type};base64,${f.data}`} className="w-full h-full object-cover rounded" alt="preview"/>
+                                   <button onClick={() => setInitiateFiles(files => files.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-xs">&times;</button>
+                               </div>
+                           ))}
+                      </div>
+                  )}
+
+                  <div className="flex items-end space-x-2 mb-2">
+                       <textarea value={initiateMessage} onChange={e=>setInitiateMessage(e.target.value)} placeholder="Mensagem..." className="flex-1 p-2 border rounded h-20 resize-none"></textarea>
+                       <button onClick={() => initiateFileInputRef.current.click()} className="p-2 text-gray-500 hover:bg-gray-100 rounded border h-10 w-10 flex items-center justify-center">
+                            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                       </button>
+                       <input type="file" ref={initiateFileInputRef} onChange={handleInitiateFileSelect} className="hidden" multiple />
+                  </div>
+                  
+                  <div className="flex justify-end space-x-2">
+                      <button onClick={()=>{setInitiateModalOpen(false); setInitiateFiles([]); setInitiateMessage(''); setSelectedClient(null);}} className="px-4 py-2 bg-gray-200 rounded">Cancelar</button>
+                      <button onClick={async()=>{ 
+                          if(!selectedClient) return; 
+                          const res = await fetch('/api/chats/initiate', {
+                              method:'POST', 
+                              headers:{'Content-Type':'application/json'}, 
+                              body:JSON.stringify({
+                                  recipientNumber: selectedClient.userId, 
+                                  clientName: selectedClient.userName, // Envia o nome do cliente
+                                  message: initiateMessage, 
+                                  attendantId: attendant.id,
+                                  files: initiateFiles // Envia arquivos
+                              })
+                          }); 
+                          if(res.ok) { 
+                              setInitiateModalOpen(false); 
+                              setInitiateFiles([]);
+                              setInitiateMessage('');
+                              setSelectedClient(null);
+                              handleSelectChatItem(await res.json()); 
+                          }
+                      }} className="px-4 py-2 bg-blue-600 text-white rounded">Enviar</button>
+                  </div>
               </div>
           </div>
       )}
