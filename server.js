@@ -352,11 +352,17 @@ async function startWhatsApp() {
             gatewayStatus.status = 'QR_CODE_READY';
         }
         if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             gatewayStatus.status = 'DISCONNECTED';
-            if (shouldReconnect) setTimeout(startWhatsApp, 3000);
-            else {
+            
+            // Lógica de Reconexão Rígida: 
+            // Só apaga a sessão se o usuário explicitamente clicou em "Sair" (401 Logged Out)
+            if (shouldReconnect) {
+                console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Tentando reconectar...`);
+                setTimeout(startWhatsApp, 3000);
+            } else {
+                console.log(`[WhatsApp] Desconectado permanentemente (Logout). Gerando novo QR.`);
                 fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
                 gatewayStatus.qrCode = null;
                 setTimeout(startWhatsApp, 1000);
