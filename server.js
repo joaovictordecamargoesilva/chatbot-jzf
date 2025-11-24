@@ -33,7 +33,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
 });
 
-const SERVER_VERSION = "21.0.1_INTEGRATED_FIX";
+const SERVER_VERSION = "21.0.2_READ_RECEIPTS";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -330,7 +330,7 @@ async function startWhatsApp() {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: true,
-        browser: ['CARCLASS', 'Chrome', '1.0.0'], // Usando identificador estável
+        browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Usando identificador estável
         // Otimizações de conexão
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -373,11 +373,45 @@ async function startWhatsApp() {
         }
     });
 
+    // --- MANIPULADOR DE ATUALIZAÇÃO DE STATUS (TICKS) ---
+    sock.ev.on('messages.update', async (updates) => {
+        let hasChanges = false;
+        
+        for (const update of updates) {
+            // update.key.remoteJid é o ID do chat
+            // update.update.status é o novo status (4 = lido)
+            if (!update.update.status) continue;
+            
+            const userId = update.key.remoteJid;
+            const session = activeChats.get(userId) || userSessions.get(userId);
+            
+            if (session) {
+                const msg = session.messageLog.find(m => m.whatsappId === update.key.id);
+                if (msg) {
+                    msg.status = update.update.status;
+                    hasChanges = true;
+                    // Se foi lido (4), também atualizamos localmente
+                    if (update.update.status === 4) {
+                        // console.log(`[WhatsApp] Mensagem lida por ${userId}`);
+                    }
+                }
+            }
+        }
+        
+        if (hasChanges) {
+             saveData('activeChats.json', activeChats);
+             saveData('userSessions.json', userSessions);
+        }
+    });
+
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe) continue;
+            
+            // Marca como lido automaticamente se estivermos processando
+            // await sock.readMessages([msg.key]); 
 
             const userId = msg.key.remoteJid;
             const userName = msg.pushName || userId.split('@')[0];
@@ -457,12 +491,15 @@ setInterval(async () => {
 
         // Confirmação de envio (ACK para lógica interna)
         if (sentMsg && msg.tempId) {
-            const session = activeChats.get(msg.userId);
+            const session = activeChats.get(msg.userId) || userSessions.get(msg.userId);
             if (session) {
                 const logMsg = session.messageLog.find(m => m.tempId === msg.tempId);
                 if (logMsg) {
                     logMsg.whatsappId = sentMsg.key.id;
-                    saveData('activeChats.json', activeChats);
+                    logMsg.status = 2; // SERVER_ACK (Enviado)
+                    
+                    if (activeChats.has(msg.userId)) saveData('activeChats.json', activeChats);
+                    else saveData('userSessions.json', userSessions);
                     
                     // Se havia uma edição pendente para esta mensagem (race condition), executa agora
                     if (pendingEdits.has(msg.tempId)) {
@@ -564,7 +601,8 @@ apiRouter.post('/chats/attendant-reply', (req, res) => {
     if (!session || session.attendantId !== attendantId) return res.status(403).send('Proibido');
 
     const timestamp = new Date().toISOString();
-    const newMessage = { sender: 'attendant', text, files: files ? [...files] : [], timestamp, replyTo, tempId: `temp_${timestamp}` };
+    // Status 1 = Pendente
+    const newMessage = { sender: 'attendant', text, files: files ? [...files] : [], timestamp, replyTo, tempId: `temp_${timestamp}`, status: 1 };
 
     if (text) queueOutbound(userId, { text, tempId: newMessage.tempId });
     if (files) files.forEach(f => queueOutbound(userId, { file: f, text: f.name }));
@@ -638,7 +676,7 @@ apiRouter.post('/chats/initiate', (req, res) => {
     const attName = ATTENDANTS.find(a=>a.id===attendantId)?.name || 'Atendente';
     
     session.messageLog.push({ sender: 'system', text: `Iniciado por ${attName}`, timestamp: new Date().toISOString() });
-    session.messageLog.push({ sender: 'attendant', text: message, timestamp: new Date().toISOString() });
+    session.messageLog.push({ sender: 'attendant', text: message, timestamp: new Date().toISOString(), status: 1 });
     activeChats.set(recipientNumber, session);
     saveData('activeChats.json', activeChats);
     
