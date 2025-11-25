@@ -24,15 +24,18 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 
 // --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
+// Evita que o servidor caia por erros menores
 process.on('uncaughtException', (err, origin) => {
-  console.error(`[FATAL] Exceção não capturada: ${err.message}`, { stack: err.stack, origin: origin });
+  console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
+  // Não sai do processo, tenta manter rodando
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[FATAL] Rejeição de Promise não tratada:', { reason: reason, promise: promise });
+  console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
+  // Não sai do processo
 });
 
-const SERVER_VERSION = "21.3.0_FEATURE_UPDATE";
+const SERVER_VERSION = "21.4.0_STABILITY_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -44,22 +47,32 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // --- PERSISTÊNCIA DE DADOS ---
+// Se RENDER_DISK_PATH estiver definido, usa ele (Disco Persistente).
+// Caso contrário, usa ./data (Local).
 const DATA_DIR = process.env.RENDER_DISK_PATH || path.join(__dirname, 'data');
+
 if (!fs.existsSync(DATA_DIR)) {
   console.log(`[Persistence] Criando diretório de dados em: ${DATA_DIR}`);
   fs.mkdirSync(DATA_DIR, { recursive: true });
+} else {
+  console.log(`[Persistence] Usando diretório de dados existente: ${DATA_DIR}`);
 }
 
 // Helper functions
 const serializeMap = (map) => Array.from(map.entries());
 const deserializeMap = (arr) => new Map(arr);
 
+// Salvamento Atômico: Escreve em .tmp e renomeia para evitar corrupção se o servidor cair durante a escrita
 const saveData = (filename, data) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
+    const tempPath = `${filePath}.tmp`;
+    
     let dataToSave = data;
     if (data instanceof Map) dataToSave = serializeMap(data);
-    fs.writeFileSync(filePath, JSON.stringify(dataToSave, null, 2), 'utf8');
+    
+    fs.writeFileSync(tempPath, JSON.stringify(dataToSave, null, 2), 'utf8');
+    fs.renameSync(tempPath, filePath);
   } catch (error) {
     console.error(`[Persistence] ERRO CRÍTICO ao salvar dados em ${filename}:`, error);
   }
@@ -76,7 +89,7 @@ const loadData = (filename, defaultValue) => {
       return parsedData;
     }
   } catch (error) {
-    console.error(`[Persistence] ERRO ao carregar ${filename}.`, error);
+    console.error(`[Persistence] ERRO ao carregar ${filename}. Usando valor padrão.`, error);
   }
   return defaultValue;
 };
@@ -93,8 +106,10 @@ const internalChats = loadData('internalChats.json', new Map());
 let syncedContacts = loadData('syncedContacts.json', []);
 
 let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
-const MAX_SESSIONS = 2000;
-const MAX_ARCHIVED_CHATS = 500;
+
+// LIMITES AUMENTADOS PARA EVITAR PERDA DE DADOS
+const MAX_SESSIONS = 10000; // Aumentado significativamente
+const MAX_ARCHIVED_CHATS = 2000;
 
 // Filas internas
 const outboundGatewayQueue = []; 
@@ -103,6 +118,7 @@ const pendingEdits = new Map(); // Map<AttendantMsgTimestamp, {userId, newText}>
 // Status do Gateway (WhatsApp)
 let gatewayStatus = { status: 'DISCONNECTED', qrCode: null };
 let sock = null; 
+let reconnectAttempts = 0;
 
 // --- MIDDLEWARE ---
 app.use(express.json({ limit: '50mb' }));
@@ -111,9 +127,6 @@ app.use(express.json({ limit: '50mb' }));
 const distPath = path.join(__dirname, 'dist');
 if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
-    console.log(`[Server] Servindo frontend estático de: ${distPath}`);
-} else {
-    console.warn(`[Server] ALERTA: Pasta 'dist' não encontrada. Certifique-se de que 'npm run build' foi executado.`);
 }
 
 // --- CONFIGURAÇÃO IA (GEMINI) ---
@@ -149,7 +162,6 @@ function archiveSession(session) {
     let userHistory = archivedChats.get(session.userId) || [];
     
     // Adiciona a sessão atual ao histórico
-    // Importante: Clonar o objeto para evitar referência circular ou mutação indesejada
     userHistory.push(JSON.parse(JSON.stringify(session)));
     
     archivedChats.set(session.userId, userHistory);
@@ -166,7 +178,12 @@ function archiveSession(session) {
 function getSession(userId, userName = null) {
     let session = activeChats.get(userId) || userSessions.get(userId);
     if (!session) {
-        if (userSessions.size >= MAX_SESSIONS) userSessions.delete(userSessions.keys().next().value);
+        // Remove mais antigo apenas se exceder o limite seguro (10k)
+        if (userSessions.size >= MAX_SESSIONS) {
+            const oldestKey = userSessions.keys().next().value;
+            userSessions.delete(oldestKey);
+        }
+
         session = {
             userId, userName, currentState: ChatState.GREETING,
             context: { history: {} }, aiHistory: [], messageLog: [],
@@ -176,6 +193,7 @@ function getSession(userId, userName = null) {
         saveData('userSessions.json', userSessions);
     } else if (userName && session.userName !== userName) {
         session.userName = userName;
+        saveData('userSessions.json', userSessions);
     }
     return session;
 }
@@ -196,7 +214,7 @@ function formatFlowStepForWhatsapp(step, context) {
     
     if (step.options?.length > 0) {
         messageText += `\n\n${step.options.map((opt, i) => `*${i + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n')}`;
-        // INSTRUÇÃO ADICIONADA CONFORME SOLICITADO
+        // INSTRUÇÃO ADICIONADA
         messageText += `\n\nPor favor, digite o número da opção desejada.`;
     }
     return messageText;
@@ -316,9 +334,10 @@ async function startWhatsApp() {
         printQRInTerminal: true,
         browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
         connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 10000,
+        keepAliveIntervalMs: 15000,
         emitOwnEvents: false,
-        retryRequestDelayMs: 250,
+        retryRequestDelayMs: 2000,
+        defaultQueryTimeoutMs: 60000,
         getMessage: async () => ({ conversation: 'hello' })
     });
 
@@ -341,36 +360,48 @@ async function startWhatsApp() {
         }
         if (hasNew) {
             saveData('syncedContacts.json', syncedContacts);
-            console.log(`[Contacts] Sincronização automática realizada.`);
         }
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        
         if (qr) {
+            console.log('[WhatsApp] Novo QR Code gerado.');
             gatewayStatus.qrCode = await QRCode.toDataURL(qr);
             gatewayStatus.status = 'QR_CODE_READY';
         }
+
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const error = lastDisconnect?.error;
+            const statusCode = error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            gatewayStatus.status = 'DISCONNECTED';
             
-            // Lógica de Reconexão Rígida: 
-            // Só apaga a sessão se o usuário explicitamente clicou em "Sair" (401 Logged Out)
+            console.log(`[WhatsApp] Conexão fechada. Status: ${statusCode}, Deve Reconectar: ${shouldReconnect}`);
+            gatewayStatus.status = 'DISCONNECTED';
+
             if (shouldReconnect) {
-                console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Tentando reconectar...`);
-                setTimeout(startWhatsApp, 3000);
+                // Cálculo de Backoff para evitar loops rápidos
+                const delay = Math.min(5000 * (reconnectAttempts + 1), 60000); // Max 60s
+                reconnectAttempts++;
+                console.log(`[WhatsApp] Reconectando em ${delay/1000}s... (Tentativa ${reconnectAttempts})`);
+                
+                setTimeout(() => {
+                    startWhatsApp();
+                }, delay);
             } else {
-                console.log(`[WhatsApp] Desconectado permanentemente (Logout). Gerando novo QR.`);
+                // APENAS AQUI apagamos a sessão (Logout explícito)
+                console.log(`[WhatsApp] Desconectado permanentemente (Logout). Limpando sessão.`);
                 fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
                 gatewayStatus.qrCode = null;
-                setTimeout(startWhatsApp, 1000);
+                reconnectAttempts = 0;
+                setTimeout(startWhatsApp, 2000);
             }
         } else if (connection === 'open') {
             gatewayStatus.status = 'CONNECTED';
             gatewayStatus.qrCode = null;
-            console.log('[WhatsApp] Conectado!');
+            reconnectAttempts = 0; // Reset
+            console.log('[WhatsApp] CONEXÃO ESTABELECIDA COM SUCESSO!');
         }
     });
 
@@ -417,14 +448,9 @@ async function startWhatsApp() {
     sock.ev.on('messages.update', async(updates) => {
        for(const update of updates) {
            if(update.update.status) {
-              const status = update.update.status; // 3: Entregue, 4: Lido
-              // Atualiza status nos chats ativos
+              const status = update.update.status; 
               for (const [userId, chat] of activeChats.entries()) {
                    if (userId === update.key.remoteJid) {
-                       const msgIndex = chat.messageLog.findIndex(m => m.timestamp === update.key.id || (m.timestamp && new Date(m.timestamp).getTime() === new Date(update.key.id).getTime())); 
-                       // Nota: Baileys usa key.id como identificador. O chat usa timestamp ou id próprio.
-                       // Como simplificação, vamos assumir que atualizamos a última mensagem se for recente ou implementar busca por ID futuramente.
-                       // Para este MVP, atualizamos a última mensagem do atendente:
                        const lastMsg = chat.messageLog[chat.messageLog.length -1];
                        if(lastMsg && lastMsg.sender === 'attendant') {
                            lastMsg.status = status;
@@ -443,13 +469,11 @@ setInterval(async () => {
         const item = outboundGatewayQueue.shift();
         try {
             const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
-            let sentMsg;
-
+            
             if (item.files && item.files.length > 0) {
-                 // Envio de Mídia
                  for (const file of item.files) {
                     const buffer = Buffer.from(file.data, 'base64');
-                    sentMsg = await sock.sendMessage(jid, { 
+                    await sock.sendMessage(jid, { 
                         [file.type.startsWith('image') ? 'image' : 'document']: buffer, 
                         caption: item.text,
                         mimetype: file.type,
@@ -457,11 +481,9 @@ setInterval(async () => {
                     });
                  }
             } else {
-                 // Texto puro
-                 sentMsg = await sock.sendMessage(jid, { text: item.text });
+                 await sock.sendMessage(jid, { text: item.text });
             }
 
-            // Atualiza status local para enviado (2)
             if(activeChats.has(item.userId)) {
                 const chat = activeChats.get(item.userId);
                 const lastMsg = chat.messageLog[chat.messageLog.length - 1];
@@ -472,12 +494,12 @@ setInterval(async () => {
             }
 
         } catch (e) {
-            console.error('[Outbound] Erro ao enviar:', e);
+            console.error('[Outbound] Erro ao enviar (colocando de volta na fila):', e.message);
             outboundGatewayQueue.unshift(item); // Tenta de novo
             await new Promise(r => setTimeout(r, 5000));
         }
     }
-}, 500); // Check a cada 500ms
+}, 500); 
 
 // --- API ENDPOINTS ---
 
@@ -757,7 +779,6 @@ app.post('/api/chats/edit-message', (req, res) => {
             msg.text = newText;
             msg.edited = true;
             saveData('activeChats.json', activeChats);
-            // Aqui você poderia implementar a lógica real de edição do WhatsApp se o Baileys suportar sendMessage com edit key
             res.json({ success: true });
         } else {
             res.status(404).send();
@@ -767,16 +788,13 @@ app.post('/api/chats/edit-message', (req, res) => {
     }
 });
 
-// Chats Internos (Mock)
 app.get('/api/internal-chats/summary/:attendantId', (req, res) => res.json({}));
 
-// ROTA CATCH-ALL PARA SPA (IMPORTANTE: Deve ser a última rota)
+// ROTA CATCH-ALL PARA SPA
 app.get('*', (req, res) => {
-    // Se for requisição de API que passou despercebida, retorna 404 JSON
     if (req.path.startsWith('/api')) {
         return res.status(404).json({ error: 'Endpoint API não encontrado' });
     }
-    // Para qualquer outra rota, retorna o index.html do React
     const indexPath = path.join(distPath, 'index.html');
     if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
