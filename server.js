@@ -6,6 +6,8 @@ import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module'; // Import necessário para compatibilidade
+
 import {
   ChatState,
   conversationFlow,
@@ -13,14 +15,18 @@ import {
   translations
 } from './chatbotLogic.js';
 
-// --- IMPORTAÇÕES DO BAILEYS ---
-import makeWASocket, { 
+// --- IMPORTAÇÕES DO BAILEYS (CORREÇÃO DE IMPORTAÇÃO) ---
+// Usamos createRequire para evitar erro de "Named export not found" em módulos CJS
+const require = createRequire(import.meta.url);
+const { 
+    default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     downloadMediaMessage,
     makeInMemoryStore
-} from '@whiskeysockets/baileys';
+} = require('@whiskeysockets/baileys');
+
 import pino from 'pino';
 import QRCode from 'qrcode';
 
@@ -33,7 +39,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "21.6.0_FIX_DEPLOY";
+const SERVER_VERSION = "21.6.1_FIX_BAILEYS_IMPORT";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
