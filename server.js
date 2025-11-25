@@ -344,27 +344,55 @@ async function startWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- SINCRONIZAÇÃO DE CONTATOS ---
-    sock.ev.on('contacts.upsert', async (contacts) => {
+    // --- SINCRONIZAÇÃO DE CONTATOS ROBUSTA ---
+    
+    // Função auxiliar para processar lista de contatos (usada em upsert e history.set)
+    const processContacts = (contacts) => {
         let hasNew = false;
+        if (!contacts || !Array.isArray(contacts)) return;
+
         for (const contact of contacts) {
-            if (contact.id.includes('@g.us') || contact.id === 'status@broadcast') continue;
-            const exists = syncedContacts.find(c => c.userId === contact.id);
-            const name = contact.name || contact.notify || contact.verifiedName || contact.id.split('@')[0];
-            if (!exists) {
+            if (contact.id.endsWith('@g.us') || contact.id === 'status@broadcast') continue;
+            
+            // Tenta obter o nome. Se não tiver, usa a parte do ID antes do @ (número)
+            const name = contact.name || contact.notify || contact.verifiedName || (contact.id ? contact.id.split('@')[0] : 'Desconhecido');
+            
+            const existingIndex = syncedContacts.findIndex(c => c.userId === contact.id);
+            
+            if (existingIndex > -1) {
+                // Atualiza o nome se o novo for "melhor" (não for apenas o número) e diferente do atual
+                const currentName = syncedContacts[existingIndex].userName;
+                const isPhoneNumber = name === contact.id.split('@')[0];
+                
+                if (name && !isPhoneNumber && currentName !== name) {
+                    syncedContacts[existingIndex].userName = name;
+                    hasNew = true;
+                }
+            } else {
                 syncedContacts.push({ userId: contact.id, userName: name });
-                hasNew = true;
-            } else if (name && exists.userName !== name) {
-                exists.userName = name;
                 hasNew = true;
             }
         }
         if (hasNew) {
+            console.log('[Contacts] Lista de contatos atualizada.');
             saveData('syncedContacts.json', syncedContacts);
+        }
+    };
+
+    // 1. Recebe histórico completo ao conectar (AQUI ESTÃO OS CONTATOS ANTIGOS)
+    sock.ev.on('messaging-history.set', async ({ contacts }) => {
+        if (contacts && contacts.length > 0) {
+            console.log(`[WhatsApp] Histórico recebido com ${contacts.length} contatos.`);
+            processContacts(contacts);
         }
     });
 
-    // Listener adicional para atualização de contatos (quando o nome chega depois)
+    // 2. Recebe novos contatos ou atualizações incrementais
+    sock.ev.on('contacts.upsert', async (contacts) => {
+        processContacts(contacts);
+    });
+
+    // 3. Atualização específica de dados do contato (ex: Mudou o nome)
     sock.ev.on('contacts.update', async (updates) => {
         let hasUpdates = false;
         for (const update of updates) {
