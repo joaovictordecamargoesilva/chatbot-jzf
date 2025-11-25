@@ -15,17 +15,20 @@ import {
   translations
 } from './chatbotLogic.js';
 
-// --- IMPORTAÇÕES DO BAILEYS (CORREÇÃO DE IMPORTAÇÃO) ---
-// Usamos createRequire para evitar erro de "Named export not found" em módulos CJS
+// --- IMPORTAÇÕES DO BAILEYS ---
+// Usamos createRequire para importar CommonJS dentro de ESM
 const require = createRequire(import.meta.url);
+const pkg = require('@whiskeysockets/baileys');
+
+// Extração manual segura das exportações do Baileys
+const makeWASocket = pkg.default || pkg;
 const { 
-    default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     downloadMediaMessage,
-    makeInMemoryStore
-} = require('@whiskeysockets/baileys');
+    delay
+} = pkg;
 
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -39,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "21.6.1_FIX_BAILEYS_IMPORT";
+const SERVER_VERSION = "21.7.0_CUSTOM_STORE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -93,26 +96,73 @@ const loadData = (filename, defaultValue) => {
   return defaultValue;
 };
 
-// --- STORE DO BAILEYS (MEMÓRIA + ARQUIVO) ---
-const store = makeInMemoryStore({ 
-    logger: pino({ level: 'silent' }) 
-});
+// --- CUSTOM STORE IMPLEMENTATION (Para substituir makeInMemoryStore) ---
+// Isso garante que os contatos sejam salvos independentemente de falhas na biblioteca
+const makeCustomStore = () => {
+    let contacts = {};
 
+    return {
+        contacts,
+        readFromFile: (filepath) => {
+            try {
+                if (fs.existsSync(filepath)) {
+                    const data = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+                    if (data.contacts) {
+                        contacts = data.contacts;
+                        console.log(`[Store] Carregados ${Object.keys(contacts).length} contatos do arquivo.`);
+                    }
+                }
+            } catch (e) {
+                console.error('[Store] Falha ao ler arquivo:', e);
+            }
+        },
+        writeToFile: (filepath) => {
+            try {
+                fs.writeFileSync(filepath, JSON.stringify({ contacts }, null, 2), 'utf-8');
+            } catch (e) {
+                console.error('[Store] Falha ao escrever arquivo:', e);
+            }
+        },
+        bind: (ev) => {
+            // Sincronização inicial e histórico
+            ev.on('messaging-history.set', ({ contacts: newContacts }) => {
+                if (newContacts) {
+                    console.log(`[Store] Recebido histórico com ${newContacts.length} contatos.`);
+                    newContacts.forEach(c => {
+                        contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
+                    });
+                }
+            });
+
+            // Novos contatos ou atualizações em massa
+            ev.on('contacts.upsert', (newContacts) => {
+                newContacts.forEach(c => {
+                    contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
+                });
+            });
+
+            // Atualizações parciais (ex: mudou nome, foto)
+            ev.on('contacts.update', (updates) => {
+                updates.forEach(u => {
+                    if (contacts[u.id]) {
+                        Object.assign(contacts[u.id], u);
+                    }
+                });
+            });
+        }
+    };
+};
+
+// Inicializa a Store Customizada
+const store = makeCustomStore();
 const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
-try {
-    if (fs.existsSync(STORE_FILE)) {
-        store.readFromFile(STORE_FILE);
-    }
-} catch (e) {
-    console.error('[Store] Falha ao ler arquivo de store:', e);
-}
 
+// Carrega dados existentes
+store.readFromFile(STORE_FILE);
+
+// Salva periodicamente
 setInterval(() => {
-    try {
-        store.writeToFile(STORE_FILE);
-    } catch (e) {
-        console.error('[Store] Falha ao salvar store:', e);
-    }
+    store.writeToFile(STORE_FILE);
 }, 10_000);
 
 
@@ -125,6 +175,7 @@ let requestQueue = loadData('requestQueue.json', []);
 const activeChats = loadData('activeChats.json', new Map());
 const archivedChats = loadData('archivedChats.json', new Map());
 const internalChats = loadData('internalChats.json', new Map());
+//SyncedContacts agora é gerenciado pela Store, mas mantemos compatibilidade se necessário
 let syncedContacts = loadData('syncedContacts.json', []);
 
 let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
@@ -352,18 +403,6 @@ async function startWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Listener para o histórico inicial de mensagens/contatos
-    sock.ev.on('messaging-history.set', async ({ contacts }) => {
-        if (contacts) {
-            console.log(`[Contacts] Recebido histórico inicial com ${contacts.length} contatos.`);
-            // O bind do store já cuida de salvar, mas logamos para confirmação
-        }
-    });
-
-    sock.ev.on('contacts.upsert', async (contacts) => {
-        // Apenas log opcional, o Store cuida da persistência
-    });
-
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
@@ -511,7 +550,7 @@ app.post('/api/attendants', (req, res) => {
 app.get('/api/clients', (req, res) => {
     const clientsMap = new Map();
     
-    // 1. Store oficial do Baileys
+    // 1. Store oficial (Customizada)
     if (store && store.contacts) {
         for (const id in store.contacts) {
             const c = store.contacts[id];
@@ -521,19 +560,12 @@ app.get('/api/clients', (req, res) => {
         }
     }
 
-    // 2. Backup de contatos sincronizados
-    syncedContacts.forEach(c => {
-        if (!clientsMap.has(c.userId)) {
-            clientsMap.set(c.userId, c);
-        }
-    });
-
-    // 3. Chats Ativos
+    // 2. Chats Ativos
     activeChats.forEach(c => { 
         if(!clientsMap.has(c.userId)) clientsMap.set(c.userId, { userId: c.userId, userName: c.userName }); 
     });
     
-    // 4. Fila
+    // 3. Fila
     requestQueue.forEach(r => { 
         if(!clientsMap.has(r.userId)) clientsMap.set(r.userId, { userId: r.userId, userName: r.userName }); 
     });
