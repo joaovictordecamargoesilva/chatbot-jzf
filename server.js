@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "21.9.1_CONTACTS_SYNC_ROBUST";
+const SERVER_VERSION = "21.9.2_CONTACTS_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -97,28 +97,41 @@ const loadData = (filename, defaultValue) => {
 };
 
 // --- CUSTOM STORE IMPLEMENTATION (Para substituir makeInMemoryStore) ---
-// Isso garante que os contatos sejam salvos independentemente de falhas na biblioteca
 const makeCustomStore = () => {
     let contacts = {};
 
     return {
         contacts,
-        // Helper para inserir manualmente um contato (útil para garantir que quem fala com o bot é salvo)
         upsert: (id, data) => {
             if (!id) return;
-            contacts[id] = { ...(contacts[id] || {}), ...data };
+            // Se o contato já existe, mescla os dados. Se não, cria.
+            // Importante: preserva o nome antigo se o novo vier vazio.
+            const existing = contacts[id] || {};
+            const newName = data.name || data.notify || data.verifiedName;
+            
+            contacts[id] = { 
+                ...existing, 
+                ...data,
+                // Prioridade para nomes: Novo (se existir) > Antigo > ID
+                name: newName || existing.name || existing.notify || existing.verifiedName 
+            };
         },
         readFromFile: (filepath) => {
             try {
                 if (fs.existsSync(filepath)) {
-                    const data = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
-                    if (data.contacts) {
-                        contacts = data.contacts;
-                        console.log(`[Store] Carregados ${Object.keys(contacts).length} contatos do arquivo.`);
+                    const content = fs.readFileSync(filepath, 'utf-8');
+                    if(content) {
+                        const data = JSON.parse(content);
+                        if (data.contacts) {
+                            contacts = data.contacts;
+                            console.log(`[Store] Carregados ${Object.keys(contacts).length} contatos do arquivo.`);
+                        }
                     }
                 }
             } catch (e) {
-                console.error('[Store] Falha ao ler arquivo:', e);
+                console.error('[Store] Falha ao ler arquivo:', e.message);
+                // Se falhar a leitura, inicia vazio para não quebrar o app
+                contacts = {};
             }
         },
         writeToFile: (filepath) => {
@@ -134,7 +147,7 @@ const makeCustomStore = () => {
                 if (newContacts) {
                     console.log(`[Store] Recebido histórico com ${newContacts.length} contatos.`);
                     newContacts.forEach(c => {
-                        contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
+                        store.upsert(c.id, c);
                     });
                     // Força salvamento imediato após carga de histórico
                     try {
@@ -147,11 +160,11 @@ const makeCustomStore = () => {
             // Novos contatos ou atualizações em massa
             ev.on('contacts.upsert', (newContacts) => {
                 newContacts.forEach(c => {
-                    contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
+                   store.upsert(c.id, c);
                 });
                 
                 // Se receber muitos contatos de uma vez (boot inicial), salva logo
-                if (newContacts.length > 10) {
+                if (newContacts.length > 5) {
                      console.log(`[Store] Sync em massa detectado (${newContacts.length} contatos). Salvando imediatamente.`);
                      try {
                         const storePath = path.join(DATA_DIR, 'baileys_store.json');
@@ -163,9 +176,7 @@ const makeCustomStore = () => {
             // Atualizações parciais
             ev.on('contacts.update', (updates) => {
                 updates.forEach(u => {
-                    if (contacts[u.id]) {
-                        Object.assign(contacts[u.id], u);
-                    }
+                    store.upsert(u.id, u);
                 });
             });
         }
@@ -182,7 +193,7 @@ store.readFromFile(STORE_FILE);
 // Salva periodicamente (backup)
 setInterval(() => {
     store.writeToFile(STORE_FILE);
-}, 10_000);
+}, 30_000); // Aumentado para 30s para evitar IO excessivo em loop
 
 
 // --- ESTADO DO SISTEMA ---
@@ -413,20 +424,20 @@ async function startWhatsApp() {
         emitOwnEvents: false,
         retryRequestDelayMs: 2000,
         defaultQueryTimeoutMs: 60000,
+        markOnlineOnConnect: true,
+        syncFullHistory: true, // Força pedido de histórico completo
         getMessage: async () => ({ conversation: 'hello' })
     });
 
     store.bind(sock.ev);
 
     // --- BACKUP DE SINCRONIZAÇÃO DE CONTATOS ---
-    // Adicionado explicitamente para garantir que a lista seja populada
-    // mesmo se o store.bind tiver algum delay ou falha silenciosa em certas versões.
     sock.ev.on('contacts.upsert', (contacts) => {
         // Filtra grupos e status broadcast
         const validContacts = contacts.filter(c => !c.id.includes('@g.us') && c.id !== 'status@broadcast');
         
         if (validContacts.length > 0) {
-            console.log(`[Backup Sync] Recebidos ${validContacts.length} contatos via listener explícito.`);
+            // console.log(`[Backup Sync] Recebidos ${validContacts.length} contatos via listener explícito.`);
             
             validContacts.forEach(c => {
                 store.upsert(c.id, c);
@@ -490,7 +501,7 @@ async function startWhatsApp() {
                 const userId = msg.key.remoteJid;
                 const userName = msg.pushName || userId.split('@')[0];
 
-                // FIX: Garantir que o contato seja salvo no Store, mesmo que a sincronização inicial falhe
+                // FIX: Garantir que o contato seja salvo no Store ao receber msg
                 store.upsert(userId, { id: userId, name: userName });
                 
                 // Mídia
@@ -599,10 +610,13 @@ app.get('/api/clients', (req, res) => {
     // 1. Store oficial (Customizada) - Fonte primária
     if (store && store.contacts) {
         for (const id in store.contacts) {
-            const c = store.contacts[id];
             if (id.endsWith('@g.us') || id === 'status@broadcast') continue;
+
+            const c = store.contacts[id];
             // Tenta pegar o nome mais amigável possível
+            // Se não tiver nome, usa o ID formatado como nome provisório
             const name = c.name || c.notify || c.verifiedName || id.split('@')[0];
+            
             clientsMap.set(id, { userId: id, userName: name });
         }
     }
@@ -620,17 +634,22 @@ app.get('/api/clients', (req, res) => {
     // 3. Fila de Espera
     requestQueue.forEach(r => addIfNotExists(r.userId, r.userName));
 
-    // 4. Histórico (Arquivados) - FIX para contatos sumindo ao resolver
+    // 4. Histórico (Arquivados)
     archivedChats.forEach((_, userId) => {
-        // Se ainda não estiver no mapa, tenta pegar o nome do store ou usa ID
         if (!clientsMap.has(userId)) {
+            // Tenta pegar do store para ter o nome atualizado, senão usa ID
             const stored = store.contacts[userId];
             const name = stored?.name || stored?.notify || userId.split('@')[0];
             addIfNotExists(userId, name);
         }
     });
     
-    res.json(Array.from(clientsMap.values()));
+    // Ordenar alfabeticamente
+    const sortedClients = Array.from(clientsMap.values()).sort((a, b) => 
+        a.userName.localeCompare(b.userName)
+    );
+    
+    res.json(sortedClients);
 });
 
 app.get('/api/requests', (req, res) => res.json(requestQueue));
