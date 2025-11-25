@@ -300,9 +300,27 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
   const [isForwardModalOpen, setForwardModalOpen] = useState(false);
   const [messageToForward, setMessageToForward] = useState(null);
 
+  // Ref para controlar a rolagem inteligente
+  const prevLogLength = useRef(0);
+  const prevChatId = useRef(null);
+
   const isOwner = attendant?.id === selectedChat?.attendantId;
 
-  useEffect(() => { if (activeTab === 'chat') messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [selectedChat?.messageLog, isLoading, activeTab]);
+  // SCROLL LOGIC FIXED: Only scroll if message count increases OR if it's a new chat load
+  useEffect(() => {
+      if (activeTab === 'chat' && selectedChat) {
+          const currentLength = selectedChat.messageLog?.length || 0;
+          const isNewChat = prevChatId.current !== selectedChat.userId;
+          
+          if (isNewChat || currentLength > prevLogLength.current) {
+              messagesEndRef.current?.scrollIntoView({ behavior: isNewChat ? 'auto' : 'smooth' });
+          }
+          
+          prevLogLength.current = currentLength;
+          prevChatId.current = selectedChat.userId;
+      }
+  }, [selectedChat?.messageLog, selectedChat?.userId, activeTab]);
+
   useEffect(() => { setMessage(''); setReplyingToMessage(null); setEditingMessage(null); setActiveTab('chat'); setSearchVisible(false); setSearchTerm(''); }, [selectedChat?.userId]);
 
   useEffect(() => {
