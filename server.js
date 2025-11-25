@@ -363,6 +363,29 @@ async function startWhatsApp() {
         }
     });
 
+    // Listener adicional para atualização de contatos (quando o nome chega depois)
+    sock.ev.on('contacts.update', async (updates) => {
+        let hasUpdates = false;
+        for (const update of updates) {
+            if (update.id.includes('@g.us')) continue;
+            
+            const name = update.name || update.notify || update.verifiedName;
+            if (name) {
+                const exists = syncedContacts.find(c => c.userId === update.id);
+                if (exists && exists.userName !== name) {
+                    exists.userName = name;
+                    hasUpdates = true;
+                } else if (!exists) {
+                    syncedContacts.push({ userId: update.id, userName: name });
+                    hasUpdates = true;
+                }
+            }
+        }
+        if (hasUpdates) {
+            saveData('syncedContacts.json', syncedContacts);
+        }
+    });
+
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
