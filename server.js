@@ -187,7 +187,8 @@ function getSession(userId, userName = null) {
         session = {
             userId, userName, currentState: ChatState.GREETING,
             context: { history: {} }, aiHistory: [], messageLog: [],
-            handledBy: 'bot', attendantId: null, createdAt: new Date().toISOString(),
+            handledBy: 'bot', // <--- Default is bot
+            attendantId: null, createdAt: new Date().toISOString(),
         };
         userSessions.set(userId, session);
         saveData('userSessions.json', userSessions);
@@ -724,13 +725,23 @@ app.post('/api/chats/initiate', (req, res) => {
     const { recipientNumber, clientName, message, attendantId, files } = req.body;
     let userId = recipientNumber.includes('@') ? recipientNumber : recipientNumber + '@s.whatsapp.net';
     
-    // Verifica se já existe
+    // 1. Verifica se já está ativo
     if(activeChats.has(userId)) return res.json(activeChats.get(userId));
     
-    // Passa o clientName para garantir que a sessão inicie com o nome correto
+    // 2. Verifica se está na fila de espera e remove de lá
+    const qIdx = requestQueue.findIndex(r => r.userId === userId);
+    if(qIdx !== -1) {
+        requestQueue.splice(qIdx, 1);
+        saveData('requestQueue.json', requestQueue);
+    }
+    
+    // 3. Obtém ou cria a sessão (pode pegar de userSessions que estava 'idle' ou 'bot_queued')
     const session = getSession(userId, clientName); 
+    
+    // 4. Define explicitamente como Humano e altera o estado para evitar gatilho do bot
     session.handledBy = 'human';
     session.attendantId = attendantId;
+    session.currentState = 'HUMAN_INTERACTION_INITIATED'; // Estado de segurança
     
     const msg = { 
         sender: 'attendant', 
@@ -744,8 +755,12 @@ app.post('/api/chats/initiate', (req, res) => {
 
     session.messageLog.push(msg);
     
+    // 5. Garante a transferência correta de listas (Remove do Bot, Adiciona em Ativos)
     userSessions.delete(userId);
     activeChats.set(userId, session);
+    
+    // 6. Salva TUDO imediatamente antes de enviar
+    saveData('userSessions.json', userSessions);
     saveData('activeChats.json', activeChats);
     
     queueOutbound(userId, { text: message, files });
