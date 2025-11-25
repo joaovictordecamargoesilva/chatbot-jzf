@@ -748,6 +748,14 @@ function App() {
   }
 
   const filteredClients = clients.filter(c => c.userName.toLowerCase().includes(clientSearchTerm.toLowerCase()));
+  
+  const viewLabels = {
+      queue: 'Fila',
+      active: 'Ativos',
+      ai_active: 'IA',
+      history: 'Histórico',
+      internal_chat: 'Interno'
+  };
 
   return (
     <div className="flex h-screen font-sans bg-gray-100 text-gray-800">
@@ -758,7 +766,7 @@ function App() {
             <div className="flex space-x-2 mt-2"><button onClick={() => setInitiateModalOpen(true)} className="text-xs text-blue-600">Novo Chat</button><button onClick={handleLogout} className="text-xs text-red-500">Sair</button></div>
         </div>
         <nav className="flex p-1 bg-gray-100 text-xs">
-            {['queue', 'active', 'ai_active', 'history', 'internal_chat'].map(v => <button key={v} onClick={() => setActiveView(v)} className={`flex-1 p-2 rounded ${activeView === v ? 'bg-white shadow font-bold' : 'text-gray-600'}`}>{v === 'ai_active' ? 'IA' : v === 'internal_chat' ? 'Interno' : v.charAt(0).toUpperCase() + v.slice(1)} {notifications[v]?.size || notifications[v] || ''}</button>)}
+            {['queue', 'active', 'ai_active', 'history', 'internal_chat'].map(v => <button key={v} onClick={() => setActiveView(v)} className={`flex-1 p-2 rounded ${activeView === v ? 'bg-white shadow font-bold' : 'text-gray-600'}`}>{viewLabels[v]} {notifications[v]?.size || notifications[v] || ''}</button>)}
         </nav>
         <div className="flex-1 overflow-y-auto">
             {/* Lista da Fila com Auto-Takeover no Click */}
@@ -798,7 +806,9 @@ function App() {
                   <h3 className="font-bold mb-4">Novo Chat</h3>
                   <input type="text" placeholder="Buscar cliente..." value={clientSearchTerm} onChange={e=>setClientSearchTerm(e.target.value)} className="p-2 border rounded mb-2" />
                   <div className="flex-1 overflow-y-auto border rounded mb-4">
-                      {filteredClients.map(c => <div key={c.userId} onClick={()=>setSelectedClient(c)} className={`p-2 cursor-pointer hover:bg-gray-100 ${selectedClient?.userId===c.userId?'bg-blue-100':''}`}>{c.userName}</div>)}
+                      {filteredClients.length === 0 ? <div className="p-4 text-center text-gray-500 text-sm">Nenhum contato encontrado.</div> :
+                        filteredClients.map(c => <div key={c.userId} onClick={()=>setSelectedClient(c)} className={`p-2 cursor-pointer hover:bg-gray-100 ${selectedClient?.userId===c.userId?'bg-blue-100':''}`}>{c.userName}</div>)
+                      }
                   </div>
                   
                   {/* Área de Preview de Arquivos no Modal */}
