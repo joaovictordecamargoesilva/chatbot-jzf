@@ -434,6 +434,19 @@ async function startWhatsApp() {
             if (!msg.key.fromMe && msg.message) {
                 const userId = msg.key.remoteJid;
                 const userName = msg.pushName || userId.split('@')[0];
+                
+                // --- ATUALIZAÇÃO DE CONTATOS (Correção para lista vazia) ---
+                const existingContact = syncedContacts.find(c => c.userId === userId);
+                if (!existingContact) {
+                    syncedContacts.push({ userId, userName });
+                    saveData('syncedContacts.json', syncedContacts);
+                } else if (msg.pushName && existingContact.userName !== msg.pushName) {
+                    // Atualiza nome se vier um pushName melhor
+                    existingContact.userName = msg.pushName;
+                    saveData('syncedContacts.json', syncedContacts);
+                }
+                // -----------------------------------------------------------
+
                 let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
                 
                 // Mídia
