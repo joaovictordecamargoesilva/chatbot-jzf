@@ -228,7 +228,7 @@ const MessageBubble = ({ message, onImageClick, onSetReply, onSetEdit, onForward
           {message.files && message.files.map((file, idx) => <FileRenderer key={idx} file={file} onImageClick={onImageClick} />)}
           <div className="text-xs text-gray-400 self-end mt-1 flex items-center">
               {message.edited && <span className="mr-1 italic">editada</span>}
-              {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {new Date(message.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
               {isOutgoing && <MessageStatusIcon status={message.status} />}
           </div>
         </div>
@@ -483,7 +483,6 @@ function App() {
 
   // Refs para controle de notificação
   const lastProcessedMsgTimestampRef = useRef(0);
-  const audioContextRef = useRef(null);
 
   // Inicializa permissão de notificação e AudioContext
   useEffect(() => {
@@ -529,9 +528,11 @@ function App() {
           const lastMsg = chat.lastMessage;
           if (lastMsg && lastMsg.sender === Sender.USER && new Date(lastMsg.timestamp).getTime() > lastProcessedMsgTimestampRef.current) {
               // Verifica se não é o chat que já está aberto e visível
-              const isChatOpenAndFocused = selectedChatRef.current?.userId === chat.userId && !document.hidden;
+              // A condição considera o chat ABERTO. Se estiver em outra aba do navegador ou minimizado, deve notificar.
+              const isChatOpen = selectedChatRef.current?.userId === chat.userId;
+              const isWindowFocused = document.hasFocus();
               
-              if (!isChatOpenAndFocused) {
+              if (!isChatOpen || !isWindowFocused) {
                  shouldNotify = true;
                  notificationTitle = chat.userName;
                  notificationBody = lastMsg.text || "📷 Enviou um arquivo";
@@ -619,7 +620,19 @@ function App() {
   // Polling de 1 segundo para sensação de tempo real
   useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 1000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
   
-  useEffect(() => { if (attendant && !isBackendOffline) fetch('/api/clients').then(r=>r.json()).then(setClients).catch(()=>{}); }, [attendant, isBackendOffline]);
+  // Carrega clientes (incluindo contatos sincronizados)
+  const fetchClients = useCallback(async () => {
+       if (attendant && !isBackendOffline) {
+           try {
+              const r = await fetch('/api/clients');
+              if(r.ok) setClients(await r.json());
+           } catch(e) {}
+       }
+  }, [attendant, isBackendOffline]);
+
+  // Carrega clientes ao iniciar e ao abrir modal
+  useEffect(() => { fetchClients(); }, [fetchClients]);
+  useEffect(() => { if(isInitiateModalOpen) fetchClients(); }, [isInitiateModalOpen, fetchClients]);
 
   const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
   const handleFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
@@ -647,7 +660,23 @@ function App() {
   };
   
   // Handlers simplificados (mantendo lógica original)
-  const handleLogin = (id) => { const a = attendants.find(x=>x.id===id); if(a) { setAttendant(a); localStorage.setItem('attendantId', a.id); } };
+  const handleLogin = (id) => { 
+      // Solicita permissão de notificação no gesto do usuário (clique)
+      if ("Notification" in window && Notification.permission !== "granted") {
+        Notification.requestPermission();
+      }
+      // "Desbloqueia" o AudioContext criando um áudio vazio, para que o som de notificação funcione depois
+      try {
+          const dummyAudio = new Audio();
+          dummyAudio.play().catch(()=>{}); 
+      } catch(e) {}
+
+      const a = attendants.find(x=>x.id===id); 
+      if(a) { 
+          setAttendant(a); 
+          localStorage.setItem('attendantId', a.id); 
+      } 
+  };
   const handleRegister = async (name) => { const res = await fetch('/api/attendants', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}); if(res.ok) setAttendants([...attendants, await res.json()]); };
   const handleLogout = () => { setAttendant(null); localStorage.removeItem('attendantId'); };
   const handleSelectChatItem = async (item) => { setIsLoading(true); setSelectedChat(null); try { const res = await fetch(`/api/chats/history/${item.userId}`); if(res.ok) setSelectedChat({...item, ...await res.json()}); } finally { setIsLoading(false); } };
@@ -739,7 +768,7 @@ function App() {
             {activeView === 'ai_active' && aiActiveChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
             
              {/* Histórico simplificado */}
-             {activeView === 'history' && chatHistory.map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className="p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70"><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString()}</p></div>)}
+             {activeView === 'history' && chatHistory.map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className="p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70"><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
         </div>
       </aside>
       <main className="flex-1 flex flex-col">
