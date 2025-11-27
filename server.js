@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "21.9.2_CONTACTS_FIX";
+const SERVER_VERSION = "21.9.3_IA_FILTER_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -669,9 +669,23 @@ app.get('/api/chats/active', (req, res) => {
     res.json(activeSummary);
 });
 
+// Endpoint de IA ATIVOS (Corrigido para evitar duplicação e contatos aleatórios)
 app.get('/api/chats/ai-active', (req, res) => {
     const aiChats = Array.from(userSessions.values())
-        .filter(s => s.handledBy === 'bot')
+        .filter(s => {
+            // 1. Deve ser gerenciado pelo bot
+            if (s.handledBy !== 'bot') return false;
+
+            // 2. NÃO deve estar em chats ativos (humano) - previne duplicação
+            if (activeChats.has(s.userId)) return false;
+
+            // 3. Deve estar em um estado ESPECÍFICO de IA (Assistente Virtual)
+            // Importa valores de ChatState conceitualmente
+            return (
+                s.currentState === 'AI_ASSISTANT_SELECT_DEPT' ||
+                s.currentState === 'AI_ASSISTANT_CHATTING'
+            );
+        })
         .map(c => ({ 
             userId: c.userId, 
             userName: c.userName,
