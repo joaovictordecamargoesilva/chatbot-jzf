@@ -6,7 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module'; // Import necessário para compatibilidade
+import { createRequire } from 'module';
 
 import {
   ChatState,
@@ -16,11 +16,9 @@ import {
 } from './chatbotLogic.js';
 
 // --- IMPORTAÇÕES DO BAILEYS ---
-// Usamos createRequire para importar CommonJS dentro de ESM
 const require = createRequire(import.meta.url);
 const pkg = require('@whiskeysockets/baileys');
 
-// Extração manual segura das exportações do Baileys
 const makeWASocket = pkg.default || pkg;
 const { 
     useMultiFileAuthState, 
@@ -42,7 +40,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "21.9.3_IA_FILTER_FIX";
+const SERVER_VERSION = "22.0.1_PERSISTENCE_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -85,10 +83,20 @@ const loadData = (filename, defaultValue) => {
     const filePath = path.join(DATA_DIR, filename);
     if (fs.existsSync(filePath)) {
       const fileContent = fs.readFileSync(filePath, 'utf8');
-      if (fileContent.trim() === '') return defaultValue;
-      const parsedData = JSON.parse(fileContent);
-      if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
-      return parsedData;
+      if (!fileContent || fileContent.trim() === '') {
+          console.warn(`[Persistence] Arquivo ${filename} vazio. Usando valor padrão.`);
+          return defaultValue;
+      }
+      try {
+          const parsedData = JSON.parse(fileContent);
+          if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
+          return parsedData;
+      } catch (parseError) {
+          console.error(`[Persistence] Erro ao fazer parse do JSON em ${filename}:`, parseError);
+          // Backup do arquivo corrompido
+          fs.copyFileSync(filePath, `${filePath}.corrupt`);
+          return defaultValue;
+      }
     }
   } catch (error) {
     console.error(`[Persistence] ERRO ao carregar ${filename}. Usando valor padrão.`, error);
@@ -96,7 +104,7 @@ const loadData = (filename, defaultValue) => {
   return defaultValue;
 };
 
-// --- CUSTOM STORE IMPLEMENTATION (Para substituir makeInMemoryStore) ---
+// --- CUSTOM STORE IMPLEMENTATION ---
 const makeCustomStore = () => {
     let contacts = {};
 
@@ -104,15 +112,12 @@ const makeCustomStore = () => {
         contacts,
         upsert: (id, data) => {
             if (!id) return;
-            // Se o contato já existe, mescla os dados. Se não, cria.
-            // Importante: preserva o nome antigo se o novo vier vazio.
             const existing = contacts[id] || {};
             const newName = data.name || data.notify || data.verifiedName;
             
             contacts[id] = { 
                 ...existing, 
                 ...data,
-                // Prioridade para nomes: Novo (se existir) > Antigo > ID
                 name: newName || existing.name || existing.notify || existing.verifiedName 
             };
         },
@@ -130,7 +135,6 @@ const makeCustomStore = () => {
                 }
             } catch (e) {
                 console.error('[Store] Falha ao ler arquivo:', e.message);
-                // Se falhar a leitura, inicia vazio para não quebrar o app
                 contacts = {};
             }
         },
@@ -142,14 +146,14 @@ const makeCustomStore = () => {
             }
         },
         bind: (ev) => {
-            // Sincronização inicial e histórico
+            // Sincronização inicial e histórico (FULL SYNC)
             ev.on('messaging-history.set', ({ contacts: newContacts }) => {
                 if (newContacts) {
-                    console.log(`[Store] Recebido histórico com ${newContacts.length} contatos.`);
+                    console.log(`[Store] Full Sync recebido com ${newContacts.length} contatos.`);
                     newContacts.forEach(c => {
                         store.upsert(c.id, c);
                     });
-                    // Força salvamento imediato após carga de histórico
+                    // Salva imediatamente
                     try {
                         const storePath = path.join(DATA_DIR, 'baileys_store.json');
                         fs.writeFileSync(storePath, JSON.stringify({ contacts }, null, 2), 'utf-8');
@@ -157,23 +161,21 @@ const makeCustomStore = () => {
                 }
             });
 
-            // Novos contatos ou atualizações em massa
+            // Atualizações incrementais
             ev.on('contacts.upsert', (newContacts) => {
                 newContacts.forEach(c => {
                    store.upsert(c.id, c);
                 });
                 
-                // Se receber muitos contatos de uma vez (boot inicial), salva logo
-                if (newContacts.length > 5) {
-                     console.log(`[Store] Sync em massa detectado (${newContacts.length} contatos). Salvando imediatamente.`);
+                // Salva se a atualização for significativa
+                if (newContacts.length > 1) {
                      try {
                         const storePath = path.join(DATA_DIR, 'baileys_store.json');
                         fs.writeFileSync(storePath, JSON.stringify({ contacts }, null, 2), 'utf-8');
-                     } catch(e) { console.error('[Store] Erro ao salvar upsert:', e); }
+                     } catch(e) {}
                 }
             });
 
-            // Atualizações parciais
             ev.on('contacts.update', (updates) => {
                 updates.forEach(u => {
                     store.upsert(u.id, u);
@@ -183,22 +185,28 @@ const makeCustomStore = () => {
     };
 };
 
-// Inicializa a Store Customizada
 const store = makeCustomStore();
 const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
-
-// Carrega dados existentes
 store.readFromFile(STORE_FILE);
 
-// Salva periodicamente (backup)
-setInterval(() => {
-    store.writeToFile(STORE_FILE);
-}, 30_000); // Aumentado para 30s para evitar IO excessivo em loop
+// Backup periódico (a cada 1 minuto)
+setInterval(() => { store.writeToFile(STORE_FILE); }, 60_000);
 
 
 // --- ESTADO DO SISTEMA ---
+// Carregamento robusto de atendentes
 let ATTENDANTS = loadData('attendants.json', []);
-let nextAttendantId = ATTENDANTS.length > 0 ? Math.max(...ATTENDANTS.map(a => parseInt(a.id.split('_')[1]))) + 1 : 1;
+console.log(`[System] Atendentes carregados: ${ATTENDANTS.length}`);
+
+// Cálculo seguro do próximo ID
+let nextAttendantId = 1;
+if (ATTENDANTS.length > 0) {
+    const ids = ATTENDANTS.map(a => {
+        const parts = a.id.split('_');
+        return parts.length > 1 ? parseInt(parts[1]) : 0;
+    });
+    nextAttendantId = Math.max(...ids) + 1;
+}
 
 const userSessions = loadData('userSessions.json', new Map());
 let requestQueue = loadData('requestQueue.json', []);
@@ -425,32 +433,21 @@ async function startWhatsApp() {
         retryRequestDelayMs: 2000,
         defaultQueryTimeoutMs: 60000,
         markOnlineOnConnect: true,
-        syncFullHistory: true, // Força pedido de histórico completo
+        syncFullHistory: true, 
         getMessage: async () => ({ conversation: 'hello' })
     });
 
     store.bind(sock.ev);
 
-    // --- BACKUP DE SINCRONIZAÇÃO DE CONTATOS ---
+    // --- SINCRONIZAÇÃO DE CONTATOS ROBUSTA ---
+    // Backup para garantir que contatos sejam salvos assim que chegarem
     sock.ev.on('contacts.upsert', (contacts) => {
-        // Filtra grupos e status broadcast
         const validContacts = contacts.filter(c => !c.id.includes('@g.us') && c.id !== 'status@broadcast');
-        
         if (validContacts.length > 0) {
-            // console.log(`[Backup Sync] Recebidos ${validContacts.length} contatos via listener explícito.`);
-            
-            validContacts.forEach(c => {
-                store.upsert(c.id, c);
-            });
-
-            // Se for carga inicial (muitos contatos), força salvamento imediato
-            if (validContacts.length > 5) {
-                try {
-                    store.writeToFile(STORE_FILE);
-                    console.log(`[Backup Sync] Persistência imediata realizada.`);
-                } catch(e) {
-                    console.error(`[Backup Sync] Erro ao salvar:`, e);
-                }
+            validContacts.forEach(c => store.upsert(c.id, c));
+            // Salva no disco imediatamente se for uma carga relevante
+            if (validContacts.length > 2) {
+                store.writeToFile(STORE_FILE);
             }
         }
     });
@@ -470,17 +467,15 @@ async function startWhatsApp() {
             const error = lastDisconnect?.error;
             const statusCode = error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            
-            console.log(`[WhatsApp] Conexão fechada. Status: ${statusCode}, Deve Reconectar: ${shouldReconnect}`);
             gatewayStatus.status = 'DISCONNECTED';
 
             if (shouldReconnect) {
                 const delay = Math.min(5000 * (reconnectAttempts + 1), 60000);
                 reconnectAttempts++;
-                console.log(`[WhatsApp] Reconectando em ${delay/1000}s... (Tentativa ${reconnectAttempts})`);
+                console.log(`[WhatsApp] Reconectando em ${delay/1000}s...`);
                 setTimeout(startWhatsApp, delay);
             } else {
-                console.log(`[WhatsApp] Desconectado permanentemente (Logout). Limpando sessão.`);
+                console.log(`[WhatsApp] Logout. Limpando sessão.`);
                 fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
                 gatewayStatus.qrCode = null;
                 reconnectAttempts = 0;
@@ -490,7 +485,7 @@ async function startWhatsApp() {
             gatewayStatus.status = 'CONNECTED';
             gatewayStatus.qrCode = null;
             reconnectAttempts = 0;
-            console.log('[WhatsApp] CONEXÃO ESTABELECIDA COM SUCESSO!');
+            console.log('[WhatsApp] CONEXÃO ESTABELECIDA!');
         }
     });
 
@@ -501,10 +496,9 @@ async function startWhatsApp() {
                 const userId = msg.key.remoteJid;
                 const userName = msg.pushName || userId.split('@')[0];
 
-                // FIX: Garantir que o contato seja salvo no Store ao receber msg
+                // Auto-Sync: Atualiza contato ao receber mensagem
                 store.upsert(userId, { id: userId, name: userName });
                 
-                // Mídia
                 let file = null;
                 const messageType = Object.keys(msg.message)[0];
                 let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
@@ -554,7 +548,6 @@ async function startWhatsApp() {
     });
 }
 
-// Loop de envio de mensagens (Outbound)
 setInterval(async () => {
     if (outboundGatewayQueue.length > 0 && sock && gatewayStatus.status === 'CONNECTED') {
         const item = outboundGatewayQueue.shift();
@@ -585,7 +578,7 @@ setInterval(async () => {
             }
 
         } catch (e) {
-            console.error('[Outbound] Erro ao enviar (colocando de volta na fila):', e.message);
+            console.error('[Outbound] Erro ao enviar:', e.message);
             outboundGatewayQueue.unshift(item);
             await new Promise(r => setTimeout(r, 5000));
         }
@@ -603,52 +596,35 @@ app.post('/api/attendants', (req, res) => {
     res.json(newAttendant);
 });
 
-// Listagem de clientes (COMBINADA: Store + Chats + Fila + Histórico)
+// Listagem de clientes
 app.get('/api/clients', (req, res) => {
     const clientsMap = new Map();
     
-    // 1. Store oficial (Customizada) - Fonte primária
+    // 1. Store
     if (store && store.contacts) {
         for (const id in store.contacts) {
             if (id.endsWith('@g.us') || id === 'status@broadcast') continue;
-
             const c = store.contacts[id];
-            // Tenta pegar o nome mais amigável possível
-            // Se não tiver nome, usa o ID formatado como nome provisório
             const name = c.name || c.notify || c.verifiedName || id.split('@')[0];
-            
             clientsMap.set(id, { userId: id, userName: name });
         }
     }
 
-    // Função helper para adicionar se não existir
     const addIfNotExists = (userId, userName) => {
-        if (!clientsMap.has(userId)) {
-            clientsMap.set(userId, { userId, userName });
-        }
+        if (!clientsMap.has(userId)) clientsMap.set(userId, { userId, userName });
     };
 
-    // 2. Chats Ativos
     activeChats.forEach(c => addIfNotExists(c.userId, c.userName));
-    
-    // 3. Fila de Espera
     requestQueue.forEach(r => addIfNotExists(r.userId, r.userName));
-
-    // 4. Histórico (Arquivados)
     archivedChats.forEach((_, userId) => {
         if (!clientsMap.has(userId)) {
-            // Tenta pegar do store para ter o nome atualizado, senão usa ID
             const stored = store.contacts[userId];
             const name = stored?.name || stored?.notify || userId.split('@')[0];
             addIfNotExists(userId, name);
         }
     });
     
-    // Ordenar alfabeticamente
-    const sortedClients = Array.from(clientsMap.values()).sort((a, b) => 
-        a.userName.localeCompare(b.userName)
-    );
-    
+    const sortedClients = Array.from(clientsMap.values()).sort((a, b) => a.userName.localeCompare(b.userName));
     res.json(sortedClients);
 });
 
@@ -669,28 +645,10 @@ app.get('/api/chats/active', (req, res) => {
     res.json(activeSummary);
 });
 
-// Endpoint de IA ATIVOS (Corrigido para evitar duplicação e contatos aleatórios)
 app.get('/api/chats/ai-active', (req, res) => {
     const aiChats = Array.from(userSessions.values())
-        .filter(s => {
-            // 1. Deve ser gerenciado pelo bot
-            if (s.handledBy !== 'bot') return false;
-
-            // 2. NÃO deve estar em chats ativos (humano) - previne duplicação
-            if (activeChats.has(s.userId)) return false;
-
-            // 3. Deve estar em um estado ESPECÍFICO de IA (Assistente Virtual)
-            // Importa valores de ChatState conceitualmente
-            return (
-                s.currentState === 'AI_ASSISTANT_SELECT_DEPT' ||
-                s.currentState === 'AI_ASSISTANT_CHATTING'
-            );
-        })
-        .map(c => ({ 
-            userId: c.userId, 
-            userName: c.userName,
-            logLength: c.messageLog.length 
-        }));
+        .filter(s => s.handledBy === 'bot' && !activeChats.has(s.userId) && (s.currentState === 'AI_ASSISTANT_SELECT_DEPT' || s.currentState === 'AI_ASSISTANT_CHATTING'))
+        .map(c => ({ userId: c.userId, userName: c.userName, logLength: c.messageLog.length }));
     res.json(aiChats);
 });
 
@@ -699,11 +657,7 @@ app.get('/api/chats/history', (req, res) => {
     archivedChats.forEach((sessions, userId) => {
         if(sessions.length > 0) {
             const lastSession = sessions[sessions.length - 1];
-            historySummary.push({
-                userId,
-                userName: lastSession.userName,
-                resolvedAt: lastSession.resolvedAt
-            });
+            historySummary.push({ userId, userName: lastSession.userName, resolvedAt: lastSession.resolvedAt });
         }
     });
     res.json(historySummary);
@@ -787,8 +741,6 @@ app.post('/api/chats/initiate', (req, res) => {
     }
     
     const session = getSession(userId, clientName); 
-    
-    // Configuração para garantir que o BOT não responda
     session.handledBy = 'human';
     session.attendantId = attendantId;
     session.currentState = 'HUMAN_INTERACTION_INITIATED'; 
