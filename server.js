@@ -34,13 +34,14 @@ import QRCode from 'qrcode';
 // --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
 process.on('uncaughtException', (err, origin) => {
   console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
+  // Não saímos do processo para manter o servidor online
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "22.0.1_PERSISTENCE_FIX";
+const SERVER_VERSION = "22.6.0_CONTACT_NAME_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -63,11 +64,20 @@ if (!fs.existsSync(DATA_DIR)) {
 const serializeMap = (map) => Array.from(map.entries());
 const deserializeMap = (arr) => new Map(arr);
 
+// Salvamento com Backup (Blindado)
 const saveData = (filename, data) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
     const tempPath = `${filePath}.tmp`;
+    const backupPath = `${filePath}.bak`;
     
+    // Se o arquivo já existe, cria um backup antes de sobrescrever
+    if (fs.existsSync(filePath)) {
+        try {
+            fs.copyFileSync(filePath, backupPath);
+        } catch(e) { console.warn(`[Persistence] Falha ao criar backup para ${filename}`); }
+    }
+
     let dataToSave = data;
     if (data instanceof Map) dataToSave = serializeMap(data);
     
@@ -78,26 +88,38 @@ const saveData = (filename, data) => {
   }
 };
 
+// Carregamento com Recuperação (Blindado)
 const loadData = (filename, defaultValue) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
-    if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      if (!fileContent || fileContent.trim() === '') {
-          console.warn(`[Persistence] Arquivo ${filename} vazio. Usando valor padrão.`);
-          return defaultValue;
-      }
-      try {
-          const parsedData = JSON.parse(fileContent);
-          if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
-          return parsedData;
-      } catch (parseError) {
-          console.error(`[Persistence] Erro ao fazer parse do JSON em ${filename}:`, parseError);
-          // Backup do arquivo corrompido
-          fs.copyFileSync(filePath, `${filePath}.corrupt`);
-          return defaultValue;
-      }
+    const backupPath = `${filePath}.bak`;
+
+    // Função interna para tentar ler um arquivo
+    const tryRead = (path) => {
+        if (!fs.existsSync(path)) return null;
+        const content = fs.readFileSync(path, 'utf8');
+        if (!content || content.trim() === '') return null;
+        return JSON.parse(content);
+    };
+
+    // 1. Tenta ler arquivo principal
+    let parsedData = tryRead(filePath);
+
+    // 2. Se falhar, tenta ler backup
+    if (!parsedData && fs.existsSync(backupPath)) {
+        console.warn(`[Persistence] Arquivo principal ${filename} corrompido ou vazio. Recuperando do backup...`);
+        parsedData = tryRead(backupPath);
+        // Se recuperou, restaura o principal
+        if (parsedData) {
+            saveData(filename, defaultValue instanceof Map && Array.isArray(parsedData) ? deserializeMap(parsedData) : parsedData);
+        }
     }
+
+    if (parsedData) {
+        if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
+        return parsedData;
+    }
+
   } catch (error) {
     console.error(`[Persistence] ERRO ao carregar ${filename}. Usando valor padrão.`, error);
   }
@@ -113,12 +135,14 @@ const makeCustomStore = () => {
         upsert: (id, data) => {
             if (!id) return;
             const existing = contacts[id] || {};
-            const newName = data.name || data.notify || data.verifiedName;
             
+            // FIX: Armazenamento puro. Não tentamos mesclar nomes aqui.
+            // Se 'data' contém 'name', ele atualizará 'existing.name'.
+            // Se 'data' só contém 'notify', 'existing.name' será preservado.
+            // Isso garante que o nome da agenda (name) não seja perdido.
             contacts[id] = { 
                 ...existing, 
-                ...data,
-                name: newName || existing.name || existing.notify || existing.verifiedName 
+                ...data
             };
         },
         readFromFile: (filepath) => {
@@ -196,6 +220,13 @@ setInterval(() => { store.writeToFile(STORE_FILE); }, 60_000);
 // --- ESTADO DO SISTEMA ---
 // Carregamento robusto de atendentes
 let ATTENDANTS = loadData('attendants.json', []);
+
+// Recuperação de emergência para atendentes
+if (!Array.isArray(ATTENDANTS) || ATTENDANTS.length === 0) {
+    console.warn("[System] Lista de atendentes vazia. Criando usuário Admin padrão.");
+    ATTENDANTS = [{ id: 'attendant_1', name: 'Admin' }];
+    saveData('attendants.json', ATTENDANTS);
+}
 console.log(`[System] Atendentes carregados: ${ATTENDANTS.length}`);
 
 // Cálculo seguro do próximo ID
@@ -213,6 +244,8 @@ let requestQueue = loadData('requestQueue.json', []);
 const activeChats = loadData('activeChats.json', new Map());
 const archivedChats = loadData('archivedChats.json', new Map());
 const internalChats = loadData('internalChats.json', new Map());
+// Mantemos syncedContacts apenas como backup adicional
+let syncedContacts = loadData('syncedContacts.json', []);
 
 let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
 
@@ -418,134 +451,161 @@ async function startWhatsApp() {
     console.log('[WhatsApp] Iniciando serviço...');
     gatewayStatus.status = 'LOADING';
     
-    const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
-    const { version } = await fetchLatestBaileysVersion();
-    
-    sock = makeWASocket({
-        version,
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
-        browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
-        connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 15000,
-        emitOwnEvents: false,
-        retryRequestDelayMs: 2000,
-        defaultQueryTimeoutMs: 60000,
-        markOnlineOnConnect: true,
-        syncFullHistory: true, 
-        getMessage: async () => ({ conversation: 'hello' })
-    });
-
-    store.bind(sock.ev);
-
-    // --- SINCRONIZAÇÃO DE CONTATOS ROBUSTA ---
-    // Backup para garantir que contatos sejam salvos assim que chegarem
-    sock.ev.on('contacts.upsert', (contacts) => {
-        const validContacts = contacts.filter(c => !c.id.includes('@g.us') && c.id !== 'status@broadcast');
-        if (validContacts.length > 0) {
-            validContacts.forEach(c => store.upsert(c.id, c));
-            // Salva no disco imediatamente se for uma carga relevante
-            if (validContacts.length > 2) {
-                store.writeToFile(STORE_FILE);
-            }
-        }
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
+        const { version } = await fetchLatestBaileysVersion();
         
-        if (qr) {
-            console.log('[WhatsApp] Novo QR Code gerado.');
-            gatewayStatus.qrCode = await QRCode.toDataURL(qr);
-            gatewayStatus.status = 'QR_CODE_READY';
-        }
+        sock = makeWASocket({
+            version,
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: true,
+            browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 15000,
+            emitOwnEvents: false,
+            retryRequestDelayMs: 2000,
+            defaultQueryTimeoutMs: 60000,
+            markOnlineOnConnect: true,
+            syncFullHistory: true, 
+            getMessage: async () => ({ conversation: 'hello' })
+        });
 
-        if (connection === 'close') {
-            const error = lastDisconnect?.error;
-            const statusCode = error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            gatewayStatus.status = 'DISCONNECTED';
+        store.bind(sock.ev);
 
-            if (shouldReconnect) {
-                const delay = Math.min(5000 * (reconnectAttempts + 1), 60000);
-                reconnectAttempts++;
-                console.log(`[WhatsApp] Reconectando em ${delay/1000}s...`);
-                setTimeout(startWhatsApp, delay);
-            } else {
-                console.log(`[WhatsApp] Logout. Limpando sessão.`);
-                fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
+        // --- SINCRONIZAÇÃO DE CONTATOS ROBUSTA ---
+        // Listener "Agressivo" para capturar contatos na conexão
+        sock.ev.on('contacts.upsert', (contacts) => {
+            const validContacts = contacts.filter(c => !c.id.includes('@g.us') && c.id !== 'status@broadcast');
+            if (validContacts.length > 0) {
+                // Salva no Store oficial
+                validContacts.forEach(c => store.upsert(c.id, c));
+                
+                // Salva também no arquivo de backup syncedContacts.json
+                let hasNewBackup = false;
+                for (const c of validContacts) {
+                    const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
+                    if (!syncedContacts.find(sc => sc.userId === c.id)) {
+                        syncedContacts.push({ userId: c.id, userName: name });
+                        hasNewBackup = true;
+                    }
+                }
+                if (hasNewBackup) saveData('syncedContacts.json', syncedContacts);
+
+                // Salva o store no disco imediatamente se for uma carga relevante
+                if (validContacts.length > 1) {
+                    store.writeToFile(STORE_FILE);
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                console.log('[WhatsApp] Novo QR Code gerado.');
+                gatewayStatus.qrCode = await QRCode.toDataURL(qr);
+                gatewayStatus.status = 'QR_CODE_READY';
+            }
+
+            if (connection === 'close') {
+                const error = lastDisconnect?.error;
+                const statusCode = error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                gatewayStatus.status = 'DISCONNECTED';
+
+                if (shouldReconnect) {
+                    const delayMs = Math.min(5000 * (reconnectAttempts + 1), 60000);
+                    reconnectAttempts++;
+                    console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Reconectando em ${delayMs/1000}s...`);
+                    setTimeout(startWhatsApp, delayMs);
+                } else {
+                    console.log(`[WhatsApp] Logout explícito ou sessão inválida. Limpando e reiniciando.`);
+                    try {
+                        fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
+                    } catch(e) { console.error('Erro ao limpar sessão:', e); }
+                    
+                    gatewayStatus.qrCode = null;
+                    reconnectAttempts = 0;
+                    setTimeout(startWhatsApp, 2000);
+                }
+            } else if (connection === 'open') {
+                gatewayStatus.status = 'CONNECTED';
                 gatewayStatus.qrCode = null;
                 reconnectAttempts = 0;
-                setTimeout(startWhatsApp, 2000);
+                console.log('[WhatsApp] CONEXÃO ESTABELECIDA!');
             }
-        } else if (connection === 'open') {
-            gatewayStatus.status = 'CONNECTED';
-            gatewayStatus.qrCode = null;
-            reconnectAttempts = 0;
-            console.log('[WhatsApp] CONEXÃO ESTABELECIDA!');
-        }
-    });
+        });
 
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-        for (const msg of messages) {
-            if (!msg.key.fromMe && msg.message) {
-                const userId = msg.key.remoteJid;
-                const userName = msg.pushName || userId.split('@')[0];
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            for (const msg of messages) {
+                if (!msg.key.fromMe && msg.message) {
+                    const userId = msg.key.remoteJid;
+                    const userName = msg.pushName || userId.split('@')[0];
 
-                // Auto-Sync: Atualiza contato ao receber mensagem
-                store.upsert(userId, { id: userId, name: userName });
-                
-                let file = null;
-                const messageType = Object.keys(msg.message)[0];
-                let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+                    // Auto-Sync: Atualiza contato ao receber mensagem
+                    // OBS: aqui mantemos o 'name' apenas se ele vier, para não sobrescrever
+                    store.upsert(userId, { id: userId });
+                    
+                    let file = null;
+                    const messageType = Object.keys(msg.message)[0];
+                    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
-                if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
-                    try {
-                        const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                        file = {
-                            name: `${messageType}.${messageType.startsWith('audio') ? 'ogg' : 'jpg'}`,
-                            type: messageType.startsWith('audio') ? 'audio/ogg' : (messageType.startsWith('image') ? 'image/jpeg' : 'application/octet-stream'),
-                            data: buffer.toString('base64')
+                    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                        try {
+                            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                            file = {
+                                name: `${messageType}.${messageType.startsWith('audio') ? 'ogg' : 'jpg'}`,
+                                type: messageType.startsWith('audio') ? 'audio/ogg' : (messageType.startsWith('image') ? 'image/jpeg' : 'application/octet-stream'),
+                                data: buffer.toString('base64')
+                            };
+                            text = msg.message[messageType].caption || '';
+                        } catch (e) { console.error('Erro download mídia:', e); }
+                    }
+
+                    let replyContext = null;
+                    const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message[messageType]?.contextInfo;
+                    if (contextInfo && contextInfo.quotedMessage) {
+                        const quotedText = contextInfo.quotedMessage.conversation || contextInfo.quotedMessage.extendedTextMessage?.text;
+                        replyContext = {
+                            text: quotedText || "[Mídia/Arquivo]",
+                            fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net'
                         };
-                        text = msg.message[messageType].caption || '';
-                    } catch (e) { console.error('Erro download mídia:', e); }
-                }
+                    }
 
-                let replyContext = null;
-                const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message[messageType]?.contextInfo;
-                if (contextInfo && contextInfo.quotedMessage) {
-                    const quotedText = contextInfo.quotedMessage.conversation || contextInfo.quotedMessage.extendedTextMessage?.text;
-                    replyContext = {
-                        text: quotedText || "[Mídia/Arquivo]",
-                        fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net'
-                    };
+                    await processIncomingMessage({ userId, userName, userInput: text, file, replyContext });
                 }
-
-                await processIncomingMessage({ userId, userName, userInput: text, file, replyContext });
             }
-        }
-    });
+        });
 
-    sock.ev.on('messages.update', async(updates) => {
-       for(const update of updates) {
-           if(update.update.status) {
-              const status = update.update.status; 
-              for (const [userId, chat] of activeChats.entries()) {
-                   if (userId === update.key.remoteJid) {
-                       const lastMsg = chat.messageLog[chat.messageLog.length -1];
-                       if(lastMsg && lastMsg.sender === 'attendant') {
-                           lastMsg.status = status;
-                           saveData('activeChats.json', activeChats);
+        sock.ev.on('messages.update', async(updates) => {
+           for(const update of updates) {
+               if(update.update.status) {
+                  const status = update.update.status; 
+                  for (const [userId, chat] of activeChats.entries()) {
+                       if (userId === update.key.remoteJid) {
+                           const lastMsg = chat.messageLog[chat.messageLog.length -1];
+                           if(lastMsg && lastMsg.sender === 'attendant') {
+                               lastMsg.status = status;
+                               saveData('activeChats.json', activeChats);
+                           }
                        }
-                   }
-              }
+                  }
+               }
            }
-       }
-    });
+        });
+
+    } catch (error) {
+        console.error('[FATAL] Erro ao iniciar WhatsApp (Sessão Corrompida?):', error);
+        // Se houver erro crítico na inicialização (ex: JSON de sessão inválido), limpa e reinicia
+        try {
+            fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
+        } catch(e) {}
+        setTimeout(startWhatsApp, 5000);
+    }
 }
 
 setInterval(async () => {
@@ -600,15 +660,21 @@ app.post('/api/attendants', (req, res) => {
 app.get('/api/clients', (req, res) => {
     const clientsMap = new Map();
     
-    // 1. Store
+    // 1. Store Principal (Baileys)
     if (store && store.contacts) {
         for (const id in store.contacts) {
             if (id.endsWith('@g.us') || id === 'status@broadcast') continue;
             const c = store.contacts[id];
+            // Lógica de Prioridade: Agenda > Notificação (Apelido) > Verificado > Número
             const name = c.name || c.notify || c.verifiedName || id.split('@')[0];
             clientsMap.set(id, { userId: id, userName: name });
         }
     }
+
+    // 2. Backup de Contatos
+    syncedContacts.forEach(c => {
+        if (!clientsMap.has(c.userId)) clientsMap.set(c.userId, c);
+    });
 
     const addIfNotExists = (userId, userName) => {
         if (!clientsMap.has(userId)) clientsMap.set(userId, { userId, userName });
