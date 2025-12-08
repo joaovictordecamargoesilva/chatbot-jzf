@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "27.0.0_FULL_SYNC_FINAL";
+const SERVER_VERSION = "27.1.0_CONTACTS_SYNC_FIXED";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -199,20 +199,14 @@ const makeCustomStore = () => {
         upsert, 
         save, 
         bind: (ev) => {
-            // EVENTO CRÍTICO: Traz a agenda completa na conexão
+            // Os eventos aqui são apenas para o store interno em memória/json
+            // A sincronização principal para o frontend é feita via 'syncContactsToDisk' abaixo
             ev.on('messaging-history.set', ({ contacts: newContacts }) => {
-                if (newContacts) {
-                    console.log(`[Store] Sincronização inicial: Processando ${newContacts.length} contatos...`);
-                    newContacts.forEach(c => upsert(c.id, c));
-                    save(); 
-                }
+                if (newContacts) newContacts.forEach(c => upsert(c.id, c));
             });
-            
             ev.on('contacts.upsert', (newContacts) => {
                 newContacts.forEach(c => upsert(c.id, c));
-                if (newContacts.length > 5) save(); 
             });
-
             ev.on('contacts.update', (updates) => {
                 updates.forEach(u => upsert(u.id, u));
             });
@@ -454,6 +448,48 @@ function queueOutbound(userId, content) {
     outboundGatewayQueue.push({ userId, ...content });
 }
 
+// --- FUNÇÃO UNIFICADA DE SINCRONIZAÇÃO DE CONTATOS ---
+function syncContactsToDisk(contacts) {
+    if (!contacts || contacts.length === 0) return;
+    
+    let hasNew = false;
+    for (const contact of contacts) {
+        if (contact.id.includes('@g.us') || contact.id === 'status@broadcast') continue;
+        
+        // Atualiza Store principal
+        store.upsert(contact.id, contact);
+
+        // Atualiza syncedContacts (Backup p/ frontend)
+        const exists = syncedContacts.find(c => c.userId === contact.id);
+        
+        // Prioridade CRÍTICA: Agenda ('name') > Apelido ('notify') > ID
+        const name = contact.name || contact.notify || contact.verifiedName || contact.id.split('@')[0];
+        
+        if (!exists) {
+            syncedContacts.push({ userId: contact.id, userName: name });
+            hasNew = true;
+        } else {
+            // SE for um 'name' (Agenda) e o que temos é diferente, atualiza
+            // Isso sobrescreve apelidos antigos com o nome real da agenda se disponível
+            if (contact.name && exists.userName !== contact.name) {
+                exists.userName = contact.name;
+                hasNew = true;
+            } 
+            // SE não temos nome nenhum ainda (talvez só numero), mas veio um notify, atualiza
+            else if (!exists.userName && name) {
+                exists.userName = name;
+                hasNew = true;
+            }
+        }
+    }
+    
+    if (hasNew) {
+        saveData('syncedContacts.json', syncedContacts);
+        store.save(); // Força salvar store também
+        console.log(`[Backup Sync] Atualizados ${contacts.length} contatos no disco.`);
+    }
+}
+
 async function processIncomingMessage({ userId, userName, userInput, file, replyContext }) {
     if (!userId) return;
     
@@ -526,67 +562,22 @@ async function startWhatsApp() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // --- ATUALIZAÇÃO CRÍTICA: Captura Histórico Inicial para syncedContacts ---
+        // --- ATUALIZAÇÃO CRÍTICA: Captura Histórico Inicial E Updates via Função Unificada ---
         sock.ev.on('messaging-history.set', ({ contacts }) => {
-            if (!contacts) return;
-            console.log(`[Backup Sync] Processando histórico inicial: ${contacts.length} contatos.`);
-            
-            let hasNew = false;
-            for (const contact of contacts) {
-                if (contact.id.includes('@g.us') || contact.id === 'status@broadcast') continue;
-                
-                // Atualiza Store principal
-                store.upsert(contact.id, contact);
-
-                const exists = syncedContacts.find(c => c.userId === contact.id);
-                // Prioridade: Agenda ('name') > Apelido ('notify') > ID
-                const name = contact.name || contact.notify || contact.verifiedName || contact.id.split('@')[0];
-                
-                if (!exists) {
-                    syncedContacts.push({ userId: contact.id, userName: name });
-                    hasNew = true;
-                } else {
-                    // Atualiza nome se vier da agenda (prioridade máxima)
-                    if (contact.name && exists.userName !== contact.name) {
-                        exists.userName = contact.name;
-                        hasNew = true;
-                    } 
-                    // Se não tinha nome antes, atualiza com o que veio
-                    else if (!exists.userName && name) {
-                        exists.userName = name;
-                        hasNew = true;
-                    }
-                }
-            }
-            if (hasNew) {
-                saveData('syncedContacts.json', syncedContacts);
-                console.log(`[Backup Sync] Lista de contatos sincronizada via histórico.`);
+            if (contacts) {
+                console.log(`[WhatsApp] Histórico recebido: ${contacts.length} contatos.`);
+                syncContactsToDisk(contacts);
             }
         });
 
-        // Listener de BACKUP (Lógica da versão 21.3.0 restaurada e melhorada)
         sock.ev.on('contacts.upsert', (contacts) => {
-            // Atualiza o Store principal
-            contacts.forEach(c => store.upsert(c.id, c));
-            
-            // Atualiza a lista de backup (syncedContacts)
-            let hasNew = false;
-            contacts.forEach(c => {
-                if (c.id.includes('@g.us') || c.id === 'status@broadcast') return;
-                
-                const exists = syncedContacts.find(sc => sc.userId === c.id);
-                const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
-                
-                if (!exists) {
-                    syncedContacts.push({ userId: c.id, userName: name });
-                    hasNew = true;
-                } else if (name && exists.userName !== name) {
-                    // ATUALIZAÇÃO DE NOME
-                    exists.userName = name;
-                    hasNew = true;
-                }
-            });
-            if(hasNew) saveData('syncedContacts.json', syncedContacts);
+            console.log(`[WhatsApp] Upsert de contatos: ${contacts.length}.`);
+            syncContactsToDisk(contacts);
+        });
+
+        sock.ev.on('contacts.update', (updates) => {
+             // Updates parciais também são importantes (ex: nome mudou)
+             syncContactsToDisk(updates);
         });
 
         sock.ev.on('connection.update', async (update) => {
