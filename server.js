@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "26.0.0_TAGS_LISTS";
+const SERVER_VERSION = "26.1.0_CONTACTS_SYNC_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -166,50 +166,44 @@ const makeCustomStore = () => {
         } catch(e) { console.error('[Store] Erro ao salvar:', e); }
     };
 
-    load();
+    // Definição interna do upsert para ser usada pelo bind
+    const upsert = (id, data) => {
+        if (!id) return;
+        const existing = contacts[id] || {};
+        
+        // Prioriza nome da agenda ('name') sobre apelido ('notify')
+        const newName = data.name || existing.name;
+        const newNotify = data.notify || existing.notify;
+        
+        contacts[id] = { 
+            ...existing, 
+            ...data,
+            name: newName,
+            notify: newNotify
+        };
+    };
 
-    // Salva periodicamente (a cada 10s) se houver mudanças
+    load();
     setInterval(save, 10000);
 
     return {
         getContacts: () => contacts,
-        upsert: (id, data) => {
-            if (!id) return;
-            const existing = contacts[id] || {};
-            
-            // Prioriza nome da agenda ('name') sobre apelido ('notify')
-            // Se 'data' tiver 'name', ele sobrescreve. Se não, mantemos o existente.
-            const newName = data.name || existing.name;
-            const newNotify = data.notify || existing.notify;
-            
-            contacts[id] = { 
-                ...existing, 
-                ...data,
-                name: newName,
-                notify: newNotify
-            };
-        },
+        upsert, // Expõe para uso externo
         bind: (ev) => {
             ev.on('messaging-history.set', ({ contacts: newContacts }) => {
                 if (newContacts) {
                     console.log(`[Store] Histórico: ${newContacts.length} contatos.`);
-                    newContacts.forEach(c => {
-                        contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
-                    });
-                    save(); // Salva imediatamente na carga inicial
+                    newContacts.forEach(c => upsert(c.id, c)); // Usa a lógica inteligente
+                    save();
                 }
             });
             
             ev.on('contacts.upsert', (newContacts) => {
-                newContacts.forEach(c => {
-                    contacts[c.id] = { ...(contacts[c.id] || {}), ...c };
-                });
+                newContacts.forEach(c => upsert(c.id, c)); // Usa a lógica inteligente
             });
 
             ev.on('contacts.update', (updates) => {
-                updates.forEach(u => {
-                    if (contacts[u.id]) Object.assign(contacts[u.id], u);
-                });
+                updates.forEach(u => upsert(u.id, u));
             });
         }
     };
@@ -519,7 +513,7 @@ async function startWhatsApp() {
             retryRequestDelayMs: 2000,
             defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            syncFullHistory: true, 
+            // syncFullHistory: true, // REMOVIDO para forçar uso do contacts.upsert
             getMessage: async () => ({ conversation: 'hello' })
         });
 
@@ -527,15 +521,25 @@ async function startWhatsApp() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // Listener de BACKUP para garantir contatos
+        // Listener de BACKUP (Lógica da versão 21.3.0 restaurada e melhorada)
         sock.ev.on('contacts.upsert', (contacts) => {
+            // Atualiza o Store principal
             contacts.forEach(c => store.upsert(c.id, c));
-            // Salva lista manual de backup tbm
+            
+            // Atualiza a lista de backup (syncedContacts)
             let hasNew = false;
             contacts.forEach(c => {
-                if(!syncedContacts.find(sc => sc.userId === c.id) && !c.id.includes('@g.us')) {
-                    const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
+                if (c.id.includes('@g.us') || c.id === 'status@broadcast') return;
+                
+                const exists = syncedContacts.find(sc => sc.userId === c.id);
+                const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
+                
+                if (!exists) {
                     syncedContacts.push({ userId: c.id, userName: name });
+                    hasNew = true;
+                } else if (name && exists.userName !== name) {
+                    // ATUALIZAÇÃO DE NOME (Restaurada para garantir sincronia)
+                    exists.userName = name;
                     hasNew = true;
                 }
             });
