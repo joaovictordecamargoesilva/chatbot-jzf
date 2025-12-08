@@ -28,22 +28,17 @@ const TypingIndicator = () => (
 
 // --- COMPONENTE: MessageStatusIcon (Ticks do WhatsApp) ---
 const MessageStatusIcon = ({ status }) => {
-    // Status do Baileys: 0: ERROR, 1: PENDING, 2: SERVER_ACK (Enviado), 3: DELIVERY_ACK (Entregue), 4: READ (Lido), 5: PLAYED
-    // Se status for indefinido ou <= 1, mostra relógio
     if (status === undefined || status === null || status <= 1) {
         return <svg viewBox="0 0 16 16" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path fill="currentColor" d="M7.5 3a.5.5 0 0 1 .5.5v5.21l3.248 1.856a.5.5 0 0 1-.496.868l-3.5-2A.5.5 0 0 1 7 9V3.5a.5.5 0 0 1 .5-.5z"/></svg>;
     }
     
-    // Status 4 (Lido) ou 5 (Played) = Azul. 
     const isRead = status >= 4;
     const colorClass = isRead ? "text-blue-500" : "text-gray-400";
     
     if (status === 2) {
-        // Um check (Enviado ao servidor)
         return <svg viewBox="0 0 16 15" className="w-3 h-3 text-gray-400 ml-1"><path fill="currentColor" d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 14.376l-3.89-3.956a.363.363 0 0 0-.506 0l-.477.476a.372.372 0 0 0 0 .515l4.636 4.706a.363.363 0 0 0 .506 0l10.122-12.28a.372.372 0 0 0 .052-.52z"/></svg>;
     }
     
-    // Dois checks (Entregue ou Lido)
     return (
         <div className={`flex -space-x-1 ml-1 ${colorClass}`}>
             <svg viewBox="0 0 16 15" className="w-3 h-3"><path fill="currentColor" d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 14.376l-3.89-3.956a.363.363 0 0 0-.506 0l-.477.476a.372.372 0 0 0 0 .515l4.636 4.706a.363.363 0 0 0 .506 0l10.122-12.28a.372.372 0 0 0 .052-.52z"/></svg>
@@ -110,7 +105,8 @@ const ImageEditorModal = ({ file, onSave, onCancel }) => {
             editorInstance.current = null;
         }
         
-        const imageUrl = `data:${file.type};base64,${file.data}`;
+        // Verifica se é URL (Disk Storage) ou Data (Upload local)
+        const imageUrl = file.url || `data:${file.type};base64,${file.data}`;
 
         editorInstance.current = new ImageEditor(editorRef.current, {
             includeUI: {
@@ -174,13 +170,16 @@ const Lightbox = ({ src, onClose }) => {
 };
 
 const FileRenderer = ({ file, onImageClick }) => {
-    if (!file || !file.type || !file.data) return null;
-    const fileSrc = `data:${file.type};base64,${file.data}`;
+    if (!file || !file.type) return null;
+    
+    // Suporte híbrido: URL (Disk) ou Base64 (Upload local)
+    const fileSrc = file.url || `data:${file.type};base64,${file.data}`;
+    
     if (file.type.startsWith('image/')) return <img src={fileSrc} alt={file.name} className="w-full h-full object-cover cursor-pointer" onClick={() => onImageClick(fileSrc)} />;
     if (file.type.startsWith('audio/')) return <audio controls src={fileSrc} className="mt-2 w-full max-w-xs"></audio>;
     if (file.type.startsWith('video/')) return <video controls src={fileSrc} className="mt-2 rounded-lg max-w-xs md:max-w-sm max-h-80"></video>;
     return (
-        <a href={fileSrc} download={file.name} className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200 hover:bg-gray-200">
+        <a href={fileSrc} download={file.name} target="_blank" className="mt-2 p-2 bg-gray-100 rounded-lg flex items-center space-x-2 border border-gray-200 hover:bg-gray-200">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
             <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
         </a>
@@ -268,7 +267,7 @@ const MediaGallery = ({ messages, onImageClick }) => {
                 <div key={sec.t} className="mb-6">
                     <h3 className="text-lg font-semibold p-4 border-b">{sec.t} ({sec.d.length})</h3>
                     {sec.d.length === 0 ? <p className="p-4 text-sm text-gray-500">Vazio.</p> : (
-                        sec.t === 'Mídia' ? <div className="p-4 grid grid-cols-4 gap-2">{sec.d.map(m => <div key={m.id} className="aspect-square bg-gray-200"><img src={`data:${m.type};base64,${m.data}`} className="w-full h-full object-cover cursor-pointer" onClick={() => onImageClick(`data:${m.type};base64,${m.data}`)}/></div>)}</div> :
+                        sec.t === 'Mídia' ? <div className="p-4 grid grid-cols-4 gap-2">{sec.d.map(m => <div key={m.id} className="aspect-square bg-gray-200"><img src={m.url || `data:${m.type};base64,${m.data}`} className="w-full h-full object-cover cursor-pointer" onClick={() => onImageClick(m.url || `data:${m.type};base64,${m.data}`)}/></div>)}</div> :
                         sec.t === 'Documentos' ? <ul className="p-2 space-y-1">{sec.d.map(d => <li key={d.id} className="border-b"><FileRenderer file={d} onImageClick={()=>{}}/></li>)}</ul> :
                         <ul className="p-2">{sec.d.map(l => <li key={l.id} className="p-2 border-b"><a href={l.link} target="_blank" className="text-blue-600 truncate block">{l.link}</a></li>)}</ul>
                     )}
@@ -488,13 +487,23 @@ function App() {
   
   // Modals
   const [isInitiateModalOpen, setInitiateModalOpen] = useState(false);
+  const [isBroadcastModalOpen, setBroadcastModalOpen] = useState(false); // Modal de Broadcast
   const [clients, setClients] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [initiateMessage, setInitiateMessage] = useState('');
-  const [initiateFiles, setInitiateFiles] = useState([]); // Novo estado para arquivos no modal
+  const [initiateFiles, setInitiateFiles] = useState([]); 
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState(null);
   const initiateFileInputRef = useRef(null);
+  
+  // Broadcast State
+  const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [broadcastFiles, setBroadcastFiles] = useState([]);
+  const [selectedBroadcastClients, setSelectedBroadcastClients] = useState(new Set());
+  const broadcastFileInputRef = useRef(null);
+  // NEW: Broadcast Tags
+  const [tags, setTags] = useState([]);
+  const [newTagName, setNewTagName] = useState('');
   
   const [notifications, setNotifications] = useState({ queue: 0, active: new Set(), active_ai: new Set(), internal: new Set() });
   const [internalChatsSummary, setInternalChatsSummary] = useState({});
@@ -545,8 +554,6 @@ function App() {
       for (const chat of newActiveChats) {
           const lastMsg = chat.lastMessage;
           if (lastMsg && lastMsg.sender === Sender.USER && new Date(lastMsg.timestamp).getTime() > lastProcessedMsgTimestampRef.current) {
-              // Verifica se não é o chat que já está aberto e visível
-              // A condição considera o chat ABERTO. Se estiver em outra aba do navegador ou minimizado, deve notificar.
               const isChatOpen = selectedChatRef.current?.userId === chat.userId;
               const isWindowFocused = document.hasFocus();
               
@@ -564,7 +571,7 @@ function App() {
            if ("Notification" in window && Notification.permission === "granted") {
                 new Notification(notificationTitle, {
                     body: notificationBody,
-                    icon: "https://cdn-icons-png.flaticon.com/512/124/124034.png" // Ícone genérico de chat
+                    icon: "https://cdn-icons-png.flaticon.com/512/124/124034.png" 
                 });
            }
       }
@@ -576,8 +583,6 @@ function App() {
       setAiActiveChats(newAiChats);
       setInternalChatsSummary(await internalSummaryRes.json());
       
-      // Lógica de atualização em tempo real do chat aberto
-      // Usa o REF para garantir que estamos comparando com o chat ATUALMENTE aberto na tela, e não um closure antigo
       const currentChat = selectedChatRef.current;
       
       if (currentChat) {
@@ -585,29 +590,21 @@ function App() {
           
           if (updatedChatSummary) {
               const currentLastMsg = currentChat.messageLog[currentChat.messageLog.length - 1];
-              
-              // Verifica se houve mudança no comprimento do log OU no status da última mensagem
               const logLengthChanged = updatedChatSummary.logLength !== currentChat.messageLog.length;
-              
-              // Verifica mudança de status (de pendente para enviado, ou de enviado para lido)
-              // updatedChatSummary.lastMsgStatus vem do servidor
               const statusChanged = currentLastMsg && updatedChatSummary.lastMsgStatus !== currentLastMsg.status;
-              
               const lastMsgTimestampChanged = currentLastMsg && updatedChatSummary.lastMessage && updatedChatSummary.lastMessage.timestamp !== currentLastMsg.timestamp;
 
               if (logLengthChanged || statusChanged || lastMsgTimestampChanged) {
-                  // console.log("Detectada mudança no chat (msg ou status), recarregando...");
                   const res = await fetch(`/api/chats/history/${currentChat.userId}`);
                   if (res.ok) {
                       const newData = await res.json();
-                      // Preserva o estado de edição/reply se necessário, mas aqui atualizamos o log inteiro
                       setSelectedChat(prev => ({ ...prev, ...newData }));
                   }
               }
           }
       }
     } catch (err) { console.warn('Rede instável no fetchData, ignorando erro...'); }
-  }, [attendant, isBackendOffline]); // Removido selectedChat da dependência para evitar recriação constante do intervalo
+  }, [attendant, isBackendOffline]); 
 
   const pollStatus = useCallback(async () => {
       try {
@@ -635,10 +632,16 @@ function App() {
 
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
   
-  // Polling de 1 segundo para sensação de tempo real
   useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 1000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
   
-  // Carrega clientes (incluindo contatos sincronizados)
+  // Fetch Tags
+  const fetchTags = useCallback(async () => {
+      try {
+          const res = await fetch('/api/tags');
+          if(res.ok) setTags(await res.json());
+      } catch(e){}
+  }, []);
+
   const fetchClients = useCallback(async () => {
        if (attendant && !isBackendOffline) {
            try {
@@ -648,22 +651,20 @@ function App() {
        }
   }, [attendant, isBackendOffline]);
 
-  // Carrega clientes ao iniciar e ao abrir modal
   useEffect(() => { fetchClients(); }, [fetchClients]);
-  useEffect(() => { if(isInitiateModalOpen) fetchClients(); }, [isInitiateModalOpen, fetchClients]);
+  useEffect(() => { if(isInitiateModalOpen || isBroadcastModalOpen) { fetchClients(); fetchTags(); } }, [isInitiateModalOpen, isBroadcastModalOpen, fetchClients, fetchTags]);
 
   const readFileAsBase64 = (file) => new Promise((resolve) => { const r = new FileReader(); r.onload = e => resolve({ name: file.name, type: file.type, data: (e.target.result as string).split(',')[1] }); r.readAsDataURL(file); });
   const handleFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
-  const handleInternalFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setInternalSelectedFiles(p => [...p, ...processed]); e.target.value=null; };
   
-  // Novo Handler para arquivos no modal de Início
   const handleInitiateFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setInitiateFiles(p => [...p, ...processed]); e.target.value=null; };
+  
+  const handleBroadcastFileSelect = async (e) => { const files = Array.from(e.target.files); if(!files.length) return; const processed = await Promise.all(files.map(readFileAsBase64)); setBroadcastFiles(p => [...p, ...processed]); e.target.value=null; };
 
   const handleSendMessage = async (userId, text, attendantId, files, replyTo) => {
       const tempMsg = { sender: Sender.ATTENDANT, text, files, timestamp: new Date().toISOString(), replyTo: replyTo ? { text: replyTo.text, senderName: replyTo.sender === 'user' ? selectedChat.userName : 'Você' } : null, status: 1 };
       setSelectedChat(p => p?.userId === userId ? { ...p, messageLog: [...p.messageLog, tempMsg] } : p);
       await fetch('/api/chats/attendant-reply', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, text, attendantId, files, replyTo }) });
-      // Fetch imediato para confirmar envio
       setTimeout(fetchData, 500);
   };
 
@@ -677,13 +678,10 @@ function App() {
       setTimeout(fetchData, 500);
   };
   
-  // Handlers simplificados (mantendo lógica original)
   const handleLogin = (id) => { 
-      // Solicita permissão de notificação no gesto do usuário (clique)
       if ("Notification" in window && Notification.permission !== "granted") {
         Notification.requestPermission();
       }
-      // "Desbloqueia" o AudioContext criando um áudio vazio, para que o som de notificação funcione depois
       try {
           const dummyAudio = new Audio();
           dummyAudio.play().catch(()=>{}); 
@@ -699,11 +697,9 @@ function App() {
   const handleLogout = () => { setAttendant(null); localStorage.removeItem('attendantId'); };
   const handleSelectChatItem = async (item) => { setIsLoading(true); setSelectedChat(null); try { const res = await fetch(`/api/chats/history/${item.userId}`); if(res.ok) setSelectedChat({...item, ...await res.json()}); } finally { setIsLoading(false); } };
   
-  // Novo Handler: Assumir ao clicar na fila
   const handleQueueClick = async (item) => {
       setIsLoading(true);
       try {
-          // Chama o endpoint de takeover
           const res = await fetch(`/api/chats/takeover/${item.userId}`, {
               method: 'POST', 
               body: JSON.stringify({attendantId:attendant.id}),
@@ -711,18 +707,92 @@ function App() {
           });
           if(res.ok) {
               const updatedChat = await res.json();
-              // Busca o histórico completo para garantir
               const histRes = await fetch(`/api/chats/history/${item.userId}`);
               if(histRes.ok) {
                   setSelectedChat({...updatedChat, ...await histRes.json()});
-                  // Muda a visualização para Ativos para que o usuário não se perca
                   setActiveView('active');
               }
           }
       } finally {
           setIsLoading(false);
-          fetchData(); // Atualiza a lista lateral
+          fetchData(); 
       }
+  };
+
+  const handleCreateTag = async () => {
+      if(!newTagName.trim()) return;
+      const res = await fetch('/api/tags', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name: newTagName })
+      });
+      if(res.ok) {
+          fetchTags();
+          setNewTagName('');
+      }
+  };
+
+  const handleSaveSelectionAsTag = async () => {
+      if(selectedBroadcastClients.size === 0) return alert('Selecione contatos primeiro.');
+      const tagName = prompt("Nome da Nova Lista:");
+      if(!tagName) return;
+      
+      // 1. Criar Tag
+      const resTag = await fetch('/api/tags', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name: tagName })
+      });
+      
+      if(resTag.ok) {
+          const tag = await resTag.json();
+          // 2. Associar usuários
+          await fetch('/api/tags/assign-bulk', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ tagId: tag.id, userIds: Array.from(selectedBroadcastClients) })
+          });
+          fetchTags();
+          fetchClients(); // Atualiza lista para mostrar tags
+          alert('Lista salva com sucesso!');
+      }
+  };
+
+  const handleBroadcastSubmit = async () => {
+      if (selectedBroadcastClients.size === 0) return alert("Selecione pelo menos um contato.");
+      if (!broadcastMessage.trim() && broadcastFiles.length === 0) return alert("Digite uma mensagem ou anexe um arquivo.");
+      
+      const recipientIds = Array.from(selectedBroadcastClients);
+      
+      try {
+          const res = await fetch('/api/broadcast', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                  recipientIds,
+                  message: broadcastMessage,
+                  files: broadcastFiles,
+                  attendantId: attendant.id
+              })
+          });
+          
+          if(res.ok) {
+              alert("Transmissão iniciada com sucesso!");
+              setBroadcastModalOpen(false);
+              setBroadcastMessage('');
+              setBroadcastFiles([]);
+              setSelectedBroadcastClients(new Set());
+          } else {
+              alert("Erro ao iniciar transmissão.");
+          }
+      } catch(e) {
+          alert("Erro de conexão.");
+      }
+  };
+
+  // --- Função para baixar Backup ---
+  const handleBackupDownload = () => {
+      window.open('/api/system/backup', '_blank');
   };
 
   useEffect(() => { const saved = localStorage.getItem('attendantId'); if(saved && attendants.length) handleLogin(saved); }, [attendants]);
@@ -734,9 +804,7 @@ function App() {
         <div className="flex items-center justify-center w-full h-screen bg-gray-200 p-4">
             <div className="w-full max-w-md p-8 bg-white rounded-xl shadow-lg text-center">
                 <h2 className="text-2xl font-bold text-gray-800 mb-4">Conexão WhatsApp</h2>
-                
                 {isBackendOffline && <div className="p-3 mb-4 bg-yellow-100 text-yellow-800 rounded text-sm">Conectando ao servidor... Por favor, aguarde.</div>}
-
                 {gatewayStatus.status === 'LOADING' && (
                     <div className="animate-pulse flex flex-col items-center">
                         <div className="h-4 bg-gray-300 rounded w-3/4 mb-4"></div>
@@ -744,14 +812,12 @@ function App() {
                         <p className="text-sm text-gray-500 mt-4">Iniciando serviços e gerando QR Code...</p>
                     </div>
                 )}
-
                 {gatewayStatus.status === 'QR_CODE_READY' && gatewayStatus.qrCode && (
                     <div className="bg-white p-2 rounded border shadow-sm inline-block">
                         <img src={gatewayStatus.qrCode} alt="QR Code" className="w-64 h-64 object-contain"/>
                         <p className="mt-4 text-sm text-gray-600 font-medium">Abra o WhatsApp &gt; Aparelhos conectados &gt; Conectar</p>
                     </div>
                 )}
-
                 {gatewayStatus.status === 'DISCONNECTED' && (
                     <div>
                         <div className="text-red-500 mb-2 font-bold">Desconectado</div>
@@ -781,20 +847,37 @@ function App() {
         <div className="p-4 border-b">
             <h1 className="text-xl font-bold">JZF Atendimento</h1>
             <p className="text-xs text-gray-500 mt-1">Olá, {attendant.name}</p>
-            <div className="flex space-x-2 mt-2"><button onClick={() => setInitiateModalOpen(true)} className="text-xs text-blue-600">Novo Chat</button><button onClick={handleLogout} className="text-xs text-red-500">Sair</button></div>
+            <div className="flex space-x-2 mt-2">
+                <button onClick={() => setInitiateModalOpen(true)} className="text-xs text-blue-600 hover:underline">Novo Chat</button>
+                <button onClick={() => setBroadcastModalOpen(true)} className="text-xs text-purple-600 hover:underline flex items-center gap-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" /></svg>
+                    Transmissão
+                </button>
+                <button onClick={handleLogout} className="text-xs text-red-500 hover:underline ml-auto">Sair</button>
+            </div>
         </div>
         <nav className="flex p-1 bg-gray-100 text-xs">
             {['queue', 'active', 'ai_active', 'history', 'internal_chat'].map(v => <button key={v} onClick={() => setActiveView(v)} className={`flex-1 p-2 rounded ${activeView === v ? 'bg-white shadow font-bold' : 'text-gray-600'}`}>{viewLabels[v]} {notifications[v]?.size || notifications[v] || ''}</button>)}
         </nav>
+        
+        {/* LISTA DE CHATS */}
         <div className="flex-1 overflow-y-auto">
-            {/* Lista da Fila com Auto-Takeover no Click */}
             {activeView === 'queue' && requestQueue.map(r => <div key={r.id} onClick={()=>handleQueueClick(r)} className="p-3 border-b cursor-pointer hover:bg-gray-50"><p className="font-bold">{r.userName}</p><p className="text-xs text-gray-500">{r.department} (Clique para assumir)</p></div>)}
-            
             {activeView === 'active' && activeChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p></div>)}
             {activeView === 'ai_active' && aiActiveChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
-            
-             {/* Histórico simplificado */}
              {activeView === 'history' && chatHistory.map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className="p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70"><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
+             
+             {/* AREA DE AJUSTES/BACKUP DENTRO DA VISUALIZAÇÃO INTERNA OU NO RODAPÉ */}
+             {activeView === 'internal_chat' && (
+                 <div className="p-4 flex flex-col items-center text-center">
+                     <p className="text-gray-500 mb-4 text-sm">Ferramentas do Sistema</p>
+                     <button onClick={handleBackupDownload} className="w-full py-2 bg-gray-800 text-white rounded text-sm hover:bg-black flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        Fazer Backup Completo
+                     </button>
+                     <p className="text-xs text-gray-400 mt-2">Baixa todas as conversas e mídias.</p>
+                 </div>
+             )}
         </div>
       </aside>
       <main className="flex-1 flex flex-col">
@@ -814,10 +897,12 @@ function App() {
                 setSelectedFiles={setSelectedFiles} 
                 onFileSelect={handleFileSelect} 
                 onEditFile={setEditingFile}
-                activeChats={activeChats} // Passado para o modal de Forward
+                activeChats={activeChats} 
             />
-        ) : <div className="flex items-center justify-center h-full text-gray-500">Chat interno em desenvolvimento (use a versão completa para esta funcionalidade)</div>}
+        ) : <div className="flex items-center justify-center h-full text-gray-500">Selecione "Fazer Backup Completo" no menu lateral esquerdo.</div>}
       </main>
+      
+      {/* Modal de Novo Chat Individual */}
       {isInitiateModalOpen && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
               <div className="bg-white p-6 rounded-lg w-full max-w-md h-[80vh] flex flex-col">
@@ -829,7 +914,6 @@ function App() {
                       }
                   </div>
                   
-                  {/* Área de Preview de Arquivos no Modal */}
                   {initiateFiles.length > 0 && (
                       <div className="flex space-x-2 overflow-x-auto mb-2 p-1 bg-gray-50 rounded">
                            {initiateFiles.map((f, i) => (
@@ -858,10 +942,10 @@ function App() {
                               headers:{'Content-Type':'application/json'}, 
                               body:JSON.stringify({
                                   recipientNumber: selectedClient.userId, 
-                                  clientName: selectedClient.userName, // Envia o nome do cliente
+                                  clientName: selectedClient.userName, 
                                   message: initiateMessage, 
                                   attendantId: attendant.id,
-                                  files: initiateFiles // Envia arquivos
+                                  files: initiateFiles 
                               })
                           }); 
                           if(res.ok) { 
@@ -876,6 +960,125 @@ function App() {
               </div>
           </div>
       )}
+
+      {/* Modal de Lista de Transmissão (Broadcast) */}
+      {isBroadcastModalOpen && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white p-6 rounded-lg w-full max-w-4xl h-[90vh] flex flex-col">
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-xl font-bold flex items-center gap-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" /></svg>
+                          Lista de Transmissão
+                      </h3>
+                      <span className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">{selectedBroadcastClients.size} selecionados</span>
+                  </div>
+                  
+                  <div className="flex gap-4 flex-1 overflow-hidden">
+                      {/* Lado Esquerdo: Listas e Seleção */}
+                      <div className="w-1/2 flex flex-col border rounded">
+                          {/* Área de Tags/Listas */}
+                          <div className="p-2 border-b bg-purple-50">
+                              <p className="text-xs font-bold text-gray-500 mb-2">LISTAS SALVAS</p>
+                              <div className="flex flex-wrap gap-2 mb-2 max-h-24 overflow-y-auto">
+                                  {tags.map(tag => (
+                                      <button key={tag.id} onClick={()=>{
+                                          const clientsInTag = clients.filter(c => c.tags?.includes(tag.id));
+                                          const newSet = new Set(selectedBroadcastClients);
+                                          clientsInTag.forEach(c => newSet.add(c.userId));
+                                          setSelectedBroadcastClients(newSet);
+                                      }} className="px-2 py-1 text-xs bg-white border border-purple-200 rounded hover:bg-purple-100 text-purple-700 flex items-center gap-1">
+                                          {tag.name}
+                                          <span className="bg-purple-200 text-[10px] px-1 rounded-full">{clients.filter(c=>c.tags?.includes(tag.id)).length}</span>
+                                      </button>
+                                  ))}
+                                  {tags.length === 0 && <span className="text-xs text-gray-400">Nenhuma lista salva.</span>}
+                              </div>
+                              <button onClick={handleSaveSelectionAsTag} disabled={selectedBroadcastClients.size===0} className="w-full text-xs text-blue-600 hover:bg-blue-50 py-1 border border-dashed border-blue-300 rounded disabled:opacity-50">+ Salvar Seleção Atual como Lista</button>
+                          </div>
+
+                          {/* Área de Busca e Filtro */}
+                          <div className="p-2 border-b bg-gray-50">
+                              <input type="text" placeholder="Buscar contato..." value={clientSearchTerm} onChange={e=>setClientSearchTerm(e.target.value)} className="w-full p-2 border rounded text-sm" />
+                              <div className="mt-2 flex justify-between text-xs">
+                                  <button onClick={()=>{
+                                      const newSet = new Set(selectedBroadcastClients);
+                                      filteredClients.forEach(c => newSet.add(c.userId));
+                                      setSelectedBroadcastClients(newSet);
+                                  }} className="text-blue-600 hover:underline">Selecionar Visíveis</button>
+                                  <button onClick={()=>setSelectedBroadcastClients(new Set())} className="text-red-500 hover:underline">Limpar Seleção</button>
+                              </div>
+                          </div>
+
+                          {/* Lista de Contatos */}
+                          <div className="flex-1 overflow-y-auto p-2">
+                              {filteredClients.map(c => (
+                                  <div key={c.userId} onClick={()=>{
+                                      const newSet = new Set(selectedBroadcastClients);
+                                      if(newSet.has(c.userId)) newSet.delete(c.userId);
+                                      else newSet.add(c.userId);
+                                      setSelectedBroadcastClients(newSet);
+                                  }} className={`p-2 flex items-center gap-2 cursor-pointer hover:bg-gray-100 ${selectedBroadcastClients.has(c.userId) ? 'bg-purple-50 border-l-4 border-purple-500' : ''}`}>
+                                      <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedBroadcastClients.has(c.userId) ? 'bg-purple-600 border-purple-600' : 'border-gray-400'}`}>
+                                          {selectedBroadcastClients.has(c.userId) && <svg className="w-3 h-3 text-white" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                          <p className="truncate text-sm">{c.userName}</p>
+                                          {c.tags && c.tags.length > 0 && (
+                                              <div className="flex gap-1 mt-0.5">
+                                                  {c.tags.map(tid => {
+                                                      const t = tags.find(tag=>tag.id===tid);
+                                                      return t ? <span key={tid} className="text-[10px] bg-gray-200 px-1 rounded text-gray-600">{t.name}</span> : null;
+                                                  })}
+                                              </div>
+                                          )}
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      </div>
+
+                      {/* Lado Direito: Composição da Mensagem */}
+                      <div className="w-1/2 flex flex-col">
+                          <div className="flex-1 flex flex-col border rounded bg-gray-50 p-2">
+                              <label className="text-xs font-bold text-gray-500 mb-1">Mensagem</label>
+                              <textarea 
+                                  value={broadcastMessage} 
+                                  onChange={e=>setBroadcastMessage(e.target.value)} 
+                                  placeholder="Digite a mensagem para enviar a todos..." 
+                                  className="flex-1 p-2 border rounded resize-none mb-2 focus:ring-2 focus:ring-purple-300 outline-none"
+                              ></textarea>
+                              
+                              {broadcastFiles.length > 0 && (
+                                  <div className="flex space-x-2 overflow-x-auto mb-2 p-1 bg-white rounded border">
+                                       {broadcastFiles.map((f, i) => (
+                                           <div key={i} className="relative w-12 h-12 bg-gray-200 flex-shrink-0">
+                                               <img src={`data:${f.type};base64,${f.data}`} className="w-full h-full object-cover rounded" alt="preview"/>
+                                               <button onClick={() => setBroadcastFiles(files => files.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-xs">&times;</button>
+                                           </div>
+                                       ))}
+                                  </div>
+                              )}
+
+                              <button onClick={() => broadcastFileInputRef.current.click()} className="flex items-center justify-center gap-2 p-2 bg-white border rounded hover:bg-gray-100 text-sm text-gray-600">
+                                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                                  Anexar Arquivo
+                              </button>
+                              <input type="file" ref={broadcastFileInputRef} onChange={handleBroadcastFileSelect} className="hidden" multiple />
+                          </div>
+                      </div>
+                  </div>
+                  
+                  <div className="flex justify-end gap-3 mt-4 pt-4 border-t">
+                      <button onClick={()=>{setBroadcastModalOpen(false); setBroadcastMessage(''); setBroadcastFiles([]); setSelectedBroadcastClients(new Set());}} className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">Cancelar</button>
+                      <button onClick={handleBroadcastSubmit} className="px-6 py-2 bg-purple-600 text-white font-bold rounded hover:bg-purple-700 shadow-lg flex items-center gap-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+                          Enviar Transmissão
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {editingFile && <ImageEditorModal file={editingFile.file} onSave={(d)=>{ const n=[...selectedFiles]; n[editingFile.context.index].data=d.split(',')[1]; setSelectedFiles(n); setEditingFile(null); }} onCancel={()=>setEditingFile(null)} />}
       {lightboxSrc && <Lightbox src={lightboxSrc} onClose={()=>setLightboxSrc(null)} />}
     </div>
