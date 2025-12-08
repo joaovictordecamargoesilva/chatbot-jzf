@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "26.1.0_CONTACTS_SYNC_FIX";
+const SERVER_VERSION = "27.0.0_FULL_SYNC_FINAL";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -54,8 +54,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // --- PERSISTÊNCIA DE DADOS ---
+// Tenta usar o caminho do Render Disk, senão usa local
 const DATA_DIR = process.env.RENDER_DISK_PATH || path.join(__dirname, 'data');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
+
+// LOG DE DIAGNÓSTICO
+console.log("========================================");
+console.log(`[STORAGE] Salvando dados em: ${DATA_DIR}`);
+console.log(`[STORAGE] Variável RENDER_DISK_PATH: ${process.env.RENDER_DISK_PATH || 'Não definida'}`);
+console.log("========================================");
 
 if (!fs.existsSync(DATA_DIR)) {
   console.log(`[Persistence] Criando diretório de dados em: ${DATA_DIR}`);
@@ -132,14 +139,13 @@ const loadData = (filename, defaultValue) => {
 const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     try {
         const ext = mimeType.split('/')[1] || 'bin';
-        // Nome único para evitar sobrescrita
         const fileName = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
         const filePath = path.join(MEDIA_DIR, fileName);
         
         const buffer = Buffer.from(base64Data, 'base64');
         fs.writeFileSync(filePath, buffer);
         
-        return `/media/${fileName}`; // URL relativa para o frontend
+        return `/media/${fileName}`; 
     } catch (error) {
         console.error('[Media] Erro ao salvar arquivo em disco:', error);
         return null;
@@ -156,6 +162,7 @@ const makeCustomStore = () => {
             if (fs.existsSync(STORE_FILE)) {
                 const data = JSON.parse(fs.readFileSync(STORE_FILE, 'utf-8'));
                 if (data.contacts) contacts = data.contacts;
+                console.log(`[Store] Carregados ${Object.keys(contacts).length} contatos do arquivo.`);
             }
         } catch(e) { console.error('[Store] Erro ao carregar:', e); }
     };
@@ -166,40 +173,44 @@ const makeCustomStore = () => {
         } catch(e) { console.error('[Store] Erro ao salvar:', e); }
     };
 
-    // Definição interna do upsert para ser usada pelo bind
+    // Lógica inteligente para mesclar dados
     const upsert = (id, data) => {
-        if (!id) return;
+        if (!id || id.includes('@g.us') || id === 'status@broadcast') return;
+        
         const existing = contacts[id] || {};
         
-        // Prioriza nome da agenda ('name') sobre apelido ('notify')
-        const newName = data.name || existing.name;
-        const newNotify = data.notify || existing.notify;
-        
+        // LÓGICA DE PRIORIDADE DE NOME
+        const finalName = data.name || existing.name;
+        const finalNotify = data.notify || existing.notify;
+
         contacts[id] = { 
             ...existing, 
             ...data,
-            name: newName,
-            notify: newNotify
+            name: finalName,
+            notify: finalNotify
         };
     };
 
     load();
-    setInterval(save, 10000);
+    setInterval(save, 10000); 
 
     return {
         getContacts: () => contacts,
-        upsert, // Expõe para uso externo
+        upsert, 
+        save, 
         bind: (ev) => {
+            // EVENTO CRÍTICO: Traz a agenda completa na conexão
             ev.on('messaging-history.set', ({ contacts: newContacts }) => {
                 if (newContacts) {
-                    console.log(`[Store] Histórico: ${newContacts.length} contatos.`);
-                    newContacts.forEach(c => upsert(c.id, c)); // Usa a lógica inteligente
-                    save();
+                    console.log(`[Store] Sincronização inicial: Processando ${newContacts.length} contatos...`);
+                    newContacts.forEach(c => upsert(c.id, c));
+                    save(); 
                 }
             });
             
             ev.on('contacts.upsert', (newContacts) => {
-                newContacts.forEach(c => upsert(c.id, c)); // Usa a lógica inteligente
+                newContacts.forEach(c => upsert(c.id, c));
+                if (newContacts.length > 5) save(); 
             });
 
             ev.on('contacts.update', (updates) => {
@@ -233,15 +244,14 @@ const userSessions = loadData('userSessions.json', new Map());
 let requestQueue = loadData('requestQueue.json', []);
 const activeChats = loadData('activeChats.json', new Map());
 const archivedChats = loadData('archivedChats.json', new Map());
+// syncedContacts mantido como backup secundário
 let syncedContacts = loadData('syncedContacts.json', []);
 
-// NOVAS ESTRUTURAS PARA TAGS (LISTAS)
-let tags = loadData('tags.json', []); // [{id, name, color}]
-let contactTags = loadData('contactTags.json', {}); // { userId: [tagId1, tagId2] }
+let tags = loadData('tags.json', []); 
+let contactTags = loadData('contactTags.json', {}); 
 
 let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
 
-// Limites de memória ajustados para uso com Disk Storage
 const MAX_SESSIONS = 1000; 
 const MAX_ARCHIVED_CHATS = 500;
 
@@ -252,16 +262,13 @@ let sock = null;
 let reconnectAttempts = 0;
 
 // --- MIDDLEWARE ---
-// Aumentamos o limite para receber arquivos grandes no upload (antes de salvar em disco)
 app.use(express.json({ limit: '50mb' }));
 
-// Servir arquivos estáticos do Frontend
 const distPath = path.join(__dirname, 'dist');
 if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
 }
 
-// Servir arquivos de mídia (Disk Storage)
 app.use('/media', express.static(MEDIA_DIR));
 
 // --- CONFIGURAÇÃO IA (GEMINI) ---
@@ -278,7 +285,6 @@ if (API_KEY) {
 async function transcribeAudio(fileUrl, mimeType) {
     if (!ai) return "[Áudio não transcrito - IA indisponível]";
     try {
-        // Para transcrição, precisamos ler o arquivo do disco novamente
         const filePath = path.join(MEDIA_DIR, path.basename(fileUrl));
         if (!fs.existsSync(filePath)) return "[Erro: Arquivo de áudio não encontrado]";
         
@@ -336,7 +342,7 @@ function getSession(userId, userName = null) {
     return session;
 }
 
-// GC Manual (Garbage Collector)
+// GC Manual
 setInterval(() => {
     const now = new Date().getTime();
     const expiry = 24 * 60 * 60 * 1000;
@@ -513,13 +519,50 @@ async function startWhatsApp() {
             retryRequestDelayMs: 2000,
             defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            // syncFullHistory: true, // REMOVIDO para forçar uso do contacts.upsert
             getMessage: async () => ({ conversation: 'hello' })
         });
 
         store.bind(sock.ev);
 
         sock.ev.on('creds.update', saveCreds);
+
+        // --- ATUALIZAÇÃO CRÍTICA: Captura Histórico Inicial para syncedContacts ---
+        sock.ev.on('messaging-history.set', ({ contacts }) => {
+            if (!contacts) return;
+            console.log(`[Backup Sync] Processando histórico inicial: ${contacts.length} contatos.`);
+            
+            let hasNew = false;
+            for (const contact of contacts) {
+                if (contact.id.includes('@g.us') || contact.id === 'status@broadcast') continue;
+                
+                // Atualiza Store principal
+                store.upsert(contact.id, contact);
+
+                const exists = syncedContacts.find(c => c.userId === contact.id);
+                // Prioridade: Agenda ('name') > Apelido ('notify') > ID
+                const name = contact.name || contact.notify || contact.verifiedName || contact.id.split('@')[0];
+                
+                if (!exists) {
+                    syncedContacts.push({ userId: contact.id, userName: name });
+                    hasNew = true;
+                } else {
+                    // Atualiza nome se vier da agenda (prioridade máxima)
+                    if (contact.name && exists.userName !== contact.name) {
+                        exists.userName = contact.name;
+                        hasNew = true;
+                    } 
+                    // Se não tinha nome antes, atualiza com o que veio
+                    else if (!exists.userName && name) {
+                        exists.userName = name;
+                        hasNew = true;
+                    }
+                }
+            }
+            if (hasNew) {
+                saveData('syncedContacts.json', syncedContacts);
+                console.log(`[Backup Sync] Lista de contatos sincronizada via histórico.`);
+            }
+        });
 
         // Listener de BACKUP (Lógica da versão 21.3.0 restaurada e melhorada)
         sock.ev.on('contacts.upsert', (contacts) => {
@@ -538,7 +581,7 @@ async function startWhatsApp() {
                     syncedContacts.push({ userId: c.id, userName: name });
                     hasNew = true;
                 } else if (name && exists.userName !== name) {
-                    // ATUALIZAÇÃO DE NOME (Restaurada para garantir sincronia)
+                    // ATUALIZAÇÃO DE NOME
                     exists.userName = name;
                     hasNew = true;
                 }
