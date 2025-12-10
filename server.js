@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "28.0.0_STABILITY_FIX";
+const SERVER_VERSION = "29.0.0_RETRY_CACHE_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -255,8 +255,14 @@ let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.
 const MAX_SESSIONS = 1000; 
 const MAX_ARCHIVED_CHATS = 500;
 
-// Cache para retentativa de mensagens (Correção "Waiting for message")
-const msgRetryCounterCache = new Map();
+// --- CORREÇÃO DE "AGUARDANDO MENSAGEM" ---
+// Carrega o cache de retentativa do disco, se existir
+const msgRetryCounterCache = loadData('msgRetryCounterMap.json', new Map());
+
+// Salva periodicamente o cache de retentativa
+setInterval(() => {
+    saveData('msgRetryCounterMap.json', msgRetryCounterCache);
+}, 60000);
 
 const outboundGatewayQueue = []; 
 
@@ -520,14 +526,14 @@ async function startWhatsApp() {
             auth: state,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: true,
-            browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
+            browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Usar string fixa ajuda a manter a sessão
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 15000,
             emitOwnEvents: false,
             retryRequestDelayMs: 2000,
             defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            msgRetryCounterCache, // CORREÇÃO "Aguardando mensagem"
+            msgRetryCounterCache, // CRÍTICO: Corrige "Aguardando mensagem" usando cache persistente
             getMessage: async () => ({ conversation: 'hello' })
         });
 
@@ -600,6 +606,10 @@ async function startWhatsApp() {
             if (connection === 'close') {
                 const error = lastDisconnect?.error;
                 const statusCode = error?.output?.statusCode;
+                
+                // CRÍTICO: Só desconecta se for LOGOUT real (401).
+                // Qualquer outro erro (500, stream, timeout) deve apenas tentar reconectar
+                // SEM APAGAR AS CREDENCIAIS.
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 gatewayStatus.status = 'DISCONNECTED';
 
@@ -609,7 +619,7 @@ async function startWhatsApp() {
                     console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Reconectando em ${delayMs/1000}s...`);
                     setTimeout(startWhatsApp, delayMs);
                 } else {
-                    console.log(`[WhatsApp] Logout explícito ou sessão inválida. Limpando e reiniciando.`);
+                    console.log(`[WhatsApp] Logout explícito detectado (Código 401). Limpando sessão.`);
                     try {
                         fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
                     } catch(e) {}
@@ -685,7 +695,7 @@ async function startWhatsApp() {
 
     } catch (error) {
         console.error('[FATAL] Erro ao iniciar WhatsApp (Sessão Corrompida?):', error);
-        try { fs.rmSync(SESSION_FOLDER, { recursive: true, force: true }); } catch(e) {}
+        // Não deleta sessão agressivamente aqui, apenas tenta reiniciar
         setTimeout(startWhatsApp, 5000);
     }
 }
