@@ -632,7 +632,33 @@ function App() {
 
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
   
-  useEffect(() => { if (attendant && !isBackendOffline) { fetchData(); const i = setInterval(fetchData, 1000); return () => clearInterval(i); } }, [attendant, isBackendOffline, fetchData]);
+  // --- POLLING OTIMIZADO (SEM setInterval) ---
+  // Substituímos setInterval por um loop recursivo com setTimeout.
+  // Isso evita que o navegador empilhe requisições quando a aba está em segundo plano,
+  // corrigindo o erro de "travamento" ao voltar para o sistema.
+  useEffect(() => {
+    let isMounted = true;
+    let timeoutId = null;
+
+    const loop = async () => {
+        if (!isMounted) return;
+        if (attendant && !isBackendOffline) {
+            await fetchData();
+        }
+        if (isMounted) {
+            timeoutId = setTimeout(loop, 1000);
+        }
+    };
+
+    if (attendant && !isBackendOffline) {
+        loop();
+    }
+
+    return () => {
+        isMounted = false;
+        if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [attendant, isBackendOffline, fetchData]);
   
   // Fetch Tags
   const fetchTags = useCallback(async () => {
@@ -665,7 +691,7 @@ function App() {
       const tempMsg = { sender: Sender.ATTENDANT, text, files, timestamp: new Date().toISOString(), replyTo: replyTo ? { text: replyTo.text, senderName: replyTo.sender === 'user' ? selectedChat.userName : 'Você' } : null, status: 1 };
       setSelectedChat(p => p?.userId === userId ? { ...p, messageLog: [...p.messageLog, tempMsg] } : p);
       await fetch('/api/chats/attendant-reply', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, text, attendantId, files, replyTo }) });
-      setTimeout(fetchData, 500);
+      // Removemos o setTimeout(fetchData, 500) pois o loop principal já cuida da atualização
   };
 
   const handleEditMessage = async (userId, messageTimestamp, newText) => {
@@ -675,7 +701,7 @@ function App() {
           return { ...p, messageLog: newLog };
       });
       await fetch('/api/chats/edit-message', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ userId, attendantId: attendant.id, messageTimestamp, newText }) });
-      setTimeout(fetchData, 500);
+      // Removemos o setTimeout(fetchData, 500) pois o loop principal já cuida da atualização
   };
   
   const handleLogin = (id) => { 
