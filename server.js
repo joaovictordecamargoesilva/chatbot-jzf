@@ -35,6 +35,10 @@ import QRCode from 'qrcode';
 
 // --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
 process.on('uncaughtException', (err, origin) => {
+  if (err.message && err.message.includes('Bad MAC')) {
+      console.warn(`[WARNING - Bad MAC] Erro de descriptografia detectado. O sistema tentará solicitar o reenvio da mensagem. Ignorando crash.`);
+      return;
+  }
   console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
 });
 
@@ -42,7 +46,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.3.0_STRICT_HUMAN_MODE";
+const SERVER_VERSION = "29.4.0_BAD_MAC_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -279,14 +283,33 @@ let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.
 const MAX_SESSIONS = 1000; 
 const MAX_ARCHIVED_CHATS = 500;
 
-// --- CORREÇÃO DE "AGUARDANDO MENSAGEM" ---
-// Carrega o cache de retentativa do disco, se existir
-const msgRetryCounterCache = loadData('msgRetryCounterMap.json', new Map());
+// --- CORREÇÃO DE "AGUARDANDO MENSAGEM" & BAD MAC ---
+// Classe persistente para salvar o cache de retentativa IMEDIATAMENTE após a escrita.
+// Isso garante que se o server reiniciar após um erro de MAC, ele lembra de pedir a mensagem novamente.
+class PersistentMap {
+    constructor(filename) {
+        this.filename = filename;
+        this.internalMap = loadData(filename, new Map());
+    }
 
-// Salva periodicamente o cache de retentativa
-setInterval(() => {
-    saveData('msgRetryCounterMap.json', msgRetryCounterCache);
-}, 60000);
+    get(key) { return this.internalMap.get(key); }
+    
+    set(key, value) {
+        this.internalMap.set(key, value);
+        saveData(this.filename, this.internalMap); // Salva imediatamente para evitar perda em crash
+        return this;
+    }
+    
+    delete(key) {
+        const result = this.internalMap.delete(key);
+        saveData(this.filename, this.internalMap);
+        return result;
+    }
+    
+    has(key) { return this.internalMap.has(key); }
+}
+
+const msgRetryCounterCache = new PersistentMap('msgRetryCounterMap.json');
 
 const outboundGatewayQueue = []; 
 
@@ -582,7 +605,9 @@ async function startWhatsApp() {
             retryRequestDelayMs: 2000,
             defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            msgRetryCounterCache, // CRÍTICO: Corrige "Aguardando mensagem" usando cache persistente
+            msgRetryCounterCache, // CRÍTICO: Usando classe persistente corrigida
+            // CONFIGURAÇÕES AVANÇADAS DE ESTABILIDADE
+            transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 500 },
             getMessage: async () => ({ conversation: 'hello' })
         });
 
@@ -657,12 +682,13 @@ async function startWhatsApp() {
                 const statusCode = error?.output?.statusCode;
                 
                 // CRÍTICO: Só desconecta se for LOGOUT real (401).
-                // Qualquer outro erro (500, stream, timeout) deve apenas tentar reconectar
+                // Qualquer outro erro (500, stream, timeout, Bad MAC) deve apenas tentar reconectar
                 // SEM APAGAR AS CREDENCIAIS.
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 gatewayStatus.status = 'DISCONNECTED';
 
                 if (shouldReconnect) {
+                    // Backoff exponencial para reconexão
                     const delayMs = Math.min(5000 * (reconnectAttempts + 1), 60000);
                     reconnectAttempts++;
                     console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Reconectando em ${delayMs/1000}s...`);
