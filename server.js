@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.1.0_MANUAL_INTERVENTION_FIX";
+const SERVER_VERSION = "29.2.0_FILE_EXT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -138,7 +138,31 @@ const loadData = (filename, defaultValue) => {
 // --- DISK STORAGE UTILS ---
 const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     try {
-        const ext = mimeType.split('/')[1] || 'bin';
+        let ext = null;
+        
+        // Tenta pegar a extensão do nome original primeiro
+        if (originalName && originalName.includes('.')) {
+            ext = path.extname(originalName).substring(1);
+        }
+
+        // Se não conseguiu, tenta pelo mimeType
+        if (!ext) {
+            const extMap = {
+                'application/pdf': 'pdf',
+                'image/jpeg': 'jpg',
+                'image/png': 'png',
+                'image/webp': 'webp',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                'application/vnd.ms-excel': 'xls',
+                'text/csv': 'csv',
+                'application/xml': 'xml',
+                'text/xml': 'xml',
+                'application/msword': 'doc',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx'
+            };
+            ext = extMap[mimeType] || mimeType.split('/')[1] || 'bin';
+        }
+
         const fileName = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
         const filePath = path.join(MEDIA_DIR, fileName);
         
@@ -493,6 +517,7 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     
     // Tratamento de Arquivo: Salvar no Disco e usar URL
     if (file) {
+        // Tenta detectar a extensão correta com base no nome original enviado pelo WhatsApp
         const url = saveMediaToDisk(file.data, file.type, file.name);
         if (url) {
             logEntry.files = [{
@@ -666,9 +691,29 @@ async function startWhatsApp() {
                     if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
                         try {
                             const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                            
+                            // Lógica avançada para detectar nome e extensão correta do arquivo
+                            const msgContent = msg.message[messageType];
+                            const mime = msgContent.mimetype || 'application/octet-stream';
+                            let fileName = msgContent.fileName || msgContent.title;
+                            
+                            // Se não houver nome de arquivo, tenta adivinhar a extensão pelo MimeType
+                            if (!fileName) {
+                                const extMap = {
+                                    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+                                    'video/mp4': 'mp4', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg',
+                                    'application/pdf': 'pdf',
+                                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                                    'application/vnd.ms-excel': 'xls',
+                                    'text/csv': 'csv', 'text/plain': 'txt', 'application/xml': 'xml', 'text/xml': 'xml'
+                                };
+                                const ext = extMap[mime] || mime.split('/')[1] || 'bin';
+                                fileName = `${messageType}_${Date.now()}.${ext}`;
+                            }
+
                             file = {
-                                name: `${messageType}.${messageType.startsWith('audio') ? 'ogg' : 'jpg'}`,
-                                type: messageType.startsWith('audio') ? 'audio/ogg' : (messageType.startsWith('image') ? 'image/jpeg' : 'application/octet-stream'),
+                                name: fileName,
+                                type: mime,
                                 data: buffer.toString('base64')
                             };
                             text = msg.message[messageType].caption || '';
