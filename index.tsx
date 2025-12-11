@@ -48,7 +48,7 @@ const MessageStatusIcon = ({ status }) => {
 };
 
 // --- NOVO COMPONENTE: Emoji Picker ---
-const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","😷","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
+const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
 
 const EmojiPicker = ({ onSelect, onClose }) => {
     return (
@@ -484,6 +484,8 @@ function App() {
   
   // Ref para rastrear o chat selecionado dentro do intervalo
   const selectedChatRef = useRef(null);
+  // Ref para rastrear a visualização ativa dentro do intervalo
+  const activeViewRef = useRef('queue');
   
   // Modals
   const [isInitiateModalOpen, setInitiateModalOpen] = useState(false);
@@ -495,6 +497,9 @@ function App() {
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState(null);
   const initiateFileInputRef = useRef(null);
+  
+  // Sidebar Search
+  const [sidebarSearchTerm, setSidebarSearchTerm] = useState('');
   
   // Broadcast State
   const [broadcastMessage, setBroadcastMessage] = useState('');
@@ -517,6 +522,12 @@ function App() {
         Notification.requestPermission();
     }
   }, []);
+  
+  // Atualiza activeViewRef sempre que activeView muda
+  useEffect(() => {
+      activeViewRef.current = activeView;
+      setSidebarSearchTerm(''); // Limpa a busca ao trocar de aba
+  }, [activeView]);
 
   const playNotificationSound = () => {
     try {
@@ -585,7 +596,10 @@ function App() {
       
       const currentChat = selectedChatRef.current;
       
-      if (currentChat) {
+      // FIX: Só tenta atualizar a conversa em tempo real se NÃO estivermos vendo histórico
+      // Isso impede que a visualização de histórico seja subitamente substituída por uma versão "ativa" ou vazia
+      // causando o bug de "voltar para conversa ativa"
+      if (currentChat && activeViewRef.current !== 'history') {
           const updatedChatSummary = [...newActiveChats, ...newAiChats].find(c => c.userId === currentChat.userId);
           
           if (updatedChatSummary) {
@@ -882,16 +896,46 @@ function App() {
                 <button onClick={handleLogout} className="text-xs text-red-500 hover:underline ml-auto">Sair</button>
             </div>
         </div>
+        
+        {/* Sidebar Search Bar */}
+        {activeView !== 'internal_chat' && (
+            <div className="p-2 bg-gray-100 border-b">
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        placeholder="Buscar nas conversas..." 
+                        value={sidebarSearchTerm}
+                        onChange={(e) => setSidebarSearchTerm(e.target.value)}
+                        className="w-full p-2 pl-8 text-sm border rounded bg-white outline-none focus:ring-2 focus:ring-blue-300"
+                    />
+                    <svg className="h-4 w-4 text-gray-400 absolute top-2.5 left-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+            </div>
+        )}
+
         <nav className="flex p-1 bg-gray-100 text-xs">
             {['queue', 'active', 'ai_active', 'history', 'internal_chat'].map(v => <button key={v} onClick={() => setActiveView(v)} className={`flex-1 p-2 rounded ${activeView === v ? 'bg-white shadow font-bold' : 'text-gray-600'}`}>{viewLabels[v]} {notifications[v]?.size || notifications[v] || ''}</button>)}
         </nav>
         
         {/* LISTA DE CHATS */}
         <div className="flex-1 overflow-y-auto">
-            {activeView === 'queue' && requestQueue.map(r => <div key={r.id} onClick={()=>handleQueueClick(r)} className="p-3 border-b cursor-pointer hover:bg-gray-50"><p className="font-bold">{r.userName}</p><p className="text-xs text-gray-500">{r.department} (Clique para assumir)</p></div>)}
-            {activeView === 'active' && activeChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p></div>)}
-            {activeView === 'ai_active' && aiActiveChats.map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
-             {activeView === 'history' && chatHistory.map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className="p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70"><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
+            {activeView === 'queue' && requestQueue
+                .filter(r => r.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
+                .map(r => <div key={r.id} onClick={()=>handleQueueClick(r)} className="p-3 border-b cursor-pointer hover:bg-gray-50"><p className="font-bold">{r.userName}</p><p className="text-xs text-gray-500">{r.department} (Clique para assumir)</p></div>)}
+            
+            {activeView === 'active' && activeChats
+                .filter(c => c.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
+                .map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p></div>)}
+            
+            {activeView === 'ai_active' && aiActiveChats
+                .filter(c => c.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
+                .map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
+             
+            {activeView === 'history' && chatHistory
+                 .filter(c => c.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
+                 .map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
              
              {/* AREA DE AJUSTES/BACKUP DENTRO DA VISUALIZAÇÃO INTERNA OU NO RODAPÉ */}
              {activeView === 'internal_chat' && (
