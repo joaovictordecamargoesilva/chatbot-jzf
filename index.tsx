@@ -903,7 +903,7 @@ function App() {
                 <div className="relative">
                     <input 
                         type="text" 
-                        placeholder="Buscar nas conversas..." 
+                        placeholder={`Buscar em ${viewLabels[activeView]}...`}
                         value={sidebarSearchTerm}
                         onChange={(e) => setSidebarSearchTerm(e.target.value)}
                         className="w-full p-2 pl-8 text-sm border rounded bg-white outline-none focus:ring-2 focus:ring-blue-300"
@@ -933,9 +933,10 @@ function App() {
                 .filter(c => c.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
                 .map(c => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs text-gray-500">Via IA</p></div>)}
              
+            {/* CORREÇÃO AQUI: Mudança da KEY de 'i' para 'c.userId' para evitar pulos de rolagem no histórico */}
             {activeView === 'history' && chatHistory
                  .filter(c => c.userName.toLowerCase().includes(sidebarSearchTerm.toLowerCase()))
-                 .map((c, i) => <div key={i} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
+                 .map((c) => <div key={c.userId} onClick={()=>handleSelectChatItem(c)} className={`p-3 border-b cursor-pointer hover:bg-gray-50 opacity-70 ${selectedChat?.userId===c.userId?'bg-blue-50':''}`}><p className="font-bold">{c.userName}</p><p className="text-xs">Resolvido: {new Date(c.resolvedAt).toLocaleDateString('pt-BR')}</p></div>)}
              
              {/* AREA DE AJUSTES/BACKUP DENTRO DA VISUALIZAÇÃO INTERNA OU NO RODAPÉ */}
              {activeView === 'internal_chat' && (
