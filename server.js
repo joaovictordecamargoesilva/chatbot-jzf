@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.2.0_FILE_EXT_FIX";
+const SERVER_VERSION = "29.3.0_STRICT_HUMAN_MODE";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -416,6 +416,10 @@ function formatFlowStepForWhatsapp(step, context) {
 
 async function processMessage(session, userInput, file) {
     const { userId } = session;
+    
+    // REDUNDÂNCIA: Se por acaso chegar aqui e for humano, aborta
+    if (session.handledBy === 'human' || session.handledBy === 'bot_queued') return;
+    
     if (!conversationFlow.has(session.currentState)) session.currentState = ChatState.GREETING;
     
     let currentStep = conversationFlow.get(session.currentState);
@@ -498,18 +502,23 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     
     const session = getSession(cleanUserId, userName);
 
-    // --- PROTEÇÃO DE CONTEXTO "NOVO CHAT" ---
-    // Se a última mensagem no log foi enviada por um atendente, assumimos que é uma conversa humana ativa,
-    // mesmo que o estado interno do bot tenha se perdido ou resetado.
-    const lastLog = session.messageLog[session.messageLog.length - 1];
-    if (lastLog && lastLog.sender === 'attendant' && session.handledBy === 'bot') {
+    // --- GUARDIÃO ABSOLUTO: Se está em activeChats, É HUMANO. ---
+    // Esta verificação deve ocorrer ANTES de qualquer lógica de log ou bot.
+    // Isso garante que se um atendente assumiu (colocou em activeChats), o bot morre imediatamente para este chat.
+    if (activeChats.has(cleanUserId)) {
         session.handledBy = 'human';
-        // Move para ActiveChats se necessário
+    }
+
+    // --- PROTEÇÃO DE CONTEXTO ---
+    // Se a última mensagem no log foi enviada por um atendente, assumimos que é uma conversa humana ativa.
+    const lastLog = session.messageLog[session.messageLog.length - 1];
+    if (lastLog && lastLog.sender === 'attendant') {
+        session.handledBy = 'human';
+        // Move para ActiveChats automaticamente se houve intervenção humana recente e não está lá
         if (!activeChats.has(cleanUserId)) {
             activeChats.set(cleanUserId, session);
             userSessions.delete(cleanUserId);
         }
-        saveData('activeChats.json', activeChats);
     }
 
     let effectiveInput = userInput;
