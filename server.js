@@ -978,7 +978,31 @@ app.get('/api/requests', (req, res) => res.json(requestQueue));
 app.get('/api/chats/active', (req, res) => {
     const activeSummary = Array.from(activeChats.values()).map(c => {
         const lastMsg = c.messageLog[c.messageLog.length - 1];
-        return { userId: c.userId, userName: c.userName, attendantId: c.attendantId, logLength: c.messageLog.length, lastMsgStatus: lastMsg ? lastMsg.status : 0, lastMessage: lastMsg };
+        
+        // --- OTIMIZAÇÃO DE MEMÓRIA (Out of Memory Fix) ---
+        // Cria uma cópia leve da última mensagem para a lista.
+        // Se contiver arquivos (imagens/vídeos), removemos os dados binários (base64) 
+        // e enviamos apenas a URL. Isso reduz o payload em 99%.
+        let safeLastMsg = null;
+        if (lastMsg) {
+            safeLastMsg = { ...lastMsg };
+            if (safeLastMsg.files) {
+                safeLastMsg.files = safeLastMsg.files.map(f => ({
+                    name: f.name,
+                    type: f.type,
+                    url: f.url // Envia apenas URL, nunca o 'data'
+                }));
+            }
+        }
+
+        return { 
+            userId: c.userId, 
+            userName: c.userName, 
+            attendantId: c.attendantId, 
+            logLength: c.messageLog.length, 
+            lastMsgStatus: lastMsg ? lastMsg.status : 0, 
+            lastMessage: safeLastMsg 
+        };
     });
     res.json(activeSummary);
 });
