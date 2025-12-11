@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.0.0_RETRY_CACHE_FIX";
+const SERVER_VERSION = "29.1.0_MANUAL_INTERVENTION_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -473,6 +473,21 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     store.upsert(cleanUserId, { id: cleanUserId, notify: userName });
     
     const session = getSession(cleanUserId, userName);
+
+    // --- PROTEÇÃO DE CONTEXTO "NOVO CHAT" ---
+    // Se a última mensagem no log foi enviada por um atendente, assumimos que é uma conversa humana ativa,
+    // mesmo que o estado interno do bot tenha se perdido ou resetado.
+    const lastLog = session.messageLog[session.messageLog.length - 1];
+    if (lastLog && lastLog.sender === 'attendant' && session.handledBy === 'bot') {
+        session.handledBy = 'human';
+        // Move para ActiveChats se necessário
+        if (!activeChats.has(cleanUserId)) {
+            activeChats.set(cleanUserId, session);
+            userSessions.delete(cleanUserId);
+        }
+        saveData('activeChats.json', activeChats);
+    }
+
     let effectiveInput = userInput;
     const logEntry = { sender: 'user', text: userInput, timestamp: new Date().toISOString() };
     
@@ -639,6 +654,7 @@ async function startWhatsApp() {
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
+                // MENSAGENS RECEBIDAS (DO CLIENTE)
                 if (!msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const userName = msg.pushName || rawUserId.split('@')[0];
@@ -670,6 +686,49 @@ async function startWhatsApp() {
                     }
 
                     await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext });
+                }
+                // MENSAGENS ENVIADAS PELO PRÓPRIO DISPOSITIVO (WEB OU CELULAR)
+                // Isso detecta quando o atendente responde pelo celular e trava o bot
+                else if (msg.key.fromMe && msg.message) {
+                    const rawUserId = msg.key.remoteJid;
+                    const cleanUserId = rawUserId.replace(/:.*$/, '');
+                    
+                    // Extração de texto/mídia (similar ao bloco acima)
+                    const messageType = Object.keys(msg.message)[0];
+                    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+                    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                         text = msg.message[messageType].caption || '[Arquivo Enviado]';
+                    }
+
+                    if (rawUserId === 'status@broadcast') continue;
+
+                    const session = activeChats.get(cleanUserId) || userSessions.get(cleanUserId);
+                    if (session) {
+                         // Verifica se é um "eco" do próprio bot ou do painel (API)
+                         // Se a última mensagem no log for idêntica, assumimos que foi o sistema que enviou
+                         const lastLog = session.messageLog[session.messageLog.length - 1];
+                         const isEcho = lastLog && (lastLog.text === text);
+
+                         if (!isEcho) {
+                             // É uma mensagem nova enviada pelo celular!
+                             // Interrompe o bot e registra
+                             session.handledBy = 'human';
+                             session.messageLog.push({
+                                 sender: 'attendant',
+                                 text: text,
+                                 files: [], // Difícil recuperar arquivo enviado pelo cel sem download, simplificando
+                                 timestamp: new Date().toISOString(),
+                                 status: 2
+                             });
+                             
+                             // Move para ActiveChats para o atendente ver no painel
+                             if (!activeChats.has(cleanUserId)) {
+                                 activeChats.set(cleanUserId, session);
+                                 userSessions.delete(cleanUserId);
+                             }
+                             saveData('activeChats.json', activeChats);
+                         }
+                    }
                 }
             }
         });
@@ -1009,6 +1068,10 @@ app.post('/api/broadcast', (req, res) => {
                 isNewSession = true;
             }
         }
+        
+        // --- FIX: Forçar modo humano em transmissão ---
+        // Se estamos enviando um broadcast, não queremos que o bot responda "Olá" se o cliente responder.
+        session.handledBy = 'human'; 
 
         const msg = { 
             sender: 'attendant', 
