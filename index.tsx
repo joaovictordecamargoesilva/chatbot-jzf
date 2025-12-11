@@ -48,7 +48,7 @@ const MessageStatusIcon = ({ status }) => {
 };
 
 // --- NOVO COMPONENTE: Emoji Picker ---
-const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
+const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
 
 const EmojiPicker = ({ onSelect, onClose }) => {
     return (
@@ -527,6 +527,7 @@ function App() {
   useEffect(() => {
       activeViewRef.current = activeView;
       setSidebarSearchTerm(''); // Limpa a busca ao trocar de aba
+      setSelectedChat(null); // Clean selection on view change to free memory
   }, [activeView]);
 
   const playNotificationSound = () => {
@@ -646,31 +647,51 @@ function App() {
 
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
   
-  // --- POLLING OTIMIZADO (SEM setInterval) ---
+  // --- POLLING OTIMIZADO (SEM setInterval e COM VISIBILITY API) ---
   // Substituímos setInterval por um loop recursivo com setTimeout.
-  // Isso evita que o navegador empilhe requisições quando a aba está em segundo plano,
-  // corrigindo o erro de "travamento" ao voltar para o sistema.
+  // Se a aba estiver oculta (hidden), o delay aumenta para 15 segundos para evitar Out of Memory.
   useEffect(() => {
     let isMounted = true;
     let timeoutId = null;
 
     const loop = async () => {
         if (!isMounted) return;
+        
+        // Verifica se a página está visível
+        const isHidden = document.hidden;
+        const delayTime = isHidden ? 15000 : 1500; // 15s se oculto, 1.5s se visível
+
         if (attendant && !isBackendOffline) {
-            await fetchData();
+            try {
+                await fetchData();
+            } catch(e) {
+                console.warn("Fetch error, retrying...");
+            }
         }
+        
         if (isMounted) {
-            timeoutId = setTimeout(loop, 1000);
+            timeoutId = setTimeout(loop, delayTime);
         }
     };
 
     if (attendant && !isBackendOffline) {
         loop();
     }
+    
+    // Adiciona listener para retomar imediatamente quando o usuário voltar
+    const handleVisibilityChange = () => {
+        if (!document.hidden && isMounted) {
+             if (timeoutId) clearTimeout(timeoutId);
+             loop(); // Reinicia o loop imediatamente
+        }
+    };
+    
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
         isMounted = false;
         if (timeoutId) clearTimeout(timeoutId);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [attendant, isBackendOffline, fetchData]);
   
