@@ -48,7 +48,7 @@ const MessageStatusIcon = ({ status }) => {
 };
 
 // --- NOVO COMPONENTE: Emoji Picker ---
-const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
+const COMMON_EMOJIS = ["😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","👽","🤖","🎃","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐️","✋","🖖","👌","🤏","✌️","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👄","💋","👅"];
 
 const EmojiPicker = ({ onSelect, onClose }) => {
     return (
@@ -320,6 +320,13 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
       }
   }, [selectedChat?.messageLog, selectedChat?.userId, activeTab]);
 
+  // NOVO: Marcar como lido ao abrir o chat
+  useEffect(() => {
+      if (selectedChat?.userId) {
+          fetch(`/api/chats/read/${selectedChat.userId}`, { method: 'POST' }).catch(()=>{});
+      }
+  }, [selectedChat?.userId]);
+
   useEffect(() => { setMessage(''); setReplyingToMessage(null); setEditingMessage(null); setActiveTab('chat'); setSearchVisible(false); setSearchTerm(''); }, [selectedChat?.userId]);
 
   useEffect(() => {
@@ -330,7 +337,25 @@ const ChatPanel = ({ selectedChat, attendant, onSendMessage, onEditMessage, onRe
 
   useEffect(() => { if (currentResultIndex > -1) document.getElementById(`message-${searchResults[currentResultIndex]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [currentResultIndex]);
 
-  const handleSend = () => { if ((message.trim() || selectedFiles.length) && selectedChat) { onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFiles, replyingToMessage); setMessage(''); setSelectedFiles([]); setReplyingToMessage(null); } };
+  const handleSend = () => { 
+      if ((message.trim() || selectedFiles.length) && selectedChat) { 
+          // Prepara objeto replyTo com ID real da mensagem para o backend
+          let replyPayload = null;
+          if (replyingToMessage) {
+              replyPayload = {
+                  id: replyingToMessage.msgId, // ESSENCIAL PARA O QUOTE FUNCIONAR
+                  text: replyingToMessage.text,
+                  sender: replyingToMessage.sender,
+                  fromMe: replyingToMessage.sender !== 'user' // Se quem enviou não foi 'user', então fui eu (fromMe=true)
+              };
+          }
+          
+          onSendMessage(selectedChat.userId, message.trim(), attendant.id, selectedFiles, replyPayload); 
+          setMessage(''); 
+          setSelectedFiles([]); 
+          setReplyingToMessage(null); 
+      } 
+  };
 
   const handleEmojiSelect = (emoji) => {
       setMessage(prev => prev + emoji);
