@@ -46,7 +46,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.4.0_BAD_MAC_FIX";
+const SERVER_VERSION = "29.5.0_REPLY_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -514,7 +514,7 @@ function queueOutbound(userId, content) {
     outboundGatewayQueue.push({ userId, ...content });
 }
 
-async function processIncomingMessage({ userId, userName, userInput, file, replyContext }) {
+async function processIncomingMessage({ userId, userName, userInput, file, replyContext, msgId }) {
     if (!userId) return;
     
     // FIX: Normalizar JID para evitar duplicação por sufixo de dispositivo (ex: :12)
@@ -545,7 +545,12 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     }
 
     let effectiveInput = userInput;
-    const logEntry = { sender: 'user', text: userInput, timestamp: new Date().toISOString() };
+    const logEntry = { 
+        sender: 'user', 
+        text: userInput, 
+        timestamp: new Date().toISOString(),
+        msgId: msgId // SALVA O ID DO WHATSAPP PARA RESPOSTA (QUOTE)
+    };
     
     // Tratamento de Arquivo: Salvar no Disco e usar URL
     if (file) {
@@ -718,6 +723,7 @@ async function startWhatsApp() {
                 if (!msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const userName = msg.pushName || rawUserId.split('@')[0];
+                    const msgId = msg.key.id; // CAPTURA ID
                     
                     let file = null;
                     const messageType = Object.keys(msg.message)[0];
@@ -765,7 +771,7 @@ async function startWhatsApp() {
                         };
                     }
 
-                    await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext });
+                    await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext, msgId });
                 }
                 // MENSAGENS ENVIADAS PELO PRÓPRIO DISPOSITIVO (WEB OU CELULAR)
                 // Isso detecta quando o atendente responde pelo celular e trava o bot
@@ -798,7 +804,8 @@ async function startWhatsApp() {
                                  text: text,
                                  files: [], // Difícil recuperar arquivo enviado pelo cel sem download, simplificando
                                  timestamp: new Date().toISOString(),
-                                 status: 2
+                                 status: 2,
+                                 msgId: msg.key.id // Salva ID também para mensagens enviadas por fora
                              });
                              
                              // Move para ActiveChats para o atendente ver no painel
@@ -845,6 +852,20 @@ setInterval(async () => {
         try {
             const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
             
+            // Lógica de Resposta (Reply/Quote)
+            let options = {};
+            if (item.replyTo && item.replyTo.id) {
+                // Constrói objeto de resposta para o Baileys
+                options.quoted = {
+                    key: {
+                        remoteJid: jid,
+                        fromMe: item.replyTo.fromMe || false,
+                        id: item.replyTo.id
+                    },
+                    message: { conversation: item.replyTo.text || '...' } // Mock minimalista
+                };
+            }
+
             if (item.files && item.files.length > 0) {
                  for (const file of item.files) {
                     let buffer;
@@ -861,10 +882,10 @@ setInterval(async () => {
                         caption: item.text,
                         mimetype: file.type,
                         fileName: file.name
-                    });
+                    }, options);
                  }
             } else {
-                 await sock.sendMessage(jid, { text: item.text });
+                 await sock.sendMessage(jid, { text: item.text }, options);
             }
 
             if(activeChats.has(item.userId)) {
@@ -1066,6 +1087,7 @@ app.post('/api/chats/takeover/:userId', (req, res) => {
     res.json(session);
 });
 
+// Endpoint para enviar resposta (com suporte a REPLY)
 app.post('/api/chats/attendant-reply', (req, res) => {
     const { userId, text, attendantId, files, replyTo } = req.body;
     const chat = activeChats.get(userId);
@@ -1081,9 +1103,12 @@ app.post('/api/chats/attendant-reply', (req, res) => {
             }).filter(f => f.url);
         }
         if(replyTo) msg.replyTo = replyTo;
+        
         chat.messageLog.push(msg);
         saveData('activeChats.json', activeChats);
-        queueOutbound(userId, { text, files: msg.files });
+        
+        // Passa o objeto replyTo completo para a fila, para que o loop possa construir o `quoted`
+        queueOutbound(userId, { text, files: msg.files, replyTo });
         res.json({ success: true });
     } else {
         res.status(404).json({ error: 'Chat não encontrado' });
@@ -1221,6 +1246,37 @@ app.get('/api/system/backup', async (req, res) => {
     archive.directory(MEDIA_DIR, 'media');
     
     await archive.finalize();
+});
+
+// NOVA ROTA: MARCAR COMO LIDO
+app.post('/api/chats/read/:userId', async (req, res) => {
+    const { userId } = req.params;
+    if (!sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+
+    try {
+        const jid = userId.includes('@') ? userId : userId + '@s.whatsapp.net';
+        const chat = activeChats.get(userId) || userSessions.get(userId);
+        
+        if (chat) {
+            // Busca a última mensagem recebida (que não fui eu que enviei)
+            const lastIncoming = [...chat.messageLog].reverse().find(m => m.sender === 'user' && m.msgId);
+            
+            if (lastIncoming && lastIncoming.msgId) {
+                const key = {
+                    remoteJid: jid,
+                    id: lastIncoming.msgId,
+                    fromMe: false
+                };
+                await sock.readMessages([key]);
+                res.json({ success: true });
+                return;
+            }
+        }
+        res.json({ success: false, reason: 'Nenhuma mensagem para marcar' });
+    } catch (e) {
+        console.error('Erro ao marcar lido:', e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.post('/api/chats/resolve/:userId', (req, res) => {
