@@ -622,9 +622,8 @@ function App() {
       
       const currentChat = selectedChatRef.current;
       
-      // FIX: Só tenta atualizar a conversa em tempo real se NÃO estivermos vendo histórico
-      // Isso impede que a visualização de histórico seja subitamente substituída por uma versão "ativa" ou vazia
-      // causando o bug de "voltar para conversa ativa"
+      // FIX: RACE CONDITION SOLVED
+      // Só tenta atualizar a conversa em tempo real se NÃO estivermos vendo histórico
       if (currentChat && activeViewRef.current !== 'history') {
           const updatedChatSummary = [...newActiveChats, ...newAiChats].find(c => c.userId === currentChat.userId);
           
@@ -638,7 +637,11 @@ function App() {
                   const res = await fetch(`/api/chats/history/${currentChat.userId}`);
                   if (res.ok) {
                       const newData = await res.json();
-                      setSelectedChat(prev => ({ ...prev, ...newData }));
+                      // CRITICAL GUARD: Only update if user is STILL looking at the same chat
+                      // This prevents the "snap back" effect if the user switched chats while fetch was pending.
+                      if (selectedChatRef.current?.userId === currentChat.userId) {
+                          setSelectedChat(prev => ({ ...prev, ...newData }));
+                      }
                   }
               }
           }
@@ -673,8 +676,6 @@ function App() {
   useEffect(() => { if (attendant) { pollStatus(); const i = setInterval(pollStatus, 3000); return () => clearInterval(i); } }, [attendant, pollStatus]);
   
   // --- POLLING OTIMIZADO (SEM setInterval e COM VISIBILITY API) ---
-  // Substituímos setInterval por um loop recursivo com setTimeout.
-  // Se a aba estiver oculta (hidden), o delay aumenta para 15 segundos para evitar Out of Memory.
   useEffect(() => {
     let isMounted = true;
     let timeoutId = null;
