@@ -46,7 +46,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.5.0_REPLY_FIX";
+const SERVER_VERSION = "29.6.0_CONTACT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -180,7 +180,7 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     }
 };
 
-// --- CUSTOM STORE IMPLEMENTATION ---
+// --- CUSTOM STORE IMPLEMENTATION (Contacts Fix) ---
 const makeCustomStore = () => {
     let contacts = {};
     const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
@@ -201,21 +201,30 @@ const makeCustomStore = () => {
         } catch(e) { console.error('[Store] Erro ao salvar:', e); }
     };
 
-    // Lógica inteligente para mesclar dados
+    // Lógica BLINDADA para mesclar dados e preservar nomes
     const upsert = (id, data) => {
         if (!id || id.includes('@g.us') || id === 'status@broadcast') return;
         
         const existing = contacts[id] || {};
         
-        // LÓGICA DE PRIORIDADE DE NOME
-        const finalName = data.name || existing.name;
-        const finalNotify = data.notify || existing.notify;
+        // LÓGICA DE PRESERVAÇÃO:
+        // Se já temos um nome, NÃO substitua por null/undefined.
+        // Se o novo dado tem nome, use-o.
+        const newName = data.name || undefined;
+        const newNotify = data.notify || undefined;
+        const newVerified = data.verifiedName || undefined;
+
+        // Mantém o que já existe se o novo for nulo
+        const finalName = newName || existing.name;
+        const finalNotify = newNotify || existing.notify;
+        const finalVerified = newVerified || existing.verifiedName;
 
         contacts[id] = { 
             ...existing, 
             ...data,
             name: finalName,
-            notify: finalNotify
+            notify: finalNotify,
+            verifiedName: finalVerified
         };
     };
 
@@ -227,10 +236,8 @@ const makeCustomStore = () => {
         upsert, 
         save, 
         bind: (ev) => {
-            // EVENTO CRÍTICO: Traz a agenda completa na conexão
             ev.on('messaging-history.set', ({ contacts: newContacts }) => {
                 if (newContacts) {
-                    console.log(`[Store] Sincronização inicial: Processando ${newContacts.length} contatos...`);
                     newContacts.forEach(c => upsert(c.id, c));
                     save(); 
                 }
@@ -238,7 +245,6 @@ const makeCustomStore = () => {
             
             ev.on('contacts.upsert', (newContacts) => {
                 newContacts.forEach(c => upsert(c.id, c));
-                if (newContacts.length > 5) save(); 
             });
 
             ev.on('contacts.update', (updates) => {
@@ -520,14 +526,14 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     // FIX: Normalizar JID para evitar duplicação por sufixo de dispositivo (ex: :12)
     const cleanUserId = userId.replace(/:.*$/, '');
     
-    // Atualiza contatos com dados da mensagem recebida (Garante que quem fala entra na lista)
-    store.upsert(cleanUserId, { id: cleanUserId, notify: userName });
+    // Atualiza contatos (Se userName for inválido, o upsert blindado não substitui o existente)
+    if (userName) {
+        store.upsert(cleanUserId, { id: cleanUserId, notify: userName });
+    }
     
     const session = getSession(cleanUserId, userName);
 
     // --- GUARDIÃO ABSOLUTO: Se está em activeChats, É HUMANO. ---
-    // Esta verificação deve ocorrer ANTES de qualquer lógica de log ou bot.
-    // Isso garante que se um atendente assumiu (colocou em activeChats), o bot morre imediatamente para este chat.
     if (activeChats.has(cleanUserId)) {
         session.handledBy = 'human';
     }
@@ -554,7 +560,6 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     
     // Tratamento de Arquivo: Salvar no Disco e usar URL
     if (file) {
-        // Tenta detectar a extensão correta com base no nome original enviado pelo WhatsApp
         const url = saveMediaToDisk(file.data, file.type, file.name);
         if (url) {
             logEntry.files = [{
@@ -631,25 +636,23 @@ async function startWhatsApp() {
                 store.upsert(contact.id, contact);
 
                 const exists = syncedContacts.find(c => c.userId === contact.id);
-                const name = contact.name || contact.notify || contact.verifiedName || contact.id.split('@')[0];
+                // Prioriza Name > Notify > Verified > Username Anterior
+                const name = contact.name || contact.notify || contact.verifiedName;
                 
                 if (!exists) {
-                    syncedContacts.push({ userId: contact.id, userName: name });
+                    // Só adiciona se tiver um nome válido ou usa ID como fallback
+                    syncedContacts.push({ userId: contact.id, userName: name || contact.id.split('@')[0] });
                     hasNew = true;
                 } else {
-                    if (contact.name && exists.userName !== contact.name) {
-                        exists.userName = contact.name;
-                        hasNew = true;
-                    } 
-                    else if (!exists.userName && name) {
+                    // Só atualiza se o novo nome for válido e diferente
+                    if (name && exists.userName !== name) {
                         exists.userName = name;
                         hasNew = true;
-                    }
+                    } 
                 }
             }
             if (hasNew) {
                 saveData('syncedContacts.json', syncedContacts);
-                console.log(`[Backup Sync] Lista de contatos sincronizada via histórico.`);
             }
         });
 
@@ -661,10 +664,10 @@ async function startWhatsApp() {
                 if (c.id.includes('@g.us') || c.id === 'status@broadcast') return;
                 
                 const exists = syncedContacts.find(sc => sc.userId === c.id);
-                const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
+                const name = c.name || c.notify || c.verifiedName;
                 
                 if (!exists) {
-                    syncedContacts.push({ userId: c.id, userName: name });
+                    syncedContacts.push({ userId: c.id, userName: name || c.id.split('@')[0] });
                     hasNew = true;
                 } else if (name && exists.userName !== name) {
                     exists.userName = name;
@@ -686,20 +689,16 @@ async function startWhatsApp() {
                 const error = lastDisconnect?.error;
                 const statusCode = error?.output?.statusCode;
                 
-                // CRÍTICO: Só desconecta se for LOGOUT real (401).
-                // Qualquer outro erro (500, stream, timeout, Bad MAC) deve apenas tentar reconectar
-                // SEM APAGAR AS CREDENCIAIS.
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 gatewayStatus.status = 'DISCONNECTED';
 
                 if (shouldReconnect) {
-                    // Backoff exponencial para reconexão
                     const delayMs = Math.min(5000 * (reconnectAttempts + 1), 60000);
                     reconnectAttempts++;
                     console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Reconectando em ${delayMs/1000}s...`);
                     setTimeout(startWhatsApp, delayMs);
                 } else {
-                    console.log(`[WhatsApp] Logout explícito detectado (Código 401). Limpando sessão.`);
+                    console.log(`[WhatsApp] Logout explícito detectado. Limpando sessão.`);
                     try {
                         fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
                     } catch(e) {}
@@ -723,7 +722,7 @@ async function startWhatsApp() {
                 if (!msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const userName = msg.pushName || rawUserId.split('@')[0];
-                    const msgId = msg.key.id; // CAPTURA ID
+                    const msgId = msg.key.id; 
                     
                     let file = null;
                     const messageType = Object.keys(msg.message)[0];
@@ -732,13 +731,10 @@ async function startWhatsApp() {
                     if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
                         try {
                             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                            
-                            // Lógica avançada para detectar nome e extensão correta do arquivo
                             const msgContent = msg.message[messageType];
                             const mime = msgContent.mimetype || 'application/octet-stream';
                             let fileName = msgContent.fileName || msgContent.title;
                             
-                            // Se não houver nome de arquivo, tenta adivinhar a extensão pelo MimeType
                             if (!fileName) {
                                 const extMap = {
                                     'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
@@ -774,12 +770,10 @@ async function startWhatsApp() {
                     await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext, msgId });
                 }
                 // MENSAGENS ENVIADAS PELO PRÓPRIO DISPOSITIVO (WEB OU CELULAR)
-                // Isso detecta quando o atendente responde pelo celular e trava o bot
                 else if (msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const cleanUserId = rawUserId.replace(/:.*$/, '');
                     
-                    // Extração de texto/mídia (similar ao bloco acima)
                     const messageType = Object.keys(msg.message)[0];
                     let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
                     if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
@@ -790,25 +784,20 @@ async function startWhatsApp() {
 
                     const session = activeChats.get(cleanUserId) || userSessions.get(cleanUserId);
                     if (session) {
-                         // Verifica se é um "eco" do próprio bot ou do painel (API)
-                         // Se a última mensagem no log for idêntica, assumimos que foi o sistema que enviou
                          const lastLog = session.messageLog[session.messageLog.length - 1];
                          const isEcho = lastLog && (lastLog.text === text);
 
                          if (!isEcho) {
-                             // É uma mensagem nova enviada pelo celular!
-                             // Interrompe o bot e registra
                              session.handledBy = 'human';
                              session.messageLog.push({
                                  sender: 'attendant',
                                  text: text,
-                                 files: [], // Difícil recuperar arquivo enviado pelo cel sem download, simplificando
+                                 files: [], 
                                  timestamp: new Date().toISOString(),
                                  status: 2,
-                                 msgId: msg.key.id // Salva ID também para mensagens enviadas por fora
+                                 msgId: msg.key.id 
                              });
                              
-                             // Move para ActiveChats para o atendente ver no painel
                              if (!activeChats.has(cleanUserId)) {
                                  activeChats.set(cleanUserId, session);
                                  userSessions.delete(cleanUserId);
@@ -825,7 +814,6 @@ async function startWhatsApp() {
                if(update.update.status) {
                   const status = update.update.status; 
                   for (const [userId, chat] of activeChats.entries()) {
-                       // Também normaliza ID na atualização de status
                        const normalizedId = userId.replace(/:.*$/, '');
                        if (normalizedId === update.key.remoteJid.replace(/:.*$/, '')) {
                            const lastMsg = chat.messageLog[chat.messageLog.length -1];
@@ -841,7 +829,6 @@ async function startWhatsApp() {
 
     } catch (error) {
         console.error('[FATAL] Erro ao iniciar WhatsApp (Sessão Corrompida?):', error);
-        // Não deleta sessão agressivamente aqui, apenas tenta reiniciar
         setTimeout(startWhatsApp, 5000);
     }
 }
@@ -920,17 +907,18 @@ app.post('/api/attendants', (req, res) => {
 app.get('/api/clients', (req, res) => {
     const clientsMap = new Map();
     
-    // 1. Pega do STORE (Memória + Disco) - Fonte mais confiável
+    // 1. Pega do STORE (Memória + Disco) - Fonte mais confiável para NOMES
     const storeContacts = store.getContacts();
     Object.values(storeContacts).forEach(c => {
         if (!c.id.includes('@g.us') && c.id !== 'status@broadcast') {
+            // HIERARQUIA DE NOME: Name (Agenda) > Notify (PushName) > Verified > Username Anterior > ID
             const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
-            const clientTags = contactTags[c.id] || []; // Recupera tags
+            const clientTags = contactTags[c.id] || [];
             clientsMap.set(c.id, { userId: c.id, userName: name, tags: clientTags });
         }
     });
 
-    // 2. Backup do syncedContacts
+    // 2. Backup do syncedContacts (apenas se não estiver no Store)
     syncedContacts.forEach(c => { 
         if (!clientsMap.has(c.userId)) {
             const clientTags = contactTags[c.userId] || [];
@@ -942,7 +930,7 @@ app.get('/api/clients', (req, res) => {
     const addIfNotExists = (userId, userName) => { 
         if (!clientsMap.has(userId)) {
             const clientTags = contactTags[userId] || [];
-            clientsMap.set(userId, { userId, userName, tags: clientTags }); 
+            clientsMap.set(userId, { userId, userName: userName || userId.split('@')[0], tags: clientTags }); 
         }
     };
     
@@ -1001,9 +989,6 @@ app.get('/api/chats/active', (req, res) => {
         const lastMsg = c.messageLog[c.messageLog.length - 1];
         
         // --- OTIMIZAÇÃO DE MEMÓRIA (Out of Memory Fix) ---
-        // Cria uma cópia leve da última mensagem para a lista.
-        // Se contiver arquivos (imagens/vídeos), removemos os dados binários (base64) 
-        // e enviamos apenas a URL. Isso reduz o payload em 99%.
         let safeLastMsg = null;
         if (lastMsg) {
             safeLastMsg = { ...lastMsg };
@@ -1199,7 +1184,6 @@ app.post('/api/broadcast', (req, res) => {
         }
         
         // --- FIX: Forçar modo humano em transmissão ---
-        // Se estamos enviando um broadcast, não queremos que o bot responda "Olá" se o cliente responder.
         session.handledBy = 'human'; 
 
         const msg = { 
