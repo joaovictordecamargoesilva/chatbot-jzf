@@ -40,7 +40,8 @@ process.on('uncaughtException', (err, origin) => {
       return;
   }
   if (err.code === 'ENOSPC') {
-      console.error(`[CRITICAL] DISCO CHEIO (ENOSPC). O sistema não consegue salvar dados!`);
+      console.error(`[CRITICAL] DISCO CHEIO (ENOSPC). O sistema não consegue salvar dados! Tentando limpar...`);
+      cleanupStorage();
       return;
   }
   console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
@@ -50,7 +51,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.9.0_ENOSPC_FIX";
+const SERVER_VERSION = "30.0.0_ULTRA_CLEANUP";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -67,38 +68,39 @@ const MEDIA_DIR = path.join(DATA_DIR, 'media');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
-// --- SISTEMA DE LIMPEZA (GARBAGE COLLECTOR) ---
-const MAX_MESSAGE_HISTORY = 50; // Limite de mensagens por chat no JSON
+// --- SISTEMA DE LIMPEZA AGRESSIVO (GARBAGE COLLECTOR) ---
+const MAX_MESSAGE_HISTORY = 30; // Reduzido de 50 para 30 para economizar mais espaço
 
 function pruneSession(session) {
     if (session && session.messageLog && session.messageLog.length > MAX_MESSAGE_HISTORY) {
-        // Mantém apenas as últimas X mensagens para economizar disco
         session.messageLog = session.messageLog.slice(-MAX_MESSAGE_HISTORY);
     }
     return session;
 }
 
 function cleanupStorage() {
-    console.log('[GC] Iniciando limpeza de armazenamento...');
+    console.log('[GC] Iniciando limpeza emergencial...');
     try {
-        // 1. Limpar arquivos de mídia com mais de 48 horas
+        // 1. Limpar arquivos de mídia com mais de 24 horas (Reduzido de 48h)
         const files = fs.readdirSync(MEDIA_DIR);
         const now = Date.now();
-        const expiration = 48 * 60 * 60 * 1000; 
+        const expiration = 24 * 60 * 60 * 1000; 
         let deletedFiles = 0;
 
         files.forEach(file => {
             const filePath = path.join(MEDIA_DIR, file);
-            const stats = fs.statSync(filePath);
-            if (now - stats.mtimeMs > expiration) {
-                fs.unlinkSync(filePath);
-                deletedFiles++;
-            }
+            try {
+                const stats = fs.statSync(filePath);
+                if (now - stats.mtimeMs > expiration) {
+                    fs.unlinkSync(filePath);
+                    deletedFiles++;
+                }
+            } catch(e) {}
         });
-        if(deletedFiles > 0) console.log(`[GC] Mídias antigas removidas: ${deletedFiles}`);
+        if(deletedFiles > 0) console.log(`[GC] Mídias removidas: ${deletedFiles}`);
 
-        // 2. Limpar sessões inativas (bot)
-        const sessionExpiration = 24 * 60 * 60 * 1000;
+        // 2. Limpar sessões de bot inativas por mais de 12 horas (Reduzido de 24h)
+        const sessionExpiration = 12 * 60 * 60 * 1000;
         let deletedSessions = 0;
         for (const [userId, session] of userSessions.entries()) {
             const lastInteraction = session.messageLog?.length > 0 
@@ -110,22 +112,22 @@ function cleanupStorage() {
                 deletedSessions++;
             }
         }
-        if(deletedSessions > 0) console.log(`[GC] Sessões inativas removidas: ${deletedSessions}`);
+        if(deletedSessions > 0) console.log(`[GC] Sessões inativas limpas: ${deletedSessions}`);
         
     } catch (e) {
-        console.error('[GC] Erro durante a limpeza:', e.message);
+        console.error('[GC] Erro na limpeza:', e.message);
     }
 }
 
-// Executa limpeza a cada 6 horas
-setInterval(cleanupStorage, 6 * 60 * 60 * 1000);
-// Executa uma vez no início após 30 segundos
-setTimeout(cleanupStorage, 30000);
+// Limpeza imediata no startup para tentar liberar espaço antes de gravar qualquer coisa
+cleanupStorage();
+
+// Executa limpeza frequente (a cada 2 horas)
+setInterval(cleanupStorage, 2 * 60 * 60 * 1000);
 
 // Helper functions
 const serializeMap = (map) => {
     const arr = Array.from(map.entries());
-    // Pruning preventivo antes de serializar
     return arr.map(([key, session]) => [key, pruneSession(session)]);
 };
 const deserializeMap = (arr) => new Map(arr);
@@ -138,14 +140,19 @@ const saveData = (filename, data) => {
     if (data instanceof Map) {
         dataToSave = serializeMap(data);
     } else if (typeof data === 'object' && data !== null) {
-        // Se for um objeto com sessões (ex: activeChats como objeto em versões antigas)
         Object.keys(data).forEach(k => { if(data[k].messageLog) pruneSession(data[k]); });
     }
 
-    fs.writeFileSync(filePath, JSON.stringify(dataToSave, null, 2), 'utf8');
+    const jsonString = JSON.stringify(dataToSave, null, 2);
+    // Tenta gravar em um arquivo temporário primeiro para não corromper o original se o disco encher no meio
+    const tempPath = filePath + '.tmp';
+    fs.writeFileSync(tempPath, jsonString, 'utf8');
+    fs.renameSync(tempPath, filePath);
+    
   } catch (error) {
     if (error.code === 'ENOSPC') {
-        console.error(`[STORAGE] FALHA CRÍTICA: Não há espaço em disco para salvar ${filename}`);
+        console.error(`[STORAGE] DISCO CHEIO: Não foi possível salvar ${filename}. Executando limpeza emergencial.`);
+        cleanupStorage();
     } else {
         console.error(`[Persistence] ERRO ao salvar ${filename}:`, error);
     }
@@ -162,6 +169,7 @@ const loadData = (filename, defaultValue) => {
     if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
     return parsedData;
   } catch (error) {
+    console.error(`[Persistence] Erro ao carregar ${filename}:`, error.message);
     return defaultValue;
   }
 };
@@ -188,7 +196,8 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
         return `/media/${fileName}`; 
     } catch (error) {
         if (error.code === 'ENOSPC') {
-            console.error('[Media] ERRO: Sem espaço em disco para salvar mídia!');
+            console.error('[Media] SEM ESPAÇO EM DISCO! Limpando...');
+            cleanupStorage();
         } else {
             console.error('[Media] Erro ao salvar arquivo:', error);
         }
@@ -218,7 +227,7 @@ const makeCustomStore = () => {
         };
     };
     load();
-    setInterval(save, 60000); // Salva o store a cada minuto apenas (menos I/O)
+    setInterval(save, 120000); // Reduzido o I/O para cada 2 minutos
     return {
         getContacts: () => contacts,
         upsert, save,
@@ -245,9 +254,7 @@ function resolveBestName(userId, pushName = null) {
 // --- ESTADO ---
 let ATTENDANTS = loadData('attendants.json', [{ id: 'attendant_1', name: 'Admin' }]);
 const userSessions = loadData('userSessions.json', new Map());
-let requestQueue = loadData('requestQueue.json', []);
 const activeChats = loadData('activeChats.json', new Map());
-const archivedChats = loadData('archivedChats.json', new Map());
 let contactTags = loadData('contactTags.json', {}); 
 
 const outboundGatewayQueue = []; 
@@ -399,7 +406,6 @@ async function processIncomingMessage({ userId, userName, userInput, file, msgId
     }
     session.messageLog.push(logEntry);
     
-    // Poda o log antes de salvar para economizar espaço
     pruneSession(session);
 
     if (activeChats.has(userId)) {
