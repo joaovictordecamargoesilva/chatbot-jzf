@@ -51,7 +51,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "30.0.0_ULTRA_CLEANUP";
+const SERVER_VERSION = "30.1.0_API_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -69,7 +69,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // --- SISTEMA DE LIMPEZA AGRESSIVO (GARBAGE COLLECTOR) ---
-const MAX_MESSAGE_HISTORY = 30; // Reduzido de 50 para 30 para economizar mais espaço
+const MAX_MESSAGE_HISTORY = 30; 
 
 function pruneSession(session) {
     if (session && session.messageLog && session.messageLog.length > MAX_MESSAGE_HISTORY) {
@@ -81,7 +81,6 @@ function pruneSession(session) {
 function cleanupStorage() {
     console.log('[GC] Iniciando limpeza emergencial...');
     try {
-        // 1. Limpar arquivos de mídia com mais de 24 horas (Reduzido de 48h)
         const files = fs.readdirSync(MEDIA_DIR);
         const now = Date.now();
         const expiration = 24 * 60 * 60 * 1000; 
@@ -99,7 +98,6 @@ function cleanupStorage() {
         });
         if(deletedFiles > 0) console.log(`[GC] Mídias removidas: ${deletedFiles}`);
 
-        // 2. Limpar sessões de bot inativas por mais de 12 horas (Reduzido de 24h)
         const sessionExpiration = 12 * 60 * 60 * 1000;
         let deletedSessions = 0;
         for (const [userId, session] of userSessions.entries()) {
@@ -119,10 +117,7 @@ function cleanupStorage() {
     }
 }
 
-// Limpeza imediata no startup para tentar liberar espaço antes de gravar qualquer coisa
 cleanupStorage();
-
-// Executa limpeza frequente (a cada 2 horas)
 setInterval(cleanupStorage, 2 * 60 * 60 * 1000);
 
 // Helper functions
@@ -144,14 +139,13 @@ const saveData = (filename, data) => {
     }
 
     const jsonString = JSON.stringify(dataToSave, null, 2);
-    // Tenta gravar em um arquivo temporário primeiro para não corromper o original se o disco encher no meio
     const tempPath = filePath + '.tmp';
     fs.writeFileSync(tempPath, jsonString, 'utf8');
     fs.renameSync(tempPath, filePath);
     
   } catch (error) {
     if (error.code === 'ENOSPC') {
-        console.error(`[STORAGE] DISCO CHEIO: Não foi possível salvar ${filename}. Executando limpeza emergencial.`);
+        console.error(`[STORAGE] DISCO CHEIO: Não foi possível salvar ${filename}.`);
         cleanupStorage();
     } else {
         console.error(`[Persistence] ERRO ao salvar ${filename}:`, error);
@@ -196,10 +190,7 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
         return `/media/${fileName}`; 
     } catch (error) {
         if (error.code === 'ENOSPC') {
-            console.error('[Media] SEM ESPAÇO EM DISCO! Limpando...');
             cleanupStorage();
-        } else {
-            console.error('[Media] Erro ao salvar arquivo:', error);
         }
         return null;
     }
@@ -227,7 +218,7 @@ const makeCustomStore = () => {
         };
     };
     load();
-    setInterval(save, 120000); // Reduzido o I/O para cada 2 minutos
+    setInterval(save, 120000); 
     return {
         getContacts: () => contacts,
         upsert, save,
@@ -240,11 +231,9 @@ const makeCustomStore = () => {
 };
 const store = makeCustomStore();
 
-// HELPER PARA RESOLVER O MELHOR NOME POSSÍVEL
 function resolveBestName(userId, pushName = null) {
     const contact = store.getContacts()[userId];
     const numberFallback = userId.split('@')[0];
-    
     if (contact) {
         return contact.name || contact.notify || contact.verifiedName || pushName || numberFallback;
     }
@@ -366,7 +355,6 @@ async function processOutboundQueue() {
                 await sock.sendMessage(jid, { text: item.text }, options);
             }
         } catch (e) {
-            console.error('[Outbound] Erro:', e.message);
             if (!item.retry) item.retry = 0;
             if (item.retry < 3) { item.retry++; outboundGatewayQueue.push(item); }
         }
@@ -405,7 +393,6 @@ async function processIncomingMessage({ userId, userName, userInput, file, msgId
         if (url) logEntry.files = [{ name: file.name, type: file.type, url }];
     }
     session.messageLog.push(logEntry);
-    
     pruneSession(session);
 
     if (activeChats.has(userId)) {
@@ -420,6 +407,18 @@ function queueOutbound(userId, content) {
 }
 
 // --- API ---
+
+// Fix Favicon 404
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// Attendants API
+app.get('/api/attendants', (req, res) => res.json(ATTENDANTS));
+app.post('/api/attendants', (req, res) => {
+    ATTENDANTS = req.body;
+    saveData('attendants.json', ATTENDANTS);
+    res.json({ success: true });
+});
+
 app.get('/api/gateway/status', (req, res) => res.json(gatewayStatus));
 
 app.get('/api/clients', (req, res) => {
