@@ -51,7 +51,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "30.1.0_API_FIX";
+const SERVER_VERSION = "30.2.0_API_COMPAT_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -135,7 +135,11 @@ const saveData = (filename, data) => {
     if (data instanceof Map) {
         dataToSave = serializeMap(data);
     } else if (typeof data === 'object' && data !== null) {
-        Object.keys(data).forEach(k => { if(data[k].messageLog) pruneSession(data[k]); });
+        if (Array.isArray(dataToSave)) {
+            dataToSave = dataToSave.map(item => item.messageLog ? pruneSession(item) : item);
+        } else {
+            Object.keys(data).forEach(k => { if(data[k].messageLog) pruneSession(data[k]); });
+        }
     }
 
     const jsonString = JSON.stringify(dataToSave, null, 2);
@@ -145,10 +149,7 @@ const saveData = (filename, data) => {
     
   } catch (error) {
     if (error.code === 'ENOSPC') {
-        console.error(`[STORAGE] DISCO CHEIO: Não foi possível salvar ${filename}.`);
         cleanupStorage();
-    } else {
-        console.error(`[Persistence] ERRO ao salvar ${filename}:`, error);
     }
   }
 };
@@ -163,7 +164,6 @@ const loadData = (filename, defaultValue) => {
     if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
     return parsedData;
   } catch (error) {
-    console.error(`[Persistence] Erro ao carregar ${filename}:`, error.message);
     return defaultValue;
   }
 };
@@ -189,9 +189,7 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
         fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
         return `/media/${fileName}`; 
     } catch (error) {
-        if (error.code === 'ENOSPC') {
-            cleanupStorage();
-        }
+        if (error.code === 'ENOSPC') cleanupStorage();
         return null;
     }
 };
@@ -244,6 +242,7 @@ function resolveBestName(userId, pushName = null) {
 let ATTENDANTS = loadData('attendants.json', [{ id: 'attendant_1', name: 'Admin' }]);
 const userSessions = loadData('userSessions.json', new Map());
 const activeChats = loadData('activeChats.json', new Map());
+let requestQueue = loadData('requestQueue.json', []);
 let contactTags = loadData('contactTags.json', {}); 
 
 const outboundGatewayQueue = []; 
@@ -395,6 +394,20 @@ async function processIncomingMessage({ userId, userName, userInput, file, msgId
     session.messageLog.push(logEntry);
     pruneSession(session);
 
+    // Lógica para preencher a fila de espera se estiver no estado de transferência
+    if (session.currentState === ChatState.ATTENDANT_TRANSFER && session.handledBy === 'bot') {
+        const alreadyInQueue = requestQueue.find(r => r.userId === userId);
+        if (!alreadyInQueue) {
+            requestQueue.push({
+                userId: session.userId,
+                userName: session.userName,
+                timestamp: new Date().toISOString(),
+                department: session.context.department || 'Geral'
+            });
+            saveData('requestQueue.json', requestQueue);
+        }
+    }
+
     if (activeChats.has(userId)) {
         saveData('activeChats.json', activeChats);
     } else {
@@ -406,12 +419,41 @@ function queueOutbound(userId, content) {
     outboundGatewayQueue.push({ userId, ...content });
 }
 
-// --- API ---
+// --- API ROUTES DE COMPATIBILIDADE (CORREÇÃO 404) ---
 
-// Fix Favicon 404
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-// Attendants API
+// Rota history sem prefixo api
+app.get('/history', (req, res) => {
+    const { userId } = req.query;
+    if (!userId) return res.json({ messageLog: [] });
+    const chat = activeChats.get(userId) || userSessions.get(userId);
+    res.json(chat || { userId, messageLog: [] });
+});
+
+// Rota requests sem prefixo api
+app.get('/requests', (req, res) => res.json(requestQueue));
+
+// Rota ai-active sem prefixo api
+app.get('/ai-active', (req, res) => {
+    const aiChats = Array.from(userSessions.values())
+        .filter(s => s.handledBy === 'bot' && s.currentState !== ChatState.ATTENDANT_TRANSFER);
+    res.json(aiChats);
+});
+
+// Rota attendants sem prefixo api
+app.get('/attendants', (req, res) => res.json(ATTENDANTS));
+
+// Handler para atendente específico (ex: attendant_2)
+app.get('/attendant_*', (req, res) => {
+    const id = req.path.split('/').pop();
+    const attendant = ATTENDANTS.find(a => a.id === id);
+    if (attendant) res.json(attendant);
+    else res.status(404).json({ error: 'Attendant not found' });
+});
+
+// --- API OFICIAL (/api/...) ---
+
 app.get('/api/attendants', (req, res) => res.json(ATTENDANTS));
 app.post('/api/attendants', (req, res) => {
     ATTENDANTS = req.body;
@@ -517,6 +559,11 @@ app.post('/api/chats/takeover/:userId', (req, res) => {
     session.userName = resolveBestName(userId, session.userName);
     activeChats.set(userId, session);
     userSessions.delete(userId);
+    
+    // Remove da fila de espera ao assumir
+    requestQueue = requestQueue.filter(r => r.userId !== userId);
+    saveData('requestQueue.json', requestQueue);
+    
     saveData('activeChats.json', activeChats);
     res.json(session);
 });
