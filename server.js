@@ -35,23 +35,23 @@ import QRCode from 'qrcode';
 
 // --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
 process.on('uncaughtException', (err, origin) => {
-  if (err.message && err.message.includes('Bad MAC')) {
-      console.warn(`[WARNING - Bad MAC] Erro de descriptografia detectado. Ignorando crash.`);
+  if (err.message && (err.message.includes('Bad MAC') || err.message.includes('decryption'))) {
+      console.warn(`[WARNING - DECRYPTION] Erro de descriptografia (Bad MAC). Geralmente resolvido automaticamente pelo Baileys na próxima mensagem.`);
       return;
   }
   if (err.code === 'ENOSPC') {
-      console.error(`[CRITICAL] DISCO CHEIO (ENOSPC). O sistema não consegue salvar dados! Tentando limpar...`);
+      console.error(`[CRITICAL] DISCO CHEIO (ENOSPC). Limpando...`);
       cleanupStorage();
       return;
   }
-  console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
+  console.error(`[FATAL] Exceção: ${err.message}`, { stack: err.stack, origin });
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
+  console.error('[FATAL] Rejeição não tratada:', reason);
 });
 
-const SERVER_VERSION = "30.2.0_API_COMPAT_FIX";
+const SERVER_VERSION = "30.3.0_MAC_AND_LOGIC_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -79,7 +79,7 @@ function pruneSession(session) {
 }
 
 function cleanupStorage() {
-    console.log('[GC] Iniciando limpeza emergencial...');
+    console.log('[GC] Limpeza iniciada...');
     try {
         const files = fs.readdirSync(MEDIA_DIR);
         const now = Date.now();
@@ -96,10 +96,8 @@ function cleanupStorage() {
                 }
             } catch(e) {}
         });
-        if(deletedFiles > 0) console.log(`[GC] Mídias removidas: ${deletedFiles}`);
-
+        
         const sessionExpiration = 12 * 60 * 60 * 1000;
-        let deletedSessions = 0;
         for (const [userId, session] of userSessions.entries()) {
             const lastInteraction = session.messageLog?.length > 0 
                 ? new Date(session.messageLog[session.messageLog.length-1].timestamp).getTime()
@@ -107,51 +105,28 @@ function cleanupStorage() {
             
             if (now - lastInteraction > sessionExpiration) {
                 userSessions.delete(userId);
-                deletedSessions++;
             }
         }
-        if(deletedSessions > 0) console.log(`[GC] Sessões inativas limpas: ${deletedSessions}`);
-        
-    } catch (e) {
-        console.error('[GC] Erro na limpeza:', e.message);
-    }
+    } catch (e) {}
 }
 
 cleanupStorage();
 setInterval(cleanupStorage, 2 * 60 * 60 * 1000);
 
-// Helper functions
-const serializeMap = (map) => {
-    const arr = Array.from(map.entries());
-    return arr.map(([key, session]) => [key, pruneSession(session)]);
-};
+// persistence helpers
+const serializeMap = (map) => Array.from(map.entries()).map(([k, s]) => [k, pruneSession(s)]);
 const deserializeMap = (arr) => new Map(arr);
 
 const saveData = (filename, data) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
     let dataToSave = data;
-    
-    if (data instanceof Map) {
-        dataToSave = serializeMap(data);
-    } else if (typeof data === 'object' && data !== null) {
-        if (Array.isArray(dataToSave)) {
-            dataToSave = dataToSave.map(item => item.messageLog ? pruneSession(item) : item);
-        } else {
-            Object.keys(data).forEach(k => { if(data[k].messageLog) pruneSession(data[k]); });
-        }
-    }
-
+    if (data instanceof Map) dataToSave = serializeMap(data);
     const jsonString = JSON.stringify(dataToSave, null, 2);
     const tempPath = filePath + '.tmp';
     fs.writeFileSync(tempPath, jsonString, 'utf8');
     fs.renameSync(tempPath, filePath);
-    
-  } catch (error) {
-    if (error.code === 'ENOSPC') {
-        cleanupStorage();
-    }
-  }
+  } catch (e) {}
 };
 
 const loadData = (filename, defaultValue) => {
@@ -159,83 +134,49 @@ const loadData = (filename, defaultValue) => {
     const filePath = path.join(DATA_DIR, filename);
     if (!fs.existsSync(filePath)) return defaultValue;
     const content = fs.readFileSync(filePath, 'utf8');
-    if (!content) return defaultValue;
-    const parsedData = JSON.parse(content);
-    if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
-    return parsedData;
-  } catch (error) {
-    return defaultValue;
-  }
+    const parsed = JSON.parse(content);
+    if (defaultValue instanceof Map && Array.isArray(parsed)) return deserializeMap(parsed);
+    return parsed;
+  } catch (e) { return defaultValue; }
 };
 
-// --- DISK STORAGE UTILS ---
 const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     try {
         if (!base64Data) return null;
-        let ext = null;
-        if (originalName && originalName.includes('.')) {
-            ext = path.extname(originalName).substring(1);
-        }
+        let ext = path.extname(originalName || '').substring(1);
         if (!ext) {
-            const extMap = {
-                'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
-                'video/mp4': 'mp4', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a'
-            };
-            ext = extMap[mimeType] || mimeType.split('/')[1] || 'bin';
+            const extMap = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'video/mp4': 'mp4' };
+            ext = extMap[mimeType] || 'bin';
         }
         const fileName = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
         const filePath = path.join(MEDIA_DIR, fileName);
-        
         fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
         return `/media/${fileName}`; 
-    } catch (error) {
-        if (error.code === 'ENOSPC') cleanupStorage();
-        return null;
-    }
+    } catch (e) { return null; }
 };
 
-// --- CUSTOM STORE ---
+// --- WHATSAPP STORE ---
 const makeCustomStore = () => {
     let contacts = {};
     const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
-    const load = () => {
-        try { if (fs.existsSync(STORE_FILE)) contacts = JSON.parse(fs.readFileSync(STORE_FILE, 'utf-8')).contacts || {}; } catch(e) {}
-    };
-    const save = () => {
-        try { saveData('baileys_store.json', { contacts }); } catch(e) {}
-    };
+    const load = () => { try { contacts = JSON.parse(fs.readFileSync(STORE_FILE, 'utf-8')).contacts || {}; } catch(e) {} };
+    const save = () => { try { saveData('baileys_store.json', { contacts }); } catch(e) {} };
     const upsert = (id, data) => {
-        if (!id || id.includes('@g.us') || id === 'status@broadcast') return;
-        const existing = contacts[id] || {};
-        const newName = data.name || data.notify || data.verifiedName;
-        contacts[id] = { 
-            ...existing, 
-            ...data, 
-            name: newName || existing.name,
-            notify: data.notify || existing.notify || existing.name
-        };
+        if (!id || id.includes('@g.us')) return;
+        contacts[id] = { ...(contacts[id] || {}), ...data };
     };
     load();
-    setInterval(save, 120000); 
-    return {
-        getContacts: () => contacts,
-        upsert, save,
-        bind: (ev) => {
-            ev.on('messaging-history.set', ({ contacts: newContacts }) => newContacts?.forEach(c => upsert(c.id, c)));
-            ev.on('contacts.upsert', (newContacts) => newContacts.forEach(c => upsert(c.id, c)));
-            ev.on('contacts.update', (updates) => updates.forEach(u => upsert(u.id, u)));
-        }
-    };
+    setInterval(save, 60000);
+    return { getContacts: () => contacts, upsert, bind: (ev) => {
+        ev.on('contacts.upsert', (c) => c.forEach(i => upsert(i.id, i)));
+        ev.on('contacts.update', (u) => u.forEach(i => upsert(i.id, i)));
+    }};
 };
 const store = makeCustomStore();
 
 function resolveBestName(userId, pushName = null) {
     const contact = store.getContacts()[userId];
-    const numberFallback = userId.split('@')[0];
-    if (contact) {
-        return contact.name || contact.notify || contact.verifiedName || pushName || numberFallback;
-    }
-    return pushName || numberFallback;
+    return contact?.name || contact?.notify || pushName || userId.split('@')[0];
 }
 
 // --- ESTADO ---
@@ -244,27 +185,119 @@ const userSessions = loadData('userSessions.json', new Map());
 const activeChats = loadData('activeChats.json', new Map());
 let requestQueue = loadData('requestQueue.json', []);
 let contactTags = loadData('contactTags.json', {}); 
-
 const outboundGatewayQueue = []; 
 let gatewayStatus = { status: 'DISCONNECTED', qrCode: null };
 let sock = null; 
 
-// --- MIDDLEWARE ---
-app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname, 'dist')));
-app.use('/media', express.static(MEDIA_DIR));
-
 // --- IA ---
-let ai = null;
-if (API_KEY) ai = new GoogleGenAI({apiKey: API_KEY});
+const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
 
-// --- WHATSAPP (BAILEYS) ---
-const SESSION_FOLDER = path.join(DATA_DIR, 'baileys_auth_info');
+// --- BOT LOGIC ENGINE ---
+
+async function handleBotResponse(userId, userInput, session) {
+    const config = conversationFlow.get(session.currentState);
+    if (!config) return;
+
+    // Se a sessão estiver em atendimento humano, não faz nada
+    if (session.handledBy === 'human') return;
+
+    // 1. Processar opções numéricas se houver
+    if (config.options) {
+        const optionIndex = parseInt(userInput.trim()) - 1;
+        if (!isNaN(optionIndex) && config.options[optionIndex]) {
+            const selected = config.options[optionIndex];
+            session.currentState = selected.nextState;
+            if (selected.payload) session.context = { ...session.context, ...selected.payload };
+            return sendCurrentStateMenu(userId, session);
+        }
+    }
+
+    // 2. Processar entrada de texto livre (IA ou Agendamento)
+    if (config.requiresTextInput) {
+        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+            return handleAiChat(userId, userInput, session);
+        } else {
+            // Salva no histórico e avança
+            session.context.history[session.currentState] = userInput;
+            if (config.nextState) {
+                session.currentState = config.nextState;
+                return sendCurrentStateMenu(userId, session);
+            }
+        }
+    }
+
+    // Se o bot não entendeu e não é IA, reenviar o menu atual
+    if (session.currentState !== ChatState.AI_ASSISTANT_CHATTING) {
+        return sendCurrentStateMenu(userId, session);
+    }
+}
+
+async function handleAiChat(userId, userInput, session) {
+    if (!ai) return queueOutbound(userId, { text: "IA não configurada no servidor." });
+    
+    try {
+        const dept = session.context.department || "Contábil";
+        const instruction = departmentSystemInstructions.pt[dept] || departmentSystemInstructions.pt["Contábil"];
+        
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: [{ parts: [{ text: `Histórico: ${JSON.stringify(session.aiHistory.slice(-5))}\n\nUsuário: ${userInput}` }] }],
+            config: { systemInstruction: instruction }
+        });
+
+        const reply = response.text;
+        session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+        session.aiHistory.push({ role: 'model', parts: [{ text: reply }] });
+        
+        // Mantém histórico curto
+        if (session.aiHistory.length > 10) session.aiHistory = session.aiHistory.slice(-10);
+
+        queueOutbound(userId, { text: reply });
+        
+        // Re-enviar opções do estado de IA para navegação
+        const config = conversationFlow.get(ChatState.AI_ASSISTANT_CHATTING);
+        let menuText = "\n\n";
+        config.options.forEach((opt, idx) => {
+            menuText += `${idx + 1}. ${translations.pt[opt.textKey] || opt.textKey}\n`;
+        });
+        queueOutbound(userId, { text: menuText });
+
+    } catch (e) {
+        queueOutbound(userId, { text: "Desculpe, tive um problema ao processar sua pergunta. Pode repetir?" });
+    }
+}
+
+function sendCurrentStateMenu(userId, session) {
+    const config = conversationFlow.get(session.currentState);
+    if (!config) return;
+
+    let text = typeof config.textKey === 'function' ? config.textKey(session) : (translations.pt[config.textKey] || config.textKey);
+    
+    if (config.options) {
+        text += "\n\nEscolha uma opção:\n";
+        config.options.forEach((opt, idx) => {
+            text += `*${idx + 1}* - ${translations.pt[opt.textKey] || opt.textKey}\n`;
+        });
+    }
+
+    queueOutbound(userId, { text });
+
+    // Se for ponto de transferência, adicionar à fila
+    if (session.currentState === ChatState.ATTENDANT_TRANSFER || session.currentState === ChatState.SCHEDULING_CONFIRMED) {
+        const already = requestQueue.find(r => r.userId === userId);
+        if (!already) {
+            requestQueue.push({ userId, userName: session.userName, timestamp: new Date().toISOString(), department: session.context.department || 'Geral' });
+            saveData('requestQueue.json', requestQueue);
+        }
+    }
+}
+
+// --- WHATSAPP CORE ---
 
 async function startWhatsApp() {
     gatewayStatus.status = 'LOADING';
     try {
-        const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
+        const { state, saveCreds } = await useMultiFileAuthState(path.join(DATA_DIR, 'baileys_auth_info'));
         const { version } = await fetchLatestBaileysVersion();
         
         sock = makeWASocket({
@@ -273,8 +306,7 @@ async function startWhatsApp() {
             printQRInTerminal: true,
             browser: ['JZF Chat', 'Chrome', '1.0.0'],
             connectTimeoutMs: 60000,
-            markOnlineOnConnect: true,
-            getMessage: async () => ({ conversation: 'hi' })
+            markOnlineOnConnect: true
         });
 
         store.bind(sock.ev);
@@ -284,25 +316,27 @@ async function startWhatsApp() {
             const { connection, lastDisconnect, qr } = update;
             if (qr) { gatewayStatus.qrCode = await QRCode.toDataURL(qr); gatewayStatus.status = 'QR_CODE_READY'; }
             if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                gatewayStatus.status = 'DISCONNECTED';
-                if (shouldReconnect) setTimeout(startWhatsApp, 5000);
+                const reason = lastDisconnect?.error?.output?.statusCode;
+                if (reason !== DisconnectReason.loggedOut) setTimeout(startWhatsApp, 5000);
             } else if (connection === 'open') {
                 gatewayStatus.status = 'CONNECTED';
                 gatewayStatus.qrCode = null;
-                console.log('[WhatsApp] Conectado!');
+                console.log('[WhatsApp] Online!');
             }
         });
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
-                const rawUserId = msg.key.remoteJid;
-                if (!rawUserId || rawUserId === 'status@broadcast' || rawUserId.includes('@g.us')) continue;
-                const cleanUserId = rawUserId.replace(/:.*$/, '');
+                // Prevenção contra Bad MAC: Se a mensagem vier sem conteúdo (ciphertext error), ignoramos
+                if (!msg.message) continue;
+                
+                const rawId = msg.key.remoteJid;
+                if (!rawId || rawId.includes('@g.us')) continue;
+                const cleanId = rawId.replace(/:.*$/, '');
 
-                if (!msg.key.fromMe && msg.message) {
-                    const userName = resolveBestName(cleanUserId, msg.pushName);
+                if (!msg.key.fromMe) {
+                    const name = resolveBestName(cleanId, msg.pushName);
                     let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
                     const messageType = Object.keys(msg.message)[0];
                     
@@ -310,78 +344,15 @@ async function startWhatsApp() {
                     if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
                         try {
                             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                            const msgContent = msg.message[messageType];
-                            file = {
-                                name: msgContent.fileName || `${messageType}_${Date.now()}`,
-                                type: msgContent.mimetype,
-                                data: buffer.toString('base64')
-                            };
-                            text = msgContent.caption || '';
+                            file = { name: msg.message[messageType].fileName || `${messageType}`, type: msg.message[messageType].mimetype, data: buffer.toString('base64') };
+                            text = msg.message[messageType].caption || text;
                         } catch (e) {}
                     }
-                    await processIncomingMessage({ userId: cleanUserId, userName, userInput: text, file, msgId: msg.key.id });
+                    await processIncomingMessage({ userId: cleanId, userName: name, userInput: text, file, msgId: msg.key.id });
                 }
             }
         });
     } catch (e) { setTimeout(startWhatsApp, 5000); }
-}
-
-async function processOutboundQueue() {
-    if (outboundGatewayQueue.length > 0 && sock && gatewayStatus.status === 'CONNECTED') {
-        const item = outboundGatewayQueue.shift();
-        try {
-            const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
-            let options = {};
-            if (item.replyTo?.id) {
-                options.quoted = { key: { remoteJid: jid, fromMe: item.replyTo.fromMe, id: item.replyTo.id }, message: { conversation: item.replyTo.text } };
-            }
-
-            if (item.files?.length > 0) {
-                for (const file of item.files) {
-                    const filePath = path.join(MEDIA_DIR, path.basename(file.url));
-                    if (!fs.existsSync(filePath)) continue;
-                    const buffer = fs.readFileSync(filePath);
-
-                    let messageContent = {};
-                    if (file.type.startsWith('image/')) messageContent = { image: buffer, caption: item.text };
-                    else if (file.type.startsWith('video/')) messageContent = { video: buffer, caption: item.text, mimetype: file.type };
-                    else if (file.type.startsWith('audio/')) messageContent = { audio: buffer, mimetype: file.type, ptt: true };
-                    else messageContent = { document: buffer, mimetype: file.type, fileName: file.name, caption: item.text };
-
-                    await sock.sendMessage(jid, messageContent, options);
-                }
-            } else {
-                await sock.sendMessage(jid, { text: item.text }, options);
-            }
-        } catch (e) {
-            if (!item.retry) item.retry = 0;
-            if (item.retry < 3) { item.retry++; outboundGatewayQueue.push(item); }
-        }
-    }
-    setTimeout(processOutboundQueue, 1000);
-}
-
-function getSession(userId, userName = null) {
-    let session = activeChats.get(userId) || userSessions.get(userId);
-    const resolvedName = resolveBestName(userId, userName);
-    
-    if (!session) {
-        session = { 
-            userId, 
-            userName: resolvedName, 
-            currentState: ChatState.GREETING, 
-            context: { history: {} }, 
-            aiHistory: [], 
-            messageLog: [], 
-            handledBy: 'bot', 
-            attendantId: null, 
-            createdAt: new Date().toISOString() 
-        };
-        userSessions.set(userId, session);
-    } else if (userName && session.userName !== resolvedName) {
-        session.userName = resolvedName;
-    }
-    return session;
 }
 
 async function processIncomingMessage({ userId, userName, userInput, file, msgId }) {
@@ -394,178 +365,106 @@ async function processIncomingMessage({ userId, userName, userInput, file, msgId
     session.messageLog.push(logEntry);
     pruneSession(session);
 
-    // Lógica para preencher a fila de espera se estiver no estado de transferência
-    if (session.currentState === ChatState.ATTENDANT_TRANSFER && session.handledBy === 'bot') {
-        const alreadyInQueue = requestQueue.find(r => r.userId === userId);
-        if (!alreadyInQueue) {
-            requestQueue.push({
-                userId: session.userId,
-                userName: session.userName,
-                timestamp: new Date().toISOString(),
-                department: session.context.department || 'Geral'
-            });
-            saveData('requestQueue.json', requestQueue);
-        }
+    // DISPARAR LÓGICA DO BOT
+    if (session.handledBy === 'bot') {
+        await handleBotResponse(userId, userInput, session);
     }
 
-    if (activeChats.has(userId)) {
-        saveData('activeChats.json', activeChats);
-    } else {
-        saveData('userSessions.json', userSessions);
-    }
+    if (activeChats.has(userId)) saveData('activeChats.json', activeChats);
+    else saveData('userSessions.json', userSessions);
 }
 
 function queueOutbound(userId, content) {
     outboundGatewayQueue.push({ userId, ...content });
 }
 
-// --- API ROUTES DE COMPATIBILIDADE (CORREÇÃO 404) ---
+async function processOutboundQueue() {
+    if (outboundGatewayQueue.length > 0 && sock && gatewayStatus.status === 'CONNECTED') {
+        const item = outboundGatewayQueue.shift();
+        try {
+            const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
+            if (item.files?.length > 0) {
+                for (const file of item.files) {
+                    const filePath = path.join(MEDIA_DIR, path.basename(file.url));
+                    if (!fs.existsSync(filePath)) continue;
+                    const buffer = fs.readFileSync(filePath);
+                    let messageContent = {};
+                    if (file.type.startsWith('image/')) messageContent = { image: buffer, caption: item.text };
+                    else if (file.type.startsWith('video/')) messageContent = { video: buffer, caption: item.text, mimetype: file.type };
+                    else if (file.type.startsWith('audio/')) messageContent = { audio: buffer, mimetype: file.type, ptt: true };
+                    else messageContent = { document: buffer, mimetype: file.type, fileName: file.name, caption: item.text };
+                    await sock.sendMessage(jid, messageContent);
+                }
+            } else {
+                await sock.sendMessage(jid, { text: item.text });
+            }
+        } catch (e) {
+            if (!item.retry || item.retry < 3) { item.retry = (item.retry || 0) + 1; outboundGatewayQueue.push(item); }
+        }
+    }
+    setTimeout(processOutboundQueue, 1500);
+}
+
+function getSession(userId, userName = null) {
+    let session = activeChats.get(userId) || userSessions.get(userId);
+    if (!session) {
+        session = { userId, userName: userName || userId.split('@')[0], currentState: ChatState.GREETING, context: { history: {} }, aiHistory: [], messageLog: [], handledBy: 'bot', attendantId: null, createdAt: new Date().toISOString() };
+        userSessions.set(userId, session);
+        // Enviar menu inicial imediatamente para novos usuários
+        setTimeout(() => sendCurrentStateMenu(userId, session), 1000);
+    }
+    return session;
+}
+
+// --- EXPRESS API ---
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'dist')));
+app.use('/media', express.static(MEDIA_DIR));
 
 app.get('/favicon.ico', (req, res) => res.status(204).end());
-
-// Rota history sem prefixo api
 app.get('/history', (req, res) => {
     const { userId } = req.query;
-    if (!userId) return res.json({ messageLog: [] });
     const chat = activeChats.get(userId) || userSessions.get(userId);
     res.json(chat || { userId, messageLog: [] });
 });
-
-// Rota requests sem prefixo api
 app.get('/requests', (req, res) => res.json(requestQueue));
-
-// Rota ai-active sem prefixo api
-app.get('/ai-active', (req, res) => {
-    const aiChats = Array.from(userSessions.values())
-        .filter(s => s.handledBy === 'bot' && s.currentState !== ChatState.ATTENDANT_TRANSFER);
-    res.json(aiChats);
-});
-
-// Rota attendants sem prefixo api
+app.get('/ai-active', (req, res) => res.json(Array.from(userSessions.values()).filter(s => s.handledBy === 'bot')));
 app.get('/attendants', (req, res) => res.json(ATTENDANTS));
-
-// Handler para atendente específico (ex: attendant_2)
-app.get('/attendant_*', (req, res) => {
-    const id = req.path.split('/').pop();
-    const attendant = ATTENDANTS.find(a => a.id === id);
-    if (attendant) res.json(attendant);
-    else res.status(404).json({ error: 'Attendant not found' });
-});
-
-// --- API OFICIAL (/api/...) ---
-
-app.get('/api/attendants', (req, res) => res.json(ATTENDANTS));
-app.post('/api/attendants', (req, res) => {
-    ATTENDANTS = req.body;
-    saveData('attendants.json', ATTENDANTS);
-    res.json({ success: true });
-});
-
 app.get('/api/gateway/status', (req, res) => res.json(gatewayStatus));
 
-app.get('/api/clients', (req, res) => {
-    const clientsMap = new Map();
-    const storeContacts = store.getContacts();
-    Object.keys(storeContacts).forEach(uid => {
-        const name = resolveBestName(uid);
-        clientsMap.set(uid, { userId: uid, userName: name, tags: contactTags[uid] || [] });
-    });
-    activeChats.forEach(c => {
-        if (!clientsMap.has(c.userId)) {
-            clientsMap.set(c.userId, { userId: c.userId, userName: c.userName, tags: contactTags[c.userId] || [] });
-        }
-    });
-    res.json(Array.from(clientsMap.values()));
-});
-
-app.get('/api/chats/active', (req, res) => {
-    const summary = Array.from(activeChats.values()).map(c => ({
-        userId: c.userId, 
-        userName: resolveBestName(c.userId, c.userName), 
-        attendantId: c.attendantId, 
-        logLength: c.messageLog.length,
-        lastMessage: c.messageLog[c.messageLog.length - 1]
-    }));
-    res.json(summary);
-});
-
-app.get('/api/chats/history/:userId', (req, res) => {
-    const userId = req.params.userId;
-    const chat = activeChats.get(userId) || userSessions.get(userId);
-    if (chat) chat.userName = resolveBestName(userId, chat.userName);
-    res.json(chat || { userId, messageLog: [] });
-});
-
-app.post('/api/chats/attendant-reply', (req, res) => {
-    const { userId, text, files, replyTo } = req.body;
-    const chat = activeChats.get(userId);
-    if (chat) {
-        const msg = { sender: 'attendant', text, timestamp: new Date().toISOString(), status: 1 };
-        if (files?.length > 0) {
-            msg.files = files.map(f => ({ name: f.name, type: f.type, url: saveMediaToDisk(f.data, f.type, f.name) })).filter(f => f.url);
-        }
-        chat.messageLog.push(msg);
-        pruneSession(chat);
-        saveData('activeChats.json', activeChats);
-        queueOutbound(userId, { text, files: msg.files, replyTo });
-        res.json({ success: true });
-    } else res.status(404).send();
-});
-
-app.post('/api/chats/initiate', (req, res) => {
-    const { recipientNumber, clientName, message, attendantId, files } = req.body;
-    const cleanNumber = recipientNumber.replace(/\D/g, '');
-    const userId = cleanNumber + '@s.whatsapp.net';
-    const realName = resolveBestName(userId, clientName);
-    let session = getSession(userId, realName);
+app.post('/api/chats/takeover/:userId', (req, res) => {
+    const { userId } = req.params;
+    const { attendantId } = req.body;
+    let session = getSession(userId);
     session.handledBy = 'human';
     session.attendantId = attendantId;
-    const msg = { sender: 'attendant', text: message, timestamp: new Date().toISOString(), status: 1 };
-    if (files?.length > 0) {
-        msg.files = files.map(f => ({ name: f.name, type: f.type, url: saveMediaToDisk(f.data, f.type, f.name) })).filter(f => f.url);
-    }
-    session.messageLog.push(msg);
-    pruneSession(session);
     activeChats.set(userId, session);
+    userSessions.delete(userId);
+    requestQueue = requestQueue.filter(r => r.userId !== userId);
     saveData('activeChats.json', activeChats);
-    queueOutbound(userId, { text: message, files: msg.files });
+    saveData('requestQueue.json', requestQueue);
+    queueOutbound(userId, { text: "Olá! Sou um atendente humano e assumirei seu atendimento agora. Como posso ajudar?" });
     res.json(session);
 });
 
-app.post('/api/chats/read/:userId', async (req, res) => {
-    if (!sock) return res.status(503).send();
-    const chat = activeChats.get(req.params.userId);
-    const lastMsg = chat?.messageLog.reverse().find(m => m.sender === 'user' && m.msgId);
-    if (lastMsg) {
-        try {
-            await sock.readMessages([{ remoteJid: req.params.userId + '@s.whatsapp.net', id: lastMsg.msgId, fromMe: false }]);
-        } catch(e) {}
-    }
-    res.json({ success: true });
+app.post('/api/chats/attendant-reply', (req, res) => {
+    const { userId, text, files } = req.body;
+    const chat = activeChats.get(userId);
+    if (chat) {
+        const msg = { sender: 'attendant', text, timestamp: new Date().toISOString() };
+        if (files?.length > 0) msg.files = files.map(f => ({ name: f.name, type: f.type, url: saveMediaToDisk(f.data, f.type, f.name) }));
+        chat.messageLog.push(msg);
+        saveData('activeChats.json', activeChats);
+        queueOutbound(userId, { text, files: msg.files });
+        res.json({ success: true });
+    } else res.status(404).send();
 });
 
 app.post('/api/chats/resolve/:userId', (req, res) => {
     activeChats.delete(req.params.userId);
     saveData('activeChats.json', activeChats);
     res.json({ success: true });
-});
-
-app.post('/api/chats/takeover/:userId', (req, res) => {
-    const { userId } = req.params;
-    const { attendantId } = req.body;
-    let session = userSessions.get(userId) || getSession(userId);
-    session.handledBy = 'human';
-    session.attendantId = attendantId;
-    session.userName = resolveBestName(userId, session.userName);
-    activeChats.set(userId, session);
-    userSessions.delete(userId);
-    
-    // Remove da fila de espera ao assumir
-    requestQueue = requestQueue.filter(r => r.userId !== userId);
-    saveData('requestQueue.json', requestQueue);
-    
-    saveData('activeChats.json', activeChats);
-    res.json(session);
 });
 
 startWhatsApp();
