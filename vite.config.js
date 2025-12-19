@@ -6,16 +6,35 @@ export default defineConfig({
   plugins: [react()],
   server: {
     // Configura um proxy para as requisições de API durante o desenvolvimento.
-    // Todas as requisições para '/api' serão redirecionadas para o backend Express.
+    // Agora inclui rotas sem o prefixo /api para compatibilidade total.
     proxy: {
       '/api': {
-        target: 'http://localhost:3000', // URL do seu servidor backend
-        changeOrigin: true, // Necessário para hosts virtuais
+        target: 'http://localhost:3000',
+        changeOrigin: true,
       },
+      '/attendants': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/requests': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/ai-active': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/history': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/media': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      }
     },
   },
   build: {
-    // O diretório de saída para os arquivos de build (padrão é 'dist')
     outDir: 'dist',
   }
 });
