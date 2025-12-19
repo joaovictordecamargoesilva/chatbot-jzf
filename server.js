@@ -27,25 +27,29 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     downloadMediaMessage,
-    delay,
-    Browsers
+    delay
 } = pkg;
 
 import pino from 'pino';
 import QRCode from 'qrcode';
 
-// --- MANIPULADORES GLOBAIS DE ERRO ---
-process.on('uncaughtException', (err) => {
-  if (err.message && (err.message.includes('Bad MAC') || err.message.includes('decryption') || err.message.includes('ciphertext'))) {
-      console.warn(`[WhatsApp] Aviso: Erro de descriptografia (Bad MAC). Geralmente ignorado.`);
+// --- MANIPULADORES GLOBAIS DE ERRO DE PROCESSO ---
+process.on('uncaughtException', (err, origin) => {
+  if (err.message && err.message.includes('Bad MAC')) {
+      console.warn(`[WARNING - Bad MAC] Erro de descriptografia detectado. O sistema tentará solicitar o reenvio da mensagem. Ignorando crash.`);
       return;
   }
-  console.error(`[Fatal] Erro Crítico no Processo: ${err.message}`);
+  console.error(`[FATAL - RECOVERED] Exceção não capturada: ${err.message}`, { stack: err.stack, origin });
 });
 
-const SERVER_VERSION = "30.6.0_STABILITY_AND_ROUTES_FIX";
-console.log(`[JZF Server] Iniciando Versão: ${SERVER_VERSION}`);
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
+});
 
+const SERVER_VERSION = "29.6.0_CONTACT_FIX";
+console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
+
+// --- CONFIGURAÇÃO INICIAL ---
 const app = express();
 const port = process.env.PORT || 3000;
 const { API_KEY } = process.env;
@@ -53,156 +57,550 @@ const { API_KEY } = process.env;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// --- PERSISTÊNCIA DE DADOS ---
+// Tenta usar o caminho do Render Disk, senão usa local
 const DATA_DIR = process.env.RENDER_DISK_PATH || path.join(__dirname, 'data');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
+// LOG DE DIAGNÓSTICO
+console.log("========================================");
+console.log(`[STORAGE] Salvando dados em: ${DATA_DIR}`);
+console.log(`[STORAGE] Variável RENDER_DISK_PATH: ${process.env.RENDER_DISK_PATH || 'Não definida'}`);
+console.log("========================================");
 
-// --- PERSISTÊNCIA ---
+if (!fs.existsSync(DATA_DIR)) {
+  console.log(`[Persistence] Criando diretório de dados em: ${DATA_DIR}`);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(MEDIA_DIR)) {
+    console.log(`[Persistence] Criando diretório de mídia em: ${MEDIA_DIR}`);
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
+
+// Helper functions
+const serializeMap = (map) => Array.from(map.entries());
+const deserializeMap = (arr) => new Map(arr);
+
+// Salvamento com Backup (Blindado)
 const saveData = (filename, data) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
+    const tempPath = `${filePath}.tmp`;
+    const backupPath = `${filePath}.bak`;
+    
+    if (fs.existsSync(filePath)) {
+        try {
+            fs.copyFileSync(filePath, backupPath);
+        } catch(e) { console.warn(`[Persistence] Falha ao criar backup para ${filename}`); }
+    }
+
     let dataToSave = data;
-    if (data instanceof Map) dataToSave = Array.from(data.entries());
-    fs.writeFileSync(filePath, JSON.stringify(dataToSave, null, 2));
-  } catch (e) { console.error(`Erro ao salvar ${filename}`); }
+    if (data instanceof Map) dataToSave = serializeMap(data);
+    
+    fs.writeFileSync(tempPath, JSON.stringify(dataToSave, null, 2), 'utf8');
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    console.error(`[Persistence] ERRO CRÍTICO ao salvar dados em ${filename}:`, error);
+  }
 };
 
+// Carregamento com Recuperação (Blindado)
 const loadData = (filename, defaultValue) => {
   try {
     const filePath = path.join(DATA_DIR, filename);
-    if (!fs.existsSync(filePath)) return defaultValue;
-    const content = fs.readFileSync(filePath, 'utf8');
-    if (!content) return defaultValue;
-    const parsed = JSON.parse(content);
-    if (defaultValue instanceof Map) return new Map(parsed);
-    return parsed;
-  } catch (e) { return defaultValue; }
+    const backupPath = `${filePath}.bak`;
+
+    const tryRead = (path) => {
+        if (!fs.existsSync(path)) return null;
+        const content = fs.readFileSync(path, 'utf8');
+        if (!content || content.trim() === '') return null;
+        return JSON.parse(content);
+    };
+
+    let parsedData = tryRead(filePath);
+
+    if (!parsedData && fs.existsSync(backupPath)) {
+        console.warn(`[Persistence] Arquivo principal ${filename} corrompido ou vazio. Recuperando do backup...`);
+        parsedData = tryRead(backupPath);
+        if (parsedData) {
+            saveData(filename, defaultValue instanceof Map && Array.isArray(parsedData) ? deserializeMap(parsedData) : parsedData);
+        }
+    }
+
+    if (parsedData) {
+        if (defaultValue instanceof Map && Array.isArray(parsedData)) return deserializeMap(parsedData);
+        return parsedData;
+    }
+
+  } catch (error) {
+    console.error(`[Persistence] ERRO ao carregar ${filename}. Usando valor padrão.`, error);
+  }
+  return defaultValue;
 };
 
-// --- ESTADO GLOBAL ---
-let ATTENDANTS = loadData('attendants.json', [{ id: 'attendant_1', name: 'Admin' }]);
+// --- DISK STORAGE UTILS ---
+const saveMediaToDisk = (base64Data, mimeType, originalName) => {
+    try {
+        let ext = null;
+        
+        // Tenta pegar a extensão do nome original primeiro
+        if (originalName && originalName.includes('.')) {
+            ext = path.extname(originalName).substring(1);
+        }
+
+        // Se não conseguiu, tenta pelo mimeType
+        if (!ext) {
+            const extMap = {
+                'application/pdf': 'pdf',
+                'image/jpeg': 'jpg',
+                'image/png': 'png',
+                'image/webp': 'webp',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                'application/vnd.ms-excel': 'xls',
+                'text/csv': 'csv',
+                'application/xml': 'xml',
+                'text/xml': 'xml',
+                'application/msword': 'doc',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx'
+            };
+            ext = extMap[mimeType] || mimeType.split('/')[1] || 'bin';
+        }
+
+        const fileName = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+        const filePath = path.join(MEDIA_DIR, fileName);
+        
+        const buffer = Buffer.from(base64Data, 'base64');
+        fs.writeFileSync(filePath, buffer);
+        
+        return `/media/${fileName}`; 
+    } catch (error) {
+        console.error('[Media] Erro ao salvar arquivo em disco:', error);
+        return null;
+    }
+};
+
+// --- CUSTOM STORE IMPLEMENTATION (Contacts Fix) ---
+const makeCustomStore = () => {
+    let contacts = {};
+    const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
+
+    const load = () => {
+        try {
+            if (fs.existsSync(STORE_FILE)) {
+                const data = JSON.parse(fs.readFileSync(STORE_FILE, 'utf-8'));
+                if (data.contacts) contacts = data.contacts;
+                console.log(`[Store] Carregados ${Object.keys(contacts).length} contatos do arquivo.`);
+            }
+        } catch(e) { console.error('[Store] Erro ao carregar:', e); }
+    };
+
+    const save = () => {
+        try {
+            fs.writeFileSync(STORE_FILE, JSON.stringify({ contacts }, null, 2));
+        } catch(e) { console.error('[Store] Erro ao salvar:', e); }
+    };
+
+    // Lógica BLINDADA para mesclar dados e preservar nomes
+    const upsert = (id, data) => {
+        if (!id || id.includes('@g.us') || id === 'status@broadcast') return;
+        
+        const existing = contacts[id] || {};
+        
+        // LÓGICA DE PRESERVAÇÃO:
+        // Se já temos um nome, NÃO substitua por null/undefined.
+        // Se o novo dado tem nome, use-o.
+        const newName = data.name || undefined;
+        const newNotify = data.notify || undefined;
+        const newVerified = data.verifiedName || undefined;
+
+        // Mantém o que já existe se o novo for nulo
+        const finalName = newName || existing.name;
+        const finalNotify = newNotify || existing.notify;
+        const finalVerified = newVerified || existing.verifiedName;
+
+        contacts[id] = { 
+            ...existing, 
+            ...data,
+            name: finalName,
+            notify: finalNotify,
+            verifiedName: finalVerified
+        };
+    };
+
+    load();
+    setInterval(save, 10000); 
+
+    return {
+        getContacts: () => contacts,
+        upsert, 
+        save, 
+        bind: (ev) => {
+            ev.on('messaging-history.set', ({ contacts: newContacts }) => {
+                if (newContacts) {
+                    newContacts.forEach(c => upsert(c.id, c));
+                    save(); 
+                }
+            });
+            
+            ev.on('contacts.upsert', (newContacts) => {
+                newContacts.forEach(c => upsert(c.id, c));
+            });
+
+            ev.on('contacts.update', (updates) => {
+                updates.forEach(u => upsert(u.id, u));
+            });
+        }
+    };
+};
+
+const store = makeCustomStore();
+
+// --- ESTADO DO SISTEMA ---
+let ATTENDANTS = loadData('attendants.json', []);
+
+if (!Array.isArray(ATTENDANTS) || ATTENDANTS.length === 0) {
+    console.warn("[System] Lista de atendentes vazia. Criando usuário Admin padrão.");
+    ATTENDANTS = [{ id: 'attendant_1', name: 'Admin' }];
+    saveData('attendants.json', ATTENDANTS);
+}
+
+let nextAttendantId = 1;
+if (ATTENDANTS.length > 0) {
+    const ids = ATTENDANTS.map(a => {
+        const parts = a.id.split('_');
+        return parts.length > 1 ? parseInt(parts[1]) : 0;
+    });
+    nextAttendantId = Math.max(...ids) + 1;
+}
+
 const userSessions = loadData('userSessions.json', new Map());
-const activeChats = loadData('activeChats.json', new Map());
 let requestQueue = loadData('requestQueue.json', []);
+const activeChats = loadData('activeChats.json', new Map());
+const archivedChats = loadData('archivedChats.json', new Map());
+// syncedContacts mantido como backup secundário
+let syncedContacts = loadData('syncedContacts.json', []);
+
+let tags = loadData('tags.json', []); 
+let contactTags = loadData('contactTags.json', {}); 
+
+let nextRequestId = requestQueue.length > 0 && requestQueue.every(r => typeof r.id === 'number') ? Math.max(...requestQueue.map(r => r.id)) + 1 : 1;
+
+const MAX_SESSIONS = 1000; 
+const MAX_ARCHIVED_CHATS = 500;
+
+// --- CORREÇÃO DE "AGUARDANDO MENSAGEM" & BAD MAC ---
+// Classe persistente para salvar o cache de retentativa IMEDIATAMENTE após a escrita.
+// Isso garante que se o server reiniciar após um erro de MAC, ele lembra de pedir a mensagem novamente.
+class PersistentMap {
+    constructor(filename) {
+        this.filename = filename;
+        this.internalMap = loadData(filename, new Map());
+    }
+
+    get(key) { return this.internalMap.get(key); }
+    
+    set(key, value) {
+        this.internalMap.set(key, value);
+        saveData(this.filename, this.internalMap); // Salva imediatamente para evitar perda em crash
+        return this;
+    }
+    
+    delete(key) {
+        const result = this.internalMap.delete(key);
+        saveData(this.filename, this.internalMap);
+        return result;
+    }
+    
+    has(key) { return this.internalMap.has(key); }
+}
+
+const msgRetryCounterCache = new PersistentMap('msgRetryCounterMap.json');
+
 const outboundGatewayQueue = []; 
+
 let gatewayStatus = { status: 'DISCONNECTED', qrCode: null };
 let sock = null; 
+let reconnectAttempts = 0;
 
-const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
+// --- MIDDLEWARE ---
+app.use(express.json({ limit: '50mb' }));
 
-// --- LOGICA DO BOT ---
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+}
+
+app.use('/media', express.static(MEDIA_DIR));
+
+// --- CONFIGURAÇÃO IA (GEMINI) ---
+let ai = null;
+if (API_KEY) {
+    try {
+        ai = new GoogleGenAI({apiKey: API_KEY});
+        console.log("[AI] Cliente Google GenAI inicializado.");
+    } catch (error) {
+        console.error("[AI] ERRO na inicialização da IA.", error);
+    }
+}
+
+async function transcribeAudio(fileUrl, mimeType) {
+    if (!ai) return "[Áudio não transcrito - IA indisponível]";
+    try {
+        const filePath = path.join(MEDIA_DIR, path.basename(fileUrl));
+        if (!fs.existsSync(filePath)) return "[Erro: Arquivo de áudio não encontrado]";
+        
+        const fileData = fs.readFileSync(filePath).toString('base64');
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ parts: [{ inlineData: { mimeType: mimeType, data: fileData } }, { text: "Transcreva este áudio em português do Brasil de forma literal." }] }],
+        });
+        return response?.text?.trim() || "[Transcrição vazia]";
+    } catch (error) {
+        console.error("[Transcribe] Erro:", error);
+        return `[Erro na transcrição]`;
+    }
+}
+
+// --- LÓGICA DE SESSÃO E ARQUIVAMENTO ---
+function archiveSession(session) {
+    if (!session?.userId) return;
+    
+    let userHistory = archivedChats.get(session.userId) || [];
+    userHistory.push(session);
+    
+    if (userHistory.length > 20) userHistory.shift();
+
+    archivedChats.set(session.userId, userHistory);
+    saveData('archivedChats.json', archivedChats);
+    
+    if (archivedChats.size > MAX_ARCHIVED_CHATS) {
+        const oldestKey = archivedChats.keys().next().value;
+        archivedChats.delete(oldestKey);
+        saveData('archivedChats.json', archivedChats);
+    }
+}
 
 function getSession(userId, userName = null) {
     let session = activeChats.get(userId) || userSessions.get(userId);
     if (!session) {
-        session = { 
-            userId, 
-            userName: userName || userId.split('@')[0], 
-            currentState: ChatState.GREETING, 
-            context: { history: {} }, 
-            aiHistory: [], 
-            messageLog: [], 
-            handledBy: 'bot', 
-            createdAt: new Date().toISOString() 
+        if (userSessions.size >= MAX_SESSIONS) {
+            const oldestKey = userSessions.keys().next().value;
+            userSessions.delete(oldestKey);
+        }
+        session = {
+            userId, userName, currentState: ChatState.GREETING,
+            context: { history: {} }, aiHistory: [], messageLog: [],
+            handledBy: 'bot',
+            attendantId: null, createdAt: new Date().toISOString(),
         };
         userSessions.set(userId, session);
+        saveData('userSessions.json', userSessions);
+    } else if (userName && session.userName !== userName) {
+        session.userName = userName;
         saveData('userSessions.json', userSessions);
     }
     return session;
 }
 
-async function handleBotResponse(userId, userInput, session) {
-    const config = conversationFlow.get(session.currentState);
-    if (!config || session.handledBy === 'human') return;
-
-    const inputClean = userInput.trim();
-
-    // 1. Tentar processar como Opção (Número)
-    if (config.options) {
-        const optionIndex = parseInt(inputClean) - 1;
-        if (!isNaN(optionIndex) && config.options[optionIndex]) {
-            const selected = config.options[optionIndex];
-            session.currentState = selected.nextState;
-            if (selected.payload) session.context = { ...session.context, ...selected.payload };
-            return sendCurrentStateMenu(userId, session);
-        }
-    }
-
-    // 2. Tentar processar como entrada de texto
-    if (config.requiresTextInput) {
-        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
-            return handleAiChat(userId, inputClean, session);
-        } else {
-            session.context.history[session.currentState] = inputClean;
-            if (config.nextState) {
-                session.currentState = config.nextState;
-                return sendCurrentStateMenu(userId, session);
-            }
-        }
-    }
-
-    // 3. Fallback: Se não entendeu o comando ou é uma mensagem genérica, re-envia o menu
-    sendCurrentStateMenu(userId, session);
-}
-
-async function handleAiChat(userId, userInput, session) {
-    if (!ai) return queueOutbound(userId, { text: "Assistente de IA temporariamente indisponível." });
-    try {
-        const dept = session.context.department || "Contábil";
-        const instruction = departmentSystemInstructions.pt[dept] || departmentSystemInstructions.pt["Contábil"];
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: [{ parts: [{ text: `Usuário: ${userInput}` }] }],
-            config: { systemInstruction: instruction }
-        });
-
-        queueOutbound(userId, { text: response.text });
-        
-        // Re-envia as opções de navegação da IA
-        const config = conversationFlow.get(ChatState.AI_ASSISTANT_CHATTING);
-        let menuText = "\n\n--- OPÇÕES ---\n";
-        config.options.forEach((opt, idx) => {
-            menuText += `*${idx + 1}* - ${translations.pt[opt.textKey] || opt.textKey}\n`;
-        });
-        queueOutbound(userId, { text: menuText });
-
-    } catch (e) { 
-        queueOutbound(userId, { text: "Tive um problema técnico. Pode repetir sua pergunta?" });
-    }
-}
-
-function sendCurrentStateMenu(userId, session) {
-    const config = conversationFlow.get(session.currentState);
-    if (!config) return;
-
-    let textTemplate = translations.pt[config.textKey] || config.textKey;
-    let text = typeof textTemplate === 'function' ? textTemplate(session.context || session) : textTemplate;
+// GC Manual
+setInterval(() => {
+    const now = new Date().getTime();
+    const expiry = 24 * 60 * 60 * 1000;
     
-    if (config.options) {
-        text += "\n\nEscolha uma opção digitando o número correspondente:\n";
-        config.options.forEach((opt, idx) => {
-            text += `*${idx + 1}* - ${translations.pt[opt.textKey] || opt.textKey}\n`;
-        });
-    }
-
-    queueOutbound(userId, { text });
-
-    if (session.currentState === ChatState.ATTENDANT_TRANSFER || session.currentState === ChatState.SCHEDULING_CONFIRMED) {
-        if (!requestQueue.find(r => r.userId === userId)) {
-            requestQueue.push({ userId, userName: session.userName, timestamp: new Date().toISOString(), department: session.context.department || 'Geral' });
-            saveData('requestQueue.json', requestQueue);
+    for (const [key, session] of userSessions.entries()) {
+        const lastInteraction = session.messageLog.length > 0 
+            ? new Date(session.messageLog[session.messageLog.length-1].timestamp).getTime()
+            : new Date(session.createdAt).getTime();
+            
+        if (now - lastInteraction > expiry) {
+            userSessions.delete(key);
         }
+    }
+    saveData('userSessions.json', userSessions);
+    
+    if (global.gc) { try { global.gc(); } catch (e) {} }
+}, 10 * 60 * 1000); 
+
+function addRequestToQueue(session, department, message) {
+    if (requestQueue.some(r => r.userId === session.userId) || activeChats.has(session.userId)) return;
+    const request = { id: nextRequestId++, userId: session.userId, userName: session.userName, department, message, timestamp: new Date().toISOString() };
+    requestQueue.unshift(request);
+    saveData('requestQueue.json', requestQueue);
+}
+
+// --- LÓGICA DO CHATBOT ---
+function formatFlowStepForWhatsapp(step, context) {
+    let messageText = '';
+    const textTemplate = translations.pt[step.textKey];
+    if (textTemplate) messageText = typeof textTemplate === 'function' ? textTemplate(context) : textTemplate;
+    
+    if (step.options?.length > 0) {
+        messageText += `\n\n${step.options.map((opt, i) => `*${i + 1}*. ${translations.pt[opt.textKey] || opt.textKey}`).join('\n')}`;
+        messageText += `\n\nPor favor, digite o número da opção desejada.`;
+    }
+    return messageText;
+}
+
+async function processMessage(session, userInput, file) {
+    const { userId } = session;
+    
+    // REDUNDÂNCIA: Se por acaso chegar aqui e for humano, aborta
+    if (session.handledBy === 'human' || session.handledBy === 'bot_queued') return;
+    
+    if (!conversationFlow.has(session.currentState)) session.currentState = ChatState.GREETING;
+    
+    let currentStep = conversationFlow.get(session.currentState);
+    let nextState, payload;
+    const choice = parseInt(userInput.trim(), 10);
+    const selectedOption = (currentStep.options && !isNaN(choice)) ? currentStep.options[choice - 1] : null;
+
+    if (selectedOption) {
+        nextState = selectedOption.nextState;
+        payload = selectedOption.payload;
+    } else if (currentStep.requiresTextInput) {
+        if (session.currentState === ChatState.AI_ASSISTANT_CHATTING) {
+            if (!ai) { queueOutbound(userId, { text: "IA indisponível no momento." }); return; }
+            try {
+                session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
+                if (session.aiHistory.length > 10) session.aiHistory = session.aiHistory.slice(-10);
+                
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: session.aiHistory, config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." } });
+                const aiText = response.text;
+                queueOutbound(userId, { text: aiText });
+                session.messageLog.push({ sender: 'bot', text: aiText, timestamp: new Date() });
+                session.aiHistory.push({ role: 'model', parts: [{ text: aiText }] });
+            } catch (error) { console.error(`[AI] Erro:`, error); queueOutbound(userId, { text: translations.pt.error }); }
+            return;
+        }
+        nextState = currentStep.nextState;
+        session.context.history[session.currentState] = userInput;
+    } else {
+        if (session.currentState !== ChatState.GREETING) queueOutbound(userId, { text: "Opção inválida. Digite apenas o número." });
+        const retryMsg = formatFlowStepForWhatsapp(currentStep, session.context);
+        queueOutbound(userId, { text: retryMsg });
+        return;
+    }
+    
+    if (payload) session.context = { ...session.context, ...payload };
+    
+    if (nextState === ChatState.END_SESSION) {
+        queueOutbound(userId, { text: translations.pt.sessionEnded });
+        session.resolvedBy = "Cliente";
+        session.resolvedAt = new Date().toISOString();
+        archiveSession(session);
+        userSessions.delete(userId);
+        saveData('userSessions.json', userSessions);
+        return;
+    }
+    
+    let currentState = nextState;
+    while(currentState) {
+        session.currentState = currentState;
+        const step = conversationFlow.get(currentState);
+        if (currentState === ChatState.ATTENDANT_TRANSFER || currentState === ChatState.SCHEDULING_CONFIRMED) {
+            const department = currentState === ChatState.SCHEDULING_CONFIRMED ? 'Agendamento' : session.context.department;
+            const details = session.context.history[ChatState.SCHEDULING_NEW_CLIENT_DETAILS] || session.context.history[ChatState.SCHEDULING_EXISTING_CLIENT_DETAILS];
+            const reason = currentState === ChatState.SCHEDULING_CONFIRMED ? `Agendamento: ${session.context.clientType} - ${details}` : `Contato para setor ${department}.`;
+            addRequestToQueue(session, department, reason);
+            session.handledBy = 'bot_queued';
+        }
+        const reply = formatFlowStepForWhatsapp(step, session.context);
+        queueOutbound(userId, { text: reply });
+        session.messageLog.push({ sender: 'bot', text: reply, timestamp: new Date() });
+        if (step.nextState && !step.requiresTextInput && (!step.options || step.options.length === 0)) {
+            currentState = step.nextState;
+            await new Promise(r => setTimeout(r, 500));
+        } else { currentState = null; }
     }
 }
 
-// --- WHATSAPP ENGINE ---
+function queueOutbound(userId, content) {
+    outboundGatewayQueue.push({ userId, ...content });
+}
+
+async function processIncomingMessage({ userId, userName, userInput, file, replyContext, msgId }) {
+    if (!userId) return;
+    
+    // FIX: Normalizar JID para evitar duplicação por sufixo de dispositivo (ex: :12)
+    const cleanUserId = userId.replace(/:.*$/, '');
+    
+    // Atualiza contatos (Se userName for inválido, o upsert blindado não substitui o existente)
+    if (userName) {
+        store.upsert(cleanUserId, { id: cleanUserId, notify: userName });
+    }
+    
+    const session = getSession(cleanUserId, userName);
+
+    // --- GUARDIÃO ABSOLUTO: Se está em activeChats, É HUMANO. ---
+    if (activeChats.has(cleanUserId)) {
+        session.handledBy = 'human';
+    }
+
+    // --- PROTEÇÃO DE CONTEXTO ---
+    // Se a última mensagem no log foi enviada por um atendente, assumimos que é uma conversa humana ativa.
+    const lastLog = session.messageLog[session.messageLog.length - 1];
+    if (lastLog && lastLog.sender === 'attendant') {
+        session.handledBy = 'human';
+        // Move para ActiveChats automaticamente se houve intervenção humana recente e não está lá
+        if (!activeChats.has(cleanUserId)) {
+            activeChats.set(cleanUserId, session);
+            userSessions.delete(cleanUserId);
+        }
+    }
+
+    let effectiveInput = userInput;
+    const logEntry = { 
+        sender: 'user', 
+        text: userInput, 
+        timestamp: new Date().toISOString(),
+        msgId: msgId // SALVA O ID DO WHATSAPP PARA RESPOSTA (QUOTE)
+    };
+    
+    // Tratamento de Arquivo: Salvar no Disco e usar URL
+    if (file) {
+        const url = saveMediaToDisk(file.data, file.type, file.name);
+        if (url) {
+            logEntry.files = [{
+                name: file.name,
+                type: file.type,
+                url: url 
+            }];
+        }
+    }
+
+    if (replyContext) logEntry.replyTo = { text: replyContext.text, sender: replyContext.fromMe ? 'attendant' : 'user', senderName: replyContext.fromMe ? 'Você' : session.userName };
+    session.messageLog.push(logEntry);
+
+    if (logEntry.files && logEntry.files[0]?.type?.startsWith('audio/')) {
+        const transcription = await transcribeAudio(logEntry.files[0].url, logEntry.files[0].type);
+        effectiveInput = transcription;
+        session.messageLog.push({ sender: 'system', text: `Transcrição: "${transcription}"`, timestamp: new Date().toISOString() });
+    }
+    
+    // TRAVA DE SEGURANÇA: Se for Humano, o bot NÃO TOCA.
+    if (session.handledBy === 'human' || session.handledBy === 'bot_queued') {
+        if (activeChats.has(cleanUserId)) saveData('activeChats.json', activeChats);
+        else saveData('userSessions.json', userSessions);
+        return;
+    }
+    
+    if (session.handledBy === 'bot') {
+       await processMessage(session, effectiveInput, file); 
+       saveData('userSessions.json', userSessions);
+    }
+}
+
+// --- INTEGRAÇÃO WHATSAPP (BAILEYS) ---
+const SESSION_FOLDER = path.join(DATA_DIR, 'baileys_auth_info');
 
 async function startWhatsApp() {
+    console.log('[WhatsApp] Iniciando serviço...');
     gatewayStatus.status = 'LOADING';
+    
     try {
-        const { state, saveCreds } = await useMultiFileAuthState(path.join(DATA_DIR, 'baileys_auth_info'));
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
         const { version } = await fetchLatestBaileysVersion();
         
         sock = makeWASocket({
@@ -210,178 +608,723 @@ async function startWhatsApp() {
             auth: state,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: true,
-            browser: Browsers.macOS('Desktop'),
+            browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Usar string fixa ajuda a manter a sessão
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 15000,
+            emitOwnEvents: false,
+            retryRequestDelayMs: 2000,
+            defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            generateHighQualityLinkPreview: true,
-            retryRequestDelayMs: 2000
+            msgRetryCounterCache, // CRÍTICO: Usando classe persistente corrigida
+            // CONFIGURAÇÕES AVANÇADAS DE ESTABILIDADE
+            transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 500 },
+            getMessage: async () => ({ conversation: 'hello' })
         });
+
+        store.bind(sock.ev);
 
         sock.ev.on('creds.update', saveCreds);
 
+        sock.ev.on('messaging-history.set', ({ contacts }) => {
+            if (!contacts) return;
+            console.log(`[Backup Sync] Processando histórico inicial: ${contacts.length} contatos.`);
+            
+            let hasNew = false;
+            for (const contact of contacts) {
+                if (contact.id.includes('@g.us') || contact.id === 'status@broadcast') continue;
+                
+                store.upsert(contact.id, contact);
+
+                const exists = syncedContacts.find(c => c.userId === contact.id);
+                // Prioriza Name > Notify > Verified > Username Anterior
+                const name = contact.name || contact.notify || contact.verifiedName;
+                
+                if (!exists) {
+                    // Só adiciona se tiver um nome válido ou usa ID como fallback
+                    syncedContacts.push({ userId: contact.id, userName: name || contact.id.split('@')[0] });
+                    hasNew = true;
+                } else {
+                    // Só atualiza se o novo nome for válido e diferente
+                    if (name && exists.userName !== name) {
+                        exists.userName = name;
+                        hasNew = true;
+                    } 
+                }
+            }
+            if (hasNew) {
+                saveData('syncedContacts.json', syncedContacts);
+            }
+        });
+
+        sock.ev.on('contacts.upsert', (contacts) => {
+            contacts.forEach(c => store.upsert(c.id, c));
+            
+            let hasNew = false;
+            contacts.forEach(c => {
+                if (c.id.includes('@g.us') || c.id === 'status@broadcast') return;
+                
+                const exists = syncedContacts.find(sc => sc.userId === c.id);
+                const name = c.name || c.notify || c.verifiedName;
+                
+                if (!exists) {
+                    syncedContacts.push({ userId: c.id, userName: name || c.id.split('@')[0] });
+                    hasNew = true;
+                } else if (name && exists.userName !== name) {
+                    exists.userName = name;
+                    hasNew = true;
+                }
+            });
+            if(hasNew) saveData('syncedContacts.json', syncedContacts);
+        });
+
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
+            
             if (qr) {
                 gatewayStatus.qrCode = await QRCode.toDataURL(qr);
                 gatewayStatus.status = 'QR_CODE_READY';
             }
-            if (connection === 'open') {
+
+            if (connection === 'close') {
+                const error = lastDisconnect?.error;
+                const statusCode = error?.output?.statusCode;
+                
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                gatewayStatus.status = 'DISCONNECTED';
+
+                if (shouldReconnect) {
+                    const delayMs = Math.min(5000 * (reconnectAttempts + 1), 60000);
+                    reconnectAttempts++;
+                    console.log(`[WhatsApp] Conexão caiu (Código: ${statusCode}). Reconectando em ${delayMs/1000}s...`);
+                    setTimeout(startWhatsApp, delayMs);
+                } else {
+                    console.log(`[WhatsApp] Logout explícito detectado. Limpando sessão.`);
+                    try {
+                        fs.rmSync(SESSION_FOLDER, { recursive: true, force: true });
+                    } catch(e) {}
+                    
+                    gatewayStatus.qrCode = null;
+                    reconnectAttempts = 0;
+                    setTimeout(startWhatsApp, 2000);
+                }
+            } else if (connection === 'open') {
                 gatewayStatus.status = 'CONNECTED';
                 gatewayStatus.qrCode = null;
-                console.log('[WhatsApp] Online!');
-            }
-            if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                gatewayStatus.status = 'DISCONNECTED';
-                if (shouldReconnect) setTimeout(startWhatsApp, 5000);
+                reconnectAttempts = 0;
+                console.log('[WhatsApp] CONEXÃO ESTABELECIDA!');
             }
         });
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
-                if (msg.key.fromMe) continue;
-                
-                const cleanId = msg.key.remoteJid.replace(/:.*$/, '');
-                const name = msg.pushName || cleanId.split('@')[0];
-                
-                // Se não houver mensagem legível, pode ser erro de chave ou mídia sem legenda
-                if (!msg.message) {
-                    console.warn(`[WhatsApp] Mensagem ignorada de ${cleanId} (Provável Bad MAC ou Erro de Chave).`);
-                    // Mesmo com erro de descriptografia, inicializamos a sessão se for nova
-                    getSession(cleanId, name);
-                    continue;
-                }
+                // MENSAGENS RECEBIDAS (DO CLIENTE)
+                if (!msg.key.fromMe && msg.message) {
+                    const rawUserId = msg.key.remoteJid;
+                    const userName = msg.pushName || rawUserId.split('@')[0];
+                    const msgId = msg.key.id; 
+                    
+                    let file = null;
+                    const messageType = Object.keys(msg.message)[0];
+                    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
-                let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-                
-                // Tratar mídia básica
-                if (!text) {
-                    if (msg.message.imageMessage) text = msg.message.imageMessage.caption || "";
-                    if (msg.message.videoMessage) text = msg.message.videoMessage.caption || "";
-                    if (msg.message.documentMessage) text = msg.message.documentMessage.caption || "";
-                }
+                    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                        try {
+                            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                            const msgContent = msg.message[messageType];
+                            const mime = msgContent.mimetype || 'application/octet-stream';
+                            let fileName = msgContent.fileName || msgContent.title;
+                            
+                            if (!fileName) {
+                                const extMap = {
+                                    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+                                    'video/mp4': 'mp4', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg',
+                                    'application/pdf': 'pdf',
+                                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                                    'application/vnd.ms-excel': 'xls',
+                                    'text/csv': 'csv', 'text/plain': 'txt', 'application/xml': 'xml', 'text/xml': 'xml'
+                                };
+                                const ext = extMap[mime] || mime.split('/')[1] || 'bin';
+                                fileName = `${messageType}_${Date.now()}.${ext}`;
+                            }
 
-                await processIncomingMessage({ userId: cleanId, userName: name, userInput: text });
+                            file = {
+                                name: fileName,
+                                type: mime,
+                                data: buffer.toString('base64')
+                            };
+                            text = msg.message[messageType].caption || '';
+                        } catch (e) { console.error('Erro download mídia:', e); }
+                    }
+
+                    let replyContext = null;
+                    const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message[messageType]?.contextInfo;
+                    if (contextInfo && contextInfo.quotedMessage) {
+                        const quotedText = contextInfo.quotedMessage.conversation || contextInfo.quotedMessage.extendedTextMessage?.text;
+                        replyContext = {
+                            text: quotedText || "[Mídia/Arquivo]",
+                            fromMe: contextInfo.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net'
+                        };
+                    }
+
+                    await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext, msgId });
+                }
+                // MENSAGENS ENVIADAS PELO PRÓPRIO DISPOSITIVO (WEB OU CELULAR)
+                else if (msg.key.fromMe && msg.message) {
+                    const rawUserId = msg.key.remoteJid;
+                    const cleanUserId = rawUserId.replace(/:.*$/, '');
+                    
+                    const messageType = Object.keys(msg.message)[0];
+                    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+                    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                         text = msg.message[messageType].caption || '[Arquivo Enviado]';
+                    }
+
+                    if (rawUserId === 'status@broadcast') continue;
+
+                    const session = activeChats.get(cleanUserId) || userSessions.get(cleanUserId);
+                    if (session) {
+                         const lastLog = session.messageLog[session.messageLog.length - 1];
+                         const isEcho = lastLog && (lastLog.text === text);
+
+                         if (!isEcho) {
+                             session.handledBy = 'human';
+                             session.messageLog.push({
+                                 sender: 'attendant',
+                                 text: text,
+                                 files: [], 
+                                 timestamp: new Date().toISOString(),
+                                 status: 2,
+                                 msgId: msg.key.id 
+                             });
+                             
+                             if (!activeChats.has(cleanUserId)) {
+                                 activeChats.set(cleanUserId, session);
+                                 userSessions.delete(cleanUserId);
+                             }
+                             saveData('activeChats.json', activeChats);
+                         }
+                    }
+                }
             }
         });
 
-    } catch (e) {
-        console.error('[WhatsApp] Erro fatal:', e);
-        setTimeout(startWhatsApp, 10000);
+        sock.ev.on('messages.update', async(updates) => {
+           for(const update of updates) {
+               if(update.update.status) {
+                  const status = update.update.status; 
+                  for (const [userId, chat] of activeChats.entries()) {
+                       const normalizedId = userId.replace(/:.*$/, '');
+                       if (normalizedId === update.key.remoteJid.replace(/:.*$/, '')) {
+                           const lastMsg = chat.messageLog[chat.messageLog.length -1];
+                           if(lastMsg && lastMsg.sender === 'attendant') {
+                               lastMsg.status = status;
+                               saveData('activeChats.json', activeChats);
+                           }
+                       }
+                  }
+               }
+           }
+        });
+
+    } catch (error) {
+        console.error('[FATAL] Erro ao iniciar WhatsApp (Sessão Corrompida?):', error);
+        setTimeout(startWhatsApp, 5000);
     }
 }
 
-async function processIncomingMessage({ userId, userName, userInput }) {
-    const session = getSession(userId, userName);
-    
-    session.messageLog.push({ sender: 'user', text: userInput || "(Mídia)", timestamp: new Date().toISOString() });
-
-    if (session.handledBy === 'bot') {
-        // Se for a PRIMEIRA mensagem real ou se o bot estiver no estado inicial, envia o menu
-        if (session.messageLog.length === 1 || session.currentState === ChatState.GREETING) {
-             // Se o usuário já enviou algo que não seja comando, tratamos como saudação
-             await handleBotResponse(userId, userInput, session);
-        } else {
-             await handleBotResponse(userId, userInput, session);
-        }
-    }
-
-    saveData(activeChats.has(userId) ? 'activeChats.json' : 'userSessions.json', activeChats.has(userId) ? activeChats : userSessions);
-}
-
-function queueOutbound(userId, content) {
-    outboundGatewayQueue.push({ userId, ...content, retry: 0 });
-}
-
-async function processOutboundQueue() {
+setInterval(async () => {
     if (outboundGatewayQueue.length > 0 && sock && gatewayStatus.status === 'CONNECTED') {
         const item = outboundGatewayQueue.shift();
         try {
             const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
-            await sock.sendMessage(jid, { text: item.text });
-        } catch (e) {
-            if (item.retry < 3) {
-                item.retry++;
-                outboundGatewayQueue.push(item);
+            
+            // Lógica de Resposta (Reply/Quote)
+            let options = {};
+            if (item.replyTo && item.replyTo.id) {
+                // Constrói objeto de resposta para o Baileys
+                options.quoted = {
+                    key: {
+                        remoteJid: jid,
+                        fromMe: item.replyTo.fromMe || false,
+                        id: item.replyTo.id
+                    },
+                    message: { conversation: item.replyTo.text || '...' } // Mock minimalista
+                };
             }
+
+            if (item.files && item.files.length > 0) {
+                 for (const file of item.files) {
+                    let buffer;
+                    if (file.url) {
+                        const filePath = path.join(MEDIA_DIR, path.basename(file.url));
+                        if(fs.existsSync(filePath)) buffer = fs.readFileSync(filePath);
+                        else { console.error('Arquivo de mídia não encontrado no disco:', filePath); continue; }
+                    } else if (file.data) {
+                        buffer = Buffer.from(file.data, 'base64');
+                    } else continue;
+
+                    await sock.sendMessage(jid, { 
+                        [file.type.startsWith('image') ? 'image' : 'document']: buffer, 
+                        caption: item.text,
+                        mimetype: file.type,
+                        fileName: file.name
+                    }, options);
+                 }
+            } else {
+                 await sock.sendMessage(jid, { text: item.text }, options);
+            }
+
+            if(activeChats.has(item.userId)) {
+                const chat = activeChats.get(item.userId);
+                const lastMsg = chat.messageLog[chat.messageLog.length - 1];
+                if(lastMsg && lastMsg.text === item.text) {
+                    lastMsg.status = 2; // Enviado
+                    saveData('activeChats.json', activeChats);
+                }
+            }
+
+        } catch (e) {
+            console.error('[Outbound] Erro ao enviar:', e.message);
+            outboundGatewayQueue.unshift(item);
+            await new Promise(r => setTimeout(r, 5000));
         }
     }
-    setTimeout(processOutboundQueue, 1500);
-}
+}, 500); 
 
-// --- EXPRESS API (CORREÇÃO DE ROTAS 404) ---
-
-app.use(express.json({ limit: '50mb' }));
-app.use('/media', express.static(MEDIA_DIR));
-
-// Helper para expor rotas em múltiplos caminhos requisitados pelo frontend
-const expose = (paths, handler) => {
-    const p = Array.isArray(paths) ? paths : [paths];
-    p.forEach(path => {
-        app.get(path, handler);
-        app.get(`/api${path}`, handler);
-    });
-};
-
-expose(['/attendants'], (req, res) => res.json(ATTENDANTS));
-expose(['/requests'], (req, res) => res.json(requestQueue));
-expose(['/ai-active'], (req, res) => res.json(Array.from(userSessions.values()).filter(s => s.handledBy === 'bot')));
-expose(['/history'], (req, res) => {
-    const { userId } = req.query;
-    const chat = activeChats.get(userId) || userSessions.get(userId);
-    res.json(chat || { userId, messageLog: [] });
-});
-expose(['/active', '/chats/active'], (req, res) => {
-    res.json(Array.from(activeChats.values()));
-});
-expose(['/clients'], (req, res) => {
-    const clients = Array.from(userSessions.values()).map(s => ({ userId: s.userId, userName: s.userName }));
-    res.json(clients);
-});
-
-// Handler para attendant específico
-app.get(['/attendant_*', '/api/attendant_*'], (req, res) => {
-    const id = req.path.split('/').pop();
-    const attendant = ATTENDANTS.find(a => a.id === id);
-    if (attendant) res.json(attendant);
-    else res.status(404).json({ error: "Atendente não encontrado" });
-});
+// --- API ENDPOINTS ---
 
 app.get('/api/gateway/status', (req, res) => res.json(gatewayStatus));
+app.get('/api/attendants', (req, res) => res.json(ATTENDANTS));
+app.post('/api/attendants', (req, res) => {
+    const newAttendant = { id: `attendant_${nextAttendantId++}`, name: req.body.name };
+    ATTENDANTS.push(newAttendant);
+    saveData('attendants.json', ATTENDANTS);
+    res.json(newAttendant);
+});
+
+// Listagem de clientes (COM SUPORTE A TAGS)
+app.get('/api/clients', (req, res) => {
+    const clientsMap = new Map();
+    
+    // 1. Pega do STORE (Memória + Disco) - Fonte mais confiável para NOMES
+    const storeContacts = store.getContacts();
+    Object.values(storeContacts).forEach(c => {
+        if (!c.id.includes('@g.us') && c.id !== 'status@broadcast') {
+            // HIERARQUIA DE NOME: Name (Agenda) > Notify (PushName) > Verified > Username Anterior > ID
+            const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
+            const clientTags = contactTags[c.id] || [];
+            clientsMap.set(c.id, { userId: c.id, userName: name, tags: clientTags });
+        }
+    });
+
+    // 2. Backup do syncedContacts (apenas se não estiver no Store)
+    syncedContacts.forEach(c => { 
+        if (!clientsMap.has(c.userId)) {
+            const clientTags = contactTags[c.userId] || [];
+            clientsMap.set(c.userId, { ...c, tags: clientTags });
+        }
+    });
+    
+    // 3. Completa com chats ativos e arquivados
+    const addIfNotExists = (userId, userName) => { 
+        if (!clientsMap.has(userId)) {
+            const clientTags = contactTags[userId] || [];
+            clientsMap.set(userId, { userId, userName: userName || userId.split('@')[0], tags: clientTags }); 
+        }
+    };
+    
+    activeChats.forEach(c => addIfNotExists(c.userId, c.userName));
+    requestQueue.forEach(r => addIfNotExists(r.userId, r.userName));
+    archivedChats.forEach((sessions, userId) => { const lastSession = sessions[sessions.length - 1]; if (lastSession) addIfNotExists(userId, lastSession.userName); });
+    
+    const sortedClients = Array.from(clientsMap.values()).sort((a, b) => (a.userName || '').localeCompare(b.userName || ''));
+    res.json(sortedClients);
+});
+
+// --- API DE TAGS (LISTAS) ---
+app.get('/api/tags', (req, res) => res.json(tags));
+
+app.post('/api/tags', (req, res) => {
+    const { name, color } = req.body;
+    const newTag = { id: `tag_${Date.now()}`, name, color: color || '#666' };
+    tags.push(newTag);
+    saveData('tags.json', tags);
+    res.json(newTag);
+});
+
+app.delete('/api/tags/:id', (req, res) => {
+    tags = tags.filter(t => t.id !== req.params.id);
+    saveData('tags.json', tags);
+    // Opcional: Remover essa tag dos contatos
+    for (const userId in contactTags) {
+        contactTags[userId] = contactTags[userId].filter(tid => tid !== req.params.id);
+    }
+    saveData('contactTags.json', contactTags);
+    res.json({ success: true });
+});
+
+app.post('/api/tags/assign-bulk', (req, res) => {
+    const { tagId, userIds } = req.body;
+    if (!tagId || !userIds || !Array.isArray(userIds)) return res.status(400).send();
+    
+    // Verifica se a tag existe
+    if (!tags.find(t => t.id === tagId)) return res.status(404).json({error: 'Tag não encontrada'});
+
+    userIds.forEach(uid => {
+        if (!contactTags[uid]) contactTags[uid] = [];
+        if (!contactTags[uid].includes(tagId)) {
+            contactTags[uid].push(tagId);
+        }
+    });
+    
+    saveData('contactTags.json', contactTags);
+    res.json({ success: true });
+});
+
+app.get('/api/requests', (req, res) => res.json(requestQueue));
+
+app.get('/api/chats/active', (req, res) => {
+    const activeSummary = Array.from(activeChats.values()).map(c => {
+        const lastMsg = c.messageLog[c.messageLog.length - 1];
+        
+        // --- OTIMIZAÇÃO DE MEMÓRIA (Out of Memory Fix) ---
+        let safeLastMsg = null;
+        if (lastMsg) {
+            safeLastMsg = { ...lastMsg };
+            if (safeLastMsg.files) {
+                safeLastMsg.files = safeLastMsg.files.map(f => ({
+                    name: f.name,
+                    type: f.type,
+                    url: f.url // Envia apenas URL, nunca o 'data'
+                }));
+            }
+        }
+
+        return { 
+            userId: c.userId, 
+            userName: c.userName, 
+            attendantId: c.attendantId, 
+            logLength: c.messageLog.length, 
+            lastMsgStatus: lastMsg ? lastMsg.status : 0, 
+            lastMessage: safeLastMsg 
+        };
+    });
+    res.json(activeSummary);
+});
+
+app.get('/api/chats/ai-active', (req, res) => {
+    const aiChats = Array.from(userSessions.values()).filter(s => s.handledBy === 'bot' && !activeChats.has(s.userId) && (s.currentState === 'AI_ASSISTANT_SELECT_DEPT' || s.currentState === 'AI_ASSISTANT_CHATTING')).map(c => ({ userId: c.userId, userName: c.userName, logLength: c.messageLog.length }));
+    res.json(aiChats);
+});
+
+app.get('/api/chats/history', (req, res) => {
+    const historySummary = [];
+    archivedChats.forEach((sessions, userId) => { if(sessions.length > 0) { const lastSession = sessions[sessions.length - 1]; historySummary.push({ userId, userName: lastSession.userName, resolvedAt: lastSession.resolvedAt }); } });
+    res.json(historySummary);
+});
+
+app.get('/api/chats/history/:userId', (req, res) => {
+    const { userId } = req.params;
+    const oldSessions = archivedChats.get(userId) || [];
+    const currentSession = activeChats.get(userId) || userSessions.get(userId);
+    let fullLog = [];
+    oldSessions.forEach(s => { if(s.messageLog) fullLog = fullLog.concat(s.messageLog); });
+    if(currentSession && currentSession.messageLog) { fullLog = fullLog.concat(currentSession.messageLog); }
+    fullLog.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const responseData = currentSession ? JSON.parse(JSON.stringify(currentSession)) : (oldSessions.length > 0 ? JSON.parse(JSON.stringify(oldSessions[oldSessions.length-1])) : { userId, userName: 'Novo Usuário', attendantId: null });
+    responseData.messageLog = fullLog;
+    res.json(responseData);
+});
 
 app.post('/api/chats/takeover/:userId', (req, res) => {
     const { userId } = req.params;
-    let session = getSession(userId);
+    const { attendantId } = req.body;
+    let session = userSessions.get(userId);
+    if (!session) {
+         const queueIndex = requestQueue.findIndex(r => r.userId === userId);
+         if (queueIndex !== -1) {
+             const reqItem = requestQueue[queueIndex];
+             session = getSession(userId, reqItem.userName);
+             requestQueue.splice(queueIndex, 1);
+             saveData('requestQueue.json', requestQueue);
+         } else {
+             session = getSession(userId);
+         }
+    } else {
+        const qIdx = requestQueue.findIndex(r => r.userId === userId);
+        if(qIdx !== -1) {
+            requestQueue.splice(qIdx, 1);
+            saveData('requestQueue.json', requestQueue);
+        }
+    }
+    const attendantObj = ATTENDANTS.find(a => a.id === attendantId);
+    const attendantName = attendantObj ? attendantObj.name : 'um atendente';
     session.handledBy = 'human';
-    activeChats.set(userId, session);
+    session.attendantId = attendantId;
+    const takeoverMsg = `Olá, eu sou o atendente ${attendantName} e vou dar continuidade em seu atendimento.`;
+    session.messageLog.push({ sender: 'attendant', text: takeoverMsg, timestamp: new Date().toISOString(), status: 2 });
     userSessions.delete(userId);
-    requestQueue = requestQueue.filter(r => r.userId !== userId);
+    saveData('userSessions.json', userSessions);
+    activeChats.set(userId, session);
     saveData('activeChats.json', activeChats);
-    saveData('requestQueue.json', requestQueue);
-    queueOutbound(userId, { text: "Olá! Assumi seu atendimento. Como posso ajudar?" });
+    queueOutbound(userId, { text: takeoverMsg });
     res.json(session);
 });
 
+// Endpoint para enviar resposta (com suporte a REPLY)
 app.post('/api/chats/attendant-reply', (req, res) => {
-    const { userId, text } = req.body;
+    const { userId, text, attendantId, files, replyTo } = req.body;
     const chat = activeChats.get(userId);
     if (chat) {
-        chat.messageLog.push({ sender: 'attendant', text, timestamp: new Date().toISOString() });
+        const msg = { sender: 'attendant', text, timestamp: new Date().toISOString(), status: 1 };
+        if (files && files.length > 0) {
+            msg.files = files.map(f => {
+                if (f.data) {
+                    const url = saveMediaToDisk(f.data, f.type, f.name);
+                    return { name: f.name, type: f.type, url };
+                }
+                return f;
+            }).filter(f => f.url);
+        }
+        if(replyTo) msg.replyTo = replyTo;
+        
+        chat.messageLog.push(msg);
         saveData('activeChats.json', activeChats);
-        queueOutbound(userId, { text });
+        
+        // Passa o objeto replyTo completo para a fila, para que o loop possa construir o `quoted`
+        queueOutbound(userId, { text, files: msg.files, replyTo });
         res.json({ success: true });
-    } else res.status(404).send();
+    } else {
+        res.status(404).json({ error: 'Chat não encontrado' });
+    }
 });
 
-// Arquivos do frontend (Dist)
-app.use(express.static(path.join(__dirname, 'dist')));
+app.post('/api/chats/initiate', (req, res) => {
+    const { recipientNumber, clientName, message, attendantId, files } = req.body;
+    
+    // Normaliza ID
+    let rawUserId = recipientNumber.includes('@') ? recipientNumber : recipientNumber + '@s.whatsapp.net';
+    let userId = rawUserId.replace(/:.*$/, ''); // Garante ID limpo
 
-// Redireciona qualquer outra rota para o index.html (SPA)
-app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/media')) return next();
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    let session;
+
+    // FIX: Se já existe em activeChats, FORÇAR atualização para humano (caso estivesse bugado ou em transição)
+    if(activeChats.has(userId)) {
+        session = activeChats.get(userId);
+        session.handledBy = 'human'; // Garante silêncio do bot
+        session.attendantId = attendantId;
+    } else {
+        // Se não existe, cria ou busca na fila/sessões
+        const qIdx = requestQueue.findIndex(r => r.userId === userId);
+        if(qIdx !== -1) { requestQueue.splice(qIdx, 1); saveData('requestQueue.json', requestQueue); }
+        
+        session = getSession(userId, clientName); 
+        session.handledBy = 'human'; // Garante silêncio do bot
+        session.attendantId = attendantId;
+        session.currentState = 'HUMAN_INTERACTION_INITIATED'; 
+    }
+
+    const msg = { sender: 'attendant', text: message, timestamp: new Date().toISOString(), status: 1 };
+    if (files && files.length > 0) {
+        msg.files = files.map(f => {
+            if (f.data) {
+                const url = saveMediaToDisk(f.data, f.type, f.name);
+                return { name: f.name, type: f.type, url };
+            }
+            return f;
+        }).filter(f => f.url);
+    }
+    session.messageLog.push(msg);
+    
+    userSessions.delete(userId);
+    activeChats.set(userId, session);
+    
+    saveData('userSessions.json', userSessions);
+    saveData('activeChats.json', activeChats);
+    
+    queueOutbound(userId, { text: message, files: msg.files });
+    res.json(session);
+});
+
+// --- ROTA DE BROADCAST (TRANSMISSÃO EM MASSA) ---
+app.post('/api/broadcast', (req, res) => {
+    const { recipientIds, message, files, attendantId } = req.body;
+    
+    if (!recipientIds || !Array.isArray(recipientIds) || recipientIds.length === 0) {
+        return res.status(400).json({ error: "Nenhum destinatário selecionado." });
+    }
+
+    // Processa arquivos (Disk Storage) uma única vez
+    let processedFiles = [];
+    if (files && files.length > 0) {
+        processedFiles = files.map(f => {
+            if (f.data) {
+                const url = saveMediaToDisk(f.data, f.type, f.name);
+                return { name: f.name, type: f.type, url };
+            }
+            return f;
+        }).filter(f => f.url);
+    }
+
+    recipientIds.forEach(userId => {
+        // Tenta obter sessão existente ou cria nova (mas não move para ActiveChats para não poluir a aba principal imediatamente)
+        let session = activeChats.get(userId);
+        let isNewSession = false;
+
+        if (!session) {
+            session = userSessions.get(userId);
+            if (!session) {
+                // Recupera nome se possível
+                const storeContacts = store.getContacts();
+                const contact = storeContacts[userId] || syncedContacts.find(c => c.userId === userId);
+                session = getSession(userId, contact ? (contact.name || contact.notify || contact.userName) : userId.split('@')[0]);
+                isNewSession = true;
+            }
+        }
+        
+        // --- FIX: Forçar modo humano em transmissão ---
+        session.handledBy = 'human'; 
+
+        const msg = { 
+            sender: 'attendant', 
+            text: message, 
+            files: processedFiles, 
+            timestamp: new Date().toISOString(), 
+            status: 1 
+        };
+
+        session.messageLog.push(msg);
+
+        // Se o chat já está ativo, salva lá. Se não, salva em userSessions (background)
+        if (activeChats.has(userId)) {
+            saveData('activeChats.json', activeChats);
+        } else {
+            saveData('userSessions.json', userSessions);
+        }
+
+        // Adiciona à fila de envio
+        queueOutbound(userId, { text: message, files: processedFiles });
+    });
+
+    res.json({ success: true, count: recipientIds.length });
+});
+
+// --- ROTA DE BACKUP (ZIP) ---
+app.get('/api/system/backup', async (req, res) => {
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    
+    res.attachment(`JZF_Backup_${new Date().toISOString().split('T')[0]}.zip`);
+    
+    archive.pipe(res);
+    
+    // Adiciona todos os JSONs da pasta DATA_DIR (exceto a sessão do Baileys para segurança)
+    const files = fs.readdirSync(DATA_DIR);
+    for (const file of files) {
+        if(file.endsWith('.json')) {
+            archive.file(path.join(DATA_DIR, file), { name: file });
+        }
+    }
+    
+    // Adiciona a pasta de mídia
+    archive.directory(MEDIA_DIR, 'media');
+    
+    await archive.finalize();
+});
+
+// NOVA ROTA: MARCAR COMO LIDO
+app.post('/api/chats/read/:userId', async (req, res) => {
+    const { userId } = req.params;
+    if (!sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+
+    try {
+        const jid = userId.includes('@') ? userId : userId + '@s.whatsapp.net';
+        const chat = activeChats.get(userId) || userSessions.get(userId);
+        
+        if (chat) {
+            // Busca a última mensagem recebida (que não fui eu que enviei)
+            const lastIncoming = [...chat.messageLog].reverse().find(m => m.sender === 'user' && m.msgId);
+            
+            if (lastIncoming && lastIncoming.msgId) {
+                const key = {
+                    remoteJid: jid,
+                    id: lastIncoming.msgId,
+                    fromMe: false
+                };
+                await sock.readMessages([key]);
+                res.json({ success: true });
+                return;
+            }
+        }
+        res.json({ success: false, reason: 'Nenhuma mensagem para marcar' });
+    } catch (e) {
+        console.error('Erro ao marcar lido:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/chats/resolve/:userId', (req, res) => {
+    const { userId } = req.params;
+    const chat = activeChats.get(userId);
+    if (chat) {
+        chat.resolvedBy = 'Atendente';
+        chat.resolvedAt = new Date().toISOString();
+        archiveSession(chat);
+        activeChats.delete(userId);
+        saveData('activeChats.json', activeChats);
+        queueOutbound(userId, { text: translations.pt.sessionEnded });
+        res.json({ success: true });
+    } else {
+        res.status(404).send();
+    }
+});
+
+app.post('/api/chats/transfer/:userId', (req, res) => {
+    const { userId } = req.params;
+    const { newAttendantId } = req.body;
+    const chat = activeChats.get(userId);
+    if(chat) {
+        chat.attendantId = newAttendantId;
+        chat.messageLog.push({ sender: 'system', text: `Transferido para outro atendente.`, timestamp: new Date().toISOString() });
+        saveData('activeChats.json', activeChats);
+        res.json({ success: true });
+    } else {
+        res.status(404).send();
+    }
+});
+
+app.post('/api/chats/forward', (req, res) => {
+    const { originalMessage, targetUserId } = req.body;
+    const targetChat = activeChats.get(targetUserId);
+    if (targetChat) {
+        const fwdMsg = { sender: 'attendant', text: originalMessage.text, files: originalMessage.files, isForwarded: true, timestamp: new Date().toISOString(), status: 1 };
+        targetChat.messageLog.push(fwdMsg);
+        saveData('activeChats.json', activeChats);
+        queueOutbound(targetUserId, { text: originalMessage.text, files: originalMessage.files });
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ error: 'Chat destino não ativo.' });
+    }
+});
+
+app.post('/api/chats/edit-message', (req, res) => {
+    const { userId, messageTimestamp, newText } = req.body;
+    const chat = activeChats.get(userId);
+    if(chat) {
+        const msg = chat.messageLog.find(m => m.timestamp === messageTimestamp);
+        if(msg) { msg.text = newText; msg.edited = true; saveData('activeChats.json', activeChats); res.json({ success: true }); } 
+        else { res.status(404).send(); }
+    } else { res.status(404).send(); }
+});
+
+app.get('/api/internal-chats/summary/:attendantId', (req, res) => res.json({}));
+
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) { return res.status(404).json({ error: 'Endpoint API não encontrado' }); }
+    const indexPath = path.join(distPath, 'index.html');
+    if (fs.existsSync(indexPath)) { res.sendFile(indexPath); } 
+    else { res.status(500).send('Erro: Build do frontend não encontrado (index.html)'); }
 });
 
 startWhatsApp();
-processOutboundQueue();
-app.listen(port, () => console.log(`Servidor rodando na porta ${port}`));
+app.listen(port, () => console.log(`[Server] Rodando na porta ${port}`));
