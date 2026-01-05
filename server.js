@@ -1,3 +1,4 @@
+
 // --- SERVIDOR DE API INTEGRADO COM WHATSAPP (BAILEYS) ---
 // Versão Monolítica: Express + Lógica de Negócio + Conexão WhatsApp no mesmo processo.
 
@@ -46,7 +47,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.6.0_CONTACT_FIX";
+const SERVER_VERSION = "29.7.0_HELLO_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -180,9 +181,10 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     }
 };
 
-// --- CUSTOM STORE IMPLEMENTATION (Contacts Fix) ---
+// --- CUSTOM STORE IMPLEMENTATION (Contacts & Message Fix) ---
 const makeCustomStore = () => {
     let contacts = {};
+    let messages = {}; // Cache de mensagens para resolver retentativas de descriptografia
     const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
 
     const load = () => {
@@ -208,8 +210,6 @@ const makeCustomStore = () => {
         const existing = contacts[id] || {};
         
         // LÓGICA DE PRESERVAÇÃO:
-        // Se já temos um nome, NÃO substitua por null/undefined.
-        // Se o novo dado tem nome, use-o.
         const newName = data.name || undefined;
         const newNotify = data.notify || undefined;
         const newVerified = data.verifiedName || undefined;
@@ -228,18 +228,33 @@ const makeCustomStore = () => {
         };
     };
 
+    const cacheMessage = (m) => {
+        if (m.key && m.key.id && m.message) {
+            messages[m.key.id] = m.message;
+            // Limpa o cache para não estourar a memória (mantém as últimas 500 mensagens)
+            const keys = Object.keys(messages);
+            if (keys.length > 500) {
+                delete messages[keys[0]];
+            }
+        }
+    };
+
     load();
     setInterval(save, 10000); 
 
     return {
         getContacts: () => contacts,
+        loadMessage: (id) => messages[id],
         upsert, 
         save, 
         bind: (ev) => {
-            ev.on('messaging-history.set', ({ contacts: newContacts }) => {
+            ev.on('messaging-history.set', ({ contacts: newContacts, messages: newMsgs }) => {
                 if (newContacts) {
                     newContacts.forEach(c => upsert(c.id, c));
                     save(); 
+                }
+                if (newMsgs) {
+                    newMsgs.forEach(m => cacheMessage(m));
                 }
             });
             
@@ -249,6 +264,10 @@ const makeCustomStore = () => {
 
             ev.on('contacts.update', (updates) => {
                 updates.forEach(u => upsert(u.id, u));
+            });
+
+            ev.on('messages.upsert', ({ messages: newMsgs }) => {
+                newMsgs.forEach(m => cacheMessage(m));
             });
         }
     };
@@ -290,8 +309,6 @@ const MAX_SESSIONS = 1000;
 const MAX_ARCHIVED_CHATS = 500;
 
 // --- CORREÇÃO DE "AGUARDANDO MENSAGEM" & BAD MAC ---
-// Classe persistente para salvar o cache de retentativa IMEDIATAMENTE após a escrita.
-// Isso garante que se o server reiniciar após um erro de MAC, ele lembra de pedir a mensagem novamente.
 class PersistentMap {
     constructor(filename) {
         this.filename = filename;
@@ -302,7 +319,7 @@ class PersistentMap {
     
     set(key, value) {
         this.internalMap.set(key, value);
-        saveData(this.filename, this.internalMap); // Salva imediatamente para evitar perda em crash
+        saveData(this.filename, this.internalMap); 
         return this;
     }
     
@@ -353,7 +370,7 @@ async function transcribeAudio(fileUrl, mimeType) {
         const fileData = fs.readFileSync(filePath).toString('base64');
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3-flash-preview',
             contents: [{ parts: [{ inlineData: { mimeType: mimeType, data: fileData } }, { text: "Transcreva este áudio em português do Brasil de forma literal." }] }],
         });
         return response?.text?.trim() || "[Transcrição vazia]";
@@ -466,7 +483,7 @@ async function processMessage(session, userInput, file) {
                 session.aiHistory.push({ role: 'user', parts: [{ text: userInput }] });
                 if (session.aiHistory.length > 10) session.aiHistory = session.aiHistory.slice(-10);
                 
-                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: session.aiHistory, config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." } });
+                const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: session.aiHistory, config: { systemInstruction: departmentSystemInstructions.pt[session.context.department] || "Você é um assistente prestativo." } });
                 const aiText = response.text;
                 queueOutbound(userId, { text: aiText });
                 session.messageLog.push({ sender: 'bot', text: aiText, timestamp: new Date() });
@@ -523,27 +540,21 @@ function queueOutbound(userId, content) {
 async function processIncomingMessage({ userId, userName, userInput, file, replyContext, msgId }) {
     if (!userId) return;
     
-    // FIX: Normalizar JID para evitar duplicação por sufixo de dispositivo (ex: :12)
     const cleanUserId = userId.replace(/:.*$/, '');
     
-    // Atualiza contatos (Se userName for inválido, o upsert blindado não substitui o existente)
     if (userName) {
         store.upsert(cleanUserId, { id: cleanUserId, notify: userName });
     }
     
     const session = getSession(cleanUserId, userName);
 
-    // --- GUARDIÃO ABSOLUTO: Se está em activeChats, É HUMANO. ---
     if (activeChats.has(cleanUserId)) {
         session.handledBy = 'human';
     }
 
-    // --- PROTEÇÃO DE CONTEXTO ---
-    // Se a última mensagem no log foi enviada por um atendente, assumimos que é uma conversa humana ativa.
     const lastLog = session.messageLog[session.messageLog.length - 1];
     if (lastLog && lastLog.sender === 'attendant') {
         session.handledBy = 'human';
-        // Move para ActiveChats automaticamente se houve intervenção humana recente e não está lá
         if (!activeChats.has(cleanUserId)) {
             activeChats.set(cleanUserId, session);
             userSessions.delete(cleanUserId);
@@ -555,10 +566,9 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
         sender: 'user', 
         text: userInput, 
         timestamp: new Date().toISOString(),
-        msgId: msgId // SALVA O ID DO WHATSAPP PARA RESPOSTA (QUOTE)
+        msgId: msgId 
     };
     
-    // Tratamento de Arquivo: Salvar no Disco e usar URL
     if (file) {
         const url = saveMediaToDisk(file.data, file.type, file.name);
         if (url) {
@@ -579,7 +589,6 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
         session.messageLog.push({ sender: 'system', text: `Transcrição: "${transcription}"`, timestamp: new Date().toISOString() });
     }
     
-    // TRAVA DE SEGURANÇA: Se for Humano, o bot NÃO TOCA.
     if (session.handledBy === 'human' || session.handledBy === 'bot_queued') {
         if (activeChats.has(cleanUserId)) saveData('activeChats.json', activeChats);
         else saveData('userSessions.json', userSessions);
@@ -608,17 +617,20 @@ async function startWhatsApp() {
             auth: state,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: true,
-            browser: ['JZF Atendimento', 'Chrome', '1.0.0'], // Usar string fixa ajuda a manter a sessão
+            browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 15000,
             emitOwnEvents: false,
             retryRequestDelayMs: 2000,
             defaultQueryTimeoutMs: 60000,
             markOnlineOnConnect: true,
-            msgRetryCounterCache, // CRÍTICO: Usando classe persistente corrigida
-            // CONFIGURAÇÕES AVANÇADAS DE ESTABILIDADE
+            msgRetryCounterCache, 
             transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 500 },
-            getMessage: async () => ({ conversation: 'hello' })
+            // CORREÇÃO: Usar o cache da store em vez de um placeholder "hello"
+            getMessage: async (key) => {
+                const msg = await store.loadMessage(key.id);
+                return msg || { conversation: '' };
+            }
         });
 
         store.bind(sock.ev);
@@ -636,15 +648,12 @@ async function startWhatsApp() {
                 store.upsert(contact.id, contact);
 
                 const exists = syncedContacts.find(c => c.userId === contact.id);
-                // Prioriza Name > Notify > Verified > Username Anterior
                 const name = contact.name || contact.notify || contact.verifiedName;
                 
                 if (!exists) {
-                    // Só adiciona se tiver um nome válido ou usa ID como fallback
                     syncedContacts.push({ userId: contact.id, userName: name || contact.id.split('@')[0] });
                     hasNew = true;
                 } else {
-                    // Só atualiza se o novo nome for válido e diferente
                     if (name && exists.userName !== name) {
                         exists.userName = name;
                         hasNew = true;
@@ -718,7 +727,6 @@ async function startWhatsApp() {
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
-                // MENSAGENS RECEBIDAS (DO CLIENTE)
                 if (!msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const userName = msg.pushName || rawUserId.split('@')[0];
@@ -769,7 +777,6 @@ async function startWhatsApp() {
 
                     await processIncomingMessage({ userId: rawUserId, userName, userInput: text, file, replyContext, msgId });
                 }
-                // MENSAGENS ENVIADAS PELO PRÓPRIO DISPOSITIVO (WEB OU CELULAR)
                 else if (msg.key.fromMe && msg.message) {
                     const rawUserId = msg.key.remoteJid;
                     const cleanUserId = rawUserId.replace(/:.*$/, '');
@@ -839,17 +846,15 @@ setInterval(async () => {
         try {
             const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
             
-            // Lógica de Resposta (Reply/Quote)
             let options = {};
             if (item.replyTo && item.replyTo.id) {
-                // Constrói objeto de resposta para o Baileys
                 options.quoted = {
                     key: {
                         remoteJid: jid,
                         fromMe: item.replyTo.fromMe || false,
                         id: item.replyTo.id
                     },
-                    message: { conversation: item.replyTo.text || '...' } // Mock minimalista
+                    message: { conversation: item.replyTo.text || '...' } 
                 };
             }
 
@@ -879,7 +884,7 @@ setInterval(async () => {
                 const chat = activeChats.get(item.userId);
                 const lastMsg = chat.messageLog[chat.messageLog.length - 1];
                 if(lastMsg && lastMsg.text === item.text) {
-                    lastMsg.status = 2; // Enviado
+                    lastMsg.status = 2; 
                     saveData('activeChats.json', activeChats);
                 }
             }
@@ -903,22 +908,18 @@ app.post('/api/attendants', (req, res) => {
     res.json(newAttendant);
 });
 
-// Listagem de clientes (COM SUPORTE A TAGS)
 app.get('/api/clients', (req, res) => {
     const clientsMap = new Map();
     
-    // 1. Pega do STORE (Memória + Disco) - Fonte mais confiável para NOMES
     const storeContacts = store.getContacts();
     Object.values(storeContacts).forEach(c => {
         if (!c.id.includes('@g.us') && c.id !== 'status@broadcast') {
-            // HIERARQUIA DE NOME: Name (Agenda) > Notify (PushName) > Verified > Username Anterior > ID
             const name = c.name || c.notify || c.verifiedName || c.id.split('@')[0];
             const clientTags = contactTags[c.id] || [];
             clientsMap.set(c.id, { userId: c.id, userName: name, tags: clientTags });
         }
     });
 
-    // 2. Backup do syncedContacts (apenas se não estiver no Store)
     syncedContacts.forEach(c => { 
         if (!clientsMap.has(c.userId)) {
             const clientTags = contactTags[c.userId] || [];
@@ -926,7 +927,6 @@ app.get('/api/clients', (req, res) => {
         }
     });
     
-    // 3. Completa com chats ativos e arquivados
     const addIfNotExists = (userId, userName) => { 
         if (!clientsMap.has(userId)) {
             const clientTags = contactTags[userId] || [];
@@ -942,7 +942,6 @@ app.get('/api/clients', (req, res) => {
     res.json(sortedClients);
 });
 
-// --- API DE TAGS (LISTAS) ---
 app.get('/api/tags', (req, res) => res.json(tags));
 
 app.post('/api/tags', (req, res) => {
@@ -956,7 +955,6 @@ app.post('/api/tags', (req, res) => {
 app.delete('/api/tags/:id', (req, res) => {
     tags = tags.filter(t => t.id !== req.params.id);
     saveData('tags.json', tags);
-    // Opcional: Remover essa tag dos contatos
     for (const userId in contactTags) {
         contactTags[userId] = contactTags[userId].filter(tid => tid !== req.params.id);
     }
@@ -968,7 +966,6 @@ app.post('/api/tags/assign-bulk', (req, res) => {
     const { tagId, userIds } = req.body;
     if (!tagId || !userIds || !Array.isArray(userIds)) return res.status(400).send();
     
-    // Verifica se a tag existe
     if (!tags.find(t => t.id === tagId)) return res.status(404).json({error: 'Tag não encontrada'});
 
     userIds.forEach(uid => {
@@ -988,7 +985,6 @@ app.get('/api/chats/active', (req, res) => {
     const activeSummary = Array.from(activeChats.values()).map(c => {
         const lastMsg = c.messageLog[c.messageLog.length - 1];
         
-        // --- OTIMIZAÇÃO DE MEMÓRIA (Out of Memory Fix) ---
         let safeLastMsg = null;
         if (lastMsg) {
             safeLastMsg = { ...lastMsg };
@@ -996,7 +992,7 @@ app.get('/api/chats/active', (req, res) => {
                 safeLastMsg.files = safeLastMsg.files.map(f => ({
                     name: f.name,
                     type: f.type,
-                    url: f.url // Envia apenas URL, nunca o 'data'
+                    url: f.url 
                 }));
             }
         }
@@ -1072,7 +1068,6 @@ app.post('/api/chats/takeover/:userId', (req, res) => {
     res.json(session);
 });
 
-// Endpoint para enviar resposta (com suporte a REPLY)
 app.post('/api/chats/attendant-reply', (req, res) => {
     const { userId, text, attendantId, files, replyTo } = req.body;
     const chat = activeChats.get(userId);
@@ -1092,7 +1087,6 @@ app.post('/api/chats/attendant-reply', (req, res) => {
         chat.messageLog.push(msg);
         saveData('activeChats.json', activeChats);
         
-        // Passa o objeto replyTo completo para a fila, para que o loop possa construir o `quoted`
         queueOutbound(userId, { text, files: msg.files, replyTo });
         res.json({ success: true });
     } else {
@@ -1103,24 +1097,21 @@ app.post('/api/chats/attendant-reply', (req, res) => {
 app.post('/api/chats/initiate', (req, res) => {
     const { recipientNumber, clientName, message, attendantId, files } = req.body;
     
-    // Normaliza ID
     let rawUserId = recipientNumber.includes('@') ? recipientNumber : recipientNumber + '@s.whatsapp.net';
-    let userId = rawUserId.replace(/:.*$/, ''); // Garante ID limpo
+    let userId = rawUserId.replace(/:.*$/, ''); 
 
     let session;
 
-    // FIX: Se já existe em activeChats, FORÇAR atualização para humano (caso estivesse bugado ou em transição)
     if(activeChats.has(userId)) {
         session = activeChats.get(userId);
-        session.handledBy = 'human'; // Garante silêncio do bot
+        session.handledBy = 'human'; 
         session.attendantId = attendantId;
     } else {
-        // Se não existe, cria ou busca na fila/sessões
         const qIdx = requestQueue.findIndex(r => r.userId === userId);
         if(qIdx !== -1) { requestQueue.splice(qIdx, 1); saveData('requestQueue.json', requestQueue); }
         
         session = getSession(userId, clientName); 
-        session.handledBy = 'human'; // Garante silêncio do bot
+        session.handledBy = 'human'; 
         session.attendantId = attendantId;
         session.currentState = 'HUMAN_INTERACTION_INITIATED'; 
     }
@@ -1147,7 +1138,6 @@ app.post('/api/chats/initiate', (req, res) => {
     res.json(session);
 });
 
-// --- ROTA DE BROADCAST (TRANSMISSÃO EM MASSA) ---
 app.post('/api/broadcast', (req, res) => {
     const { recipientIds, message, files, attendantId } = req.body;
     
@@ -1155,7 +1145,6 @@ app.post('/api/broadcast', (req, res) => {
         return res.status(400).json({ error: "Nenhum destinatário selecionado." });
     }
 
-    // Processa arquivos (Disk Storage) uma única vez
     let processedFiles = [];
     if (files && files.length > 0) {
         processedFiles = files.map(f => {
@@ -1168,22 +1157,16 @@ app.post('/api/broadcast', (req, res) => {
     }
 
     recipientIds.forEach(userId => {
-        // Tenta obter sessão existente ou cria nova (mas não move para ActiveChats para não poluir a aba principal imediatamente)
         let session = activeChats.get(userId);
-        let isNewSession = false;
-
         if (!session) {
             session = userSessions.get(userId);
             if (!session) {
-                // Recupera nome se possível
                 const storeContacts = store.getContacts();
                 const contact = storeContacts[userId] || syncedContacts.find(c => c.userId === userId);
                 session = getSession(userId, contact ? (contact.name || contact.notify || contact.userName) : userId.split('@')[0]);
-                isNewSession = true;
             }
         }
         
-        // --- FIX: Forçar modo humano em transmissão ---
         session.handledBy = 'human'; 
 
         const msg = { 
@@ -1196,61 +1179,42 @@ app.post('/api/broadcast', (req, res) => {
 
         session.messageLog.push(msg);
 
-        // Se o chat já está ativo, salva lá. Se não, salva em userSessions (background)
         if (activeChats.has(userId)) {
             saveData('activeChats.json', activeChats);
         } else {
             saveData('userSessions.json', userSessions);
         }
 
-        // Adiciona à fila de envio
         queueOutbound(userId, { text: message, files: processedFiles });
     });
 
     res.json({ success: true, count: recipientIds.length });
 });
 
-// --- ROTA DE BACKUP (ZIP) ---
 app.get('/api/system/backup', async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
-    
     res.attachment(`JZF_Backup_${new Date().toISOString().split('T')[0]}.zip`);
-    
     archive.pipe(res);
-    
-    // Adiciona todos os JSONs da pasta DATA_DIR (exceto a sessão do Baileys para segurança)
     const files = fs.readdirSync(DATA_DIR);
     for (const file of files) {
         if(file.endsWith('.json')) {
             archive.file(path.join(DATA_DIR, file), { name: file });
         }
     }
-    
-    // Adiciona a pasta de mídia
     archive.directory(MEDIA_DIR, 'media');
-    
     await archive.finalize();
 });
 
-// NOVA ROTA: MARCAR COMO LIDO
 app.post('/api/chats/read/:userId', async (req, res) => {
     const { userId } = req.params;
     if (!sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
-
     try {
         const jid = userId.includes('@') ? userId : userId + '@s.whatsapp.net';
         const chat = activeChats.get(userId) || userSessions.get(userId);
-        
         if (chat) {
-            // Busca a última mensagem recebida (que não fui eu que enviei)
             const lastIncoming = [...chat.messageLog].reverse().find(m => m.sender === 'user' && m.msgId);
-            
             if (lastIncoming && lastIncoming.msgId) {
-                const key = {
-                    remoteJid: jid,
-                    id: lastIncoming.msgId,
-                    fromMe: false
-                };
+                const key = { remoteJid: jid, id: lastIncoming.msgId, fromMe: false };
                 await sock.readMessages([key]);
                 res.json({ success: true });
                 return;
@@ -1258,7 +1222,6 @@ app.post('/api/chats/read/:userId', async (req, res) => {
         }
         res.json({ success: false, reason: 'Nenhuma mensagem para marcar' });
     } catch (e) {
-        console.error('Erro ao marcar lido:', e);
         res.status(500).json({ error: e.message });
     }
 });
