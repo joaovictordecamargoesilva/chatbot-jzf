@@ -48,7 +48,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL - RECOVERED] Rejeição de Promise não tratada:', reason);
 });
 
-const SERVER_VERSION = "29.12.0_BAD_MAC_FIX_STABLE";
+const SERVER_VERSION = "29.13.0_INCOMING_BOT_SYNC_FIX";
 console.log(`[JZF Chatbot Server] Iniciando... Versão: ${SERVER_VERSION}`);
 
 // --- CONFIGURAÇÃO INICIAL ---
@@ -115,10 +115,10 @@ const saveMediaToDisk = (base64Data, mimeType, originalName) => {
     } catch (error) { console.error('[Media] Erro salvar:', error); return null; }
 };
 
-// --- CUSTOM STORE (COM PERSISTÊNCIA DE MENSAGENS PARA FIX BAD MAC) ---
+// --- CUSTOM STORE ---
 const makeCustomStore = () => {
     let contacts = {};
-    let messages = {}; // Cache de mensagens para retentativas (Essencial para Bad MAC)
+    let messages = {}; 
     const STORE_FILE = path.join(DATA_DIR, 'baileys_store.json');
     const MSG_CACHE_FILE = path.join(DATA_DIR, 'baileys_msg_cache.json');
 
@@ -132,7 +132,6 @@ const makeCustomStore = () => {
     const save = () => { 
         try { 
             fs.writeFileSync(STORE_FILE, JSON.stringify({ contacts }, null, 2)); 
-            // Salva apenas as últimas 100 mensagens para não sobrecarregar o JSON
             const keys = Object.keys(messages);
             const limitedMessages = {};
             keys.slice(-100).forEach(k => limitedMessages[k] = messages[k]);
@@ -195,7 +194,7 @@ class PersistentMap {
     get(key) { return this.internalMap.get(key); }
     set(key, value) { this.internalMap.set(key, value); saveData(this.filename, this.internalMap); return this; }
     delete(key) { const result = this.internalMap.delete(key); saveData(this.filename, this.internalMap); return result; }
-    del(key) { return this.delete(key); } // Compatibilidade total Baileys
+    del(key) { return this.delete(key); }
     has(key) { return this.internalMap.has(key); }
 }
 const msgRetryCounterCache = new PersistentMap('msgRetryCounterMap.json');
@@ -262,7 +261,7 @@ async function transcribeAudio(fileUrl, mimeType) {
         const fileData = fs.readFileSync(filePath).toString('base64');
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: [{ parts: [{ inlineData: { mimeType, data: fileData } }, { text: "Transcreva este áudio." }] }],
+            contents: [{ parts: [{ inlineData: { mimeType, data: fileData } }, { text: "Transcreva este áudio em português." }] }],
         });
         return response?.text?.trim() || "[Transcrição vazia]";
     } catch (error) { return `[Erro na transcrição]`; }
@@ -394,29 +393,54 @@ async function processIncomingMessage({ userId, userName, userInput, file, reply
     if (!userId) return;
     const cleanId = userId.replace(/:.*$/, '');
     if (userName) store.upsert(cleanId, { id: cleanId, notify: userName });
+    
     const session = getSession(cleanId, userName);
+    
+    // Evita duplicidade se a mensagem já foi processada (sync from me / notify race condition)
+    if (session.messageLog.some(m => m.msgId === msgId)) return;
+
     if (activeChats.has(cleanId)) session.handledBy = 'human';
-    const logEntry = { sender: 'user', text: userInput, timestamp: new Date().toISOString(), msgId };
+    
+    const logEntry = { 
+        sender: 'user', 
+        text: userInput || (file ? `[Arquivo: ${file.name}]` : ""), 
+        timestamp: new Date().toISOString(), 
+        msgId 
+    };
+    
     if (file) {
         const url = saveMediaToDisk(file.data, file.type, file.name);
         if (url) logEntry.files = [{ name: file.name, type: file.type, url }];
     }
-    if (replyContext) logEntry.replyTo = { text: replyContext.text, sender: replyContext.fromMe ? 'attendant' : 'user', senderName: replyContext.fromMe ? 'Você' : session.userName };
+    
+    if (replyContext) {
+        logEntry.replyTo = { 
+            text: replyContext.text, 
+            sender: replyContext.fromMe ? 'attendant' : 'user', 
+            senderName: replyContext.fromMe ? 'Você' : session.userName 
+        };
+    }
+    
     session.messageLog.push(logEntry);
 
-    if (logEntry.files && logEntry.files[0]?.type?.startsWith('audio/')) {
-        const transcription = await transcribeAudio(logEntry.files[0].url, logEntry.files[0].type);
-        session.messageLog.push({ sender: 'system', text: `Transcrição: "${transcription}"`, timestamp: new Date().toISOString() });
-        if (session.handledBy === 'bot') await processMessage(session, transcription);
-    } else if (session.handledBy === 'bot') {
-        await processMessage(session, userInput);
+    if (session.handledBy === 'bot') {
+        let effectiveInput = userInput;
+        if (logEntry.files && logEntry.files[0]?.type?.startsWith('audio/')) {
+            const transcription = await transcribeAudio(logEntry.files[0].url, logEntry.files[0].type);
+            session.messageLog.push({ sender: 'system', text: `Transcrição: "${transcription}"`, timestamp: new Date().toISOString() });
+            effectiveInput = transcription;
+        }
+        await processMessage(session, effectiveInput);
     }
+    
+    // Salva o estado atualizado
     saveData(activeChats.has(cleanId) ? 'activeChats.json' : 'userSessions.json', activeChats.has(cleanId) ? activeChats : userSessions);
 }
 
 // --- BAILEYS SETUP ---
 const SESSION_FOLDER = path.join(DATA_DIR, 'baileys_auth_info');
 async function startWhatsApp() {
+    console.log(`[WhatsApp] Iniciando conexão... (Versão Server: ${SERVER_VERSION})`);
     gatewayStatus.status = 'LOADING';
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
@@ -428,17 +452,11 @@ async function startWhatsApp() {
             logger: pino({ level: 'silent' }),
             printQRInTerminal: true, 
             browser: ['JZF Atendimento', 'Chrome', '1.0.0'],
-            msgRetryCounterCache, // Cache de retentativas para evitar loops de Bad MAC
-            // ESSENCIAL: getMessage é o que resolve o erro "Aguardando mensagem..." e Bad MAC
-            getMessage: async (key) => {
-                const cached = await store.loadMessage(key.id);
-                if (cached) return cached;
-                return { conversation: '' };
-            },
-            // Otimizações para ambiente Render (menos quedas de conexão)
+            msgRetryCounterCache,
+            getMessage: async (key) => (await store.loadMessage(key.id)) || { conversation: '' },
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 10000,
+            keepAliveIntervalMs: 15000,
             retryRequestDelayMs: 2000
         });
         
@@ -478,48 +496,87 @@ async function startWhatsApp() {
                 const statusCode = error?.output?.statusCode;
                 const should = statusCode !== DisconnectReason.loggedOut;
                 gatewayStatus.status = 'DISCONNECTED';
-                
-                // Se erro for Bad MAC ou algo do Signal, limpa o contador de retentativas
-                if (error?.message?.includes('Bad MAC') || error?.message?.includes('Signal')) {
-                    console.warn('[Signal Fix] Resetando cache de retentativas para recuperar sessão.');
-                    // Limpeza parcial do cache se necessário
-                }
-
                 if (should) setTimeout(startWhatsApp, 5000);
-                else { 
-                    fs.rmSync(SESSION_FOLDER, { recursive: true, force: true }); 
-                    gatewayStatus.qrCode = null; setTimeout(startWhatsApp, 2000); 
-                }
+                else { fs.rmSync(SESSION_FOLDER, { recursive: true, force: true }); gatewayStatus.qrCode = null; setTimeout(startWhatsApp, 2000); }
             } else if (connection === 'open') { gatewayStatus.status = 'CONNECTED'; gatewayStatus.qrCode = null; }
         });
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
-                if (!msg.key.fromMe && msg.message) {
-                    const rawId = msg.key.remoteJid;
-                    const userName = msg.pushName || rawId.split('@')[0];
-                    let file = null;
-                    const messageType = Object.keys(msg.message)[0];
-                    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-                    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
-                        try {
-                            const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                            const msgContent = msg.message[messageType];
-                            file = { name: msgContent.fileName || `${messageType}_${Date.now()}`, type: msgContent.mimetype, data: buffer.toString('base64') };
-                            text = msgContent.caption || '';
-                        } catch (e) {}
+                const rawId = msg.key.remoteJid;
+                if (!rawId || rawId === 'status@broadcast') continue;
+                const cleanId = rawId.replace(/:.*$/, '');
+                const isFromMe = msg.key.fromMe;
+                
+                if (!msg.message) continue;
+
+                // Extração de conteúdo da mensagem
+                const messageType = Object.keys(msg.message)[0];
+                let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+                let file = null;
+
+                if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType)) {
+                    try {
+                        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                        const msgContent = msg.message[messageType];
+                        file = { 
+                            name: msgContent.fileName || `${messageType}_${Date.now()}`, 
+                            type: msgContent.mimetype, 
+                            data: buffer.toString('base64') 
+                        };
+                        text = msgContent.caption || '';
+                    } catch (e) { console.warn('Falha no download de mídia:', e.message); }
+                }
+
+                if (isFromMe) {
+                    // Sincronização de mensagens enviadas pelo próprio aparelho celular
+                    const session = activeChats.get(cleanId) || userSessions.get(cleanJid);
+                    if (session) {
+                        const alreadyLogged = session.messageLog.some(m => m.msgId === msg.key.id);
+                        if (!alreadyLogged) {
+                            session.handledBy = 'human';
+                            session.messageLog.push({
+                                sender: 'attendant',
+                                text: text || (file ? `[Arquivo: ${file.name}]` : ""),
+                                timestamp: new Date().toISOString(),
+                                msgId: msg.key.id,
+                                status: 2
+                            });
+                            // Se estava no Bot ou Fila, move para Ativos
+                            if (!activeChats.has(cleanId)) {
+                                activeChats.set(cleanId, session);
+                                userSessions.delete(cleanId);
+                                const qIdx = requestQueue.findIndex(r => r.userId === cleanId);
+                                if (qIdx !== -1) requestQueue.splice(qIdx, 1);
+                            }
+                            saveData('activeChats.json', activeChats);
+                            saveData('userSessions.json', userSessions);
+                            saveData('requestQueue.json', requestQueue);
+                        }
                     }
+                } else {
+                    // Mensagem vinda do cliente
                     let replyContext = null;
                     const ctx = msg.message.extendedTextMessage?.contextInfo || msg.message[messageType]?.contextInfo;
                     if (ctx?.quotedMessage) {
-                        replyContext = { text: ctx.quotedMessage.conversation || "[Mídia]", fromMe: ctx.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net' };
+                        replyContext = { 
+                            text: ctx.quotedMessage.conversation || "[Mídia]", 
+                            fromMe: ctx.participant === sock.user.id.split(':')[0] + '@s.whatsapp.net' 
+                        };
                     }
-                    await processIncomingMessage({ userId: rawId, userName, userInput: text, file, replyContext, msgId: msg.key.id });
+                    await processIncomingMessage({ 
+                        userId: rawId, 
+                        userName: msg.pushName || cleanId.split('@')[0], 
+                        userInput: text, 
+                        file, 
+                        replyContext, 
+                        msgId: msg.key.id 
+                    });
                 }
             }
         });
-    } catch (e) { setTimeout(startWhatsApp, 5000); }
+    } catch (e) { console.error('Erro fatal no startWhatsApp:', e); setTimeout(startWhatsApp, 5000); }
 }
 
 setInterval(async () => {
@@ -528,14 +585,28 @@ setInterval(async () => {
         try {
             const jid = item.userId.includes('@') ? item.userId : item.userId + '@s.whatsapp.net';
             let opt = {};
-            if (item.replyTo?.id) opt.quoted = { key: { remoteJid: jid, fromMe: item.replyTo.fromMe || false, id: item.replyTo.id }, message: { conversation: item.replyTo.text || '...' } };
+            if (item.replyTo?.id) {
+                opt.quoted = { 
+                    key: { remoteJid: jid, fromMe: item.replyTo.fromMe || false, id: item.replyTo.id }, 
+                    message: { conversation: item.replyTo.text || '...' } 
+                };
+            }
             if (item.files?.length > 0) {
                  for (const file of item.files) {
                     const buffer = file.url ? fs.readFileSync(path.join(MEDIA_DIR, path.basename(file.url))) : Buffer.from(file.data, 'base64');
-                    await sock.sendMessage(jid, { [file.type.startsWith('image') ? 'image' : 'document']: buffer, caption: item.text, mimetype: file.type, fileName: file.name }, opt);
+                    await sock.sendMessage(jid, { 
+                        [file.type.startsWith('image') ? 'image' : 'document']: buffer, 
+                        caption: item.text, 
+                        mimetype: file.type, 
+                        fileName: file.name 
+                    }, opt);
                  }
             } else { await sock.sendMessage(jid, { text: item.text }, opt); }
-        } catch (e) { outboundGatewayQueue.unshift(item); await delay(2000); }
+        } catch (e) { 
+            console.error('Falha no envio outbound:', e.message);
+            outboundGatewayQueue.unshift(item); 
+            await delay(2000); 
+        }
     }
 }, 500); 
 
@@ -590,6 +661,23 @@ app.get('/api/system/backup', async (req, res) => {
     const archive = archiver('zip'); res.attachment(`JZF_Backup.zip`); archive.pipe(res);
     fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json')).forEach(f => archive.file(path.join(DATA_DIR, f), { name: f }));
     archive.directory(MEDIA_DIR, 'media'); await archive.finalize();
+});
+app.post('/api/chats/read/:userId', async (req, res) => {
+    const { userId } = req.params;
+    if (!sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+    try {
+        const jid = userId.includes('@') ? userId : userId + '@s.whatsapp.net';
+        const chat = activeChats.get(userId) || userSessions.get(userId);
+        if (chat) {
+            const lastIn = [...chat.messageLog].reverse().find(m => m.sender === 'user' && m.msgId);
+            if (lastIn?.msgId) {
+                await sock.readMessages([{ remoteJid: jid, id: lastIn.msgId, fromMe: false }]);
+                res.json({ success: true });
+                return;
+            }
+        }
+        res.json({ success: false });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) return res.status(404).send();
